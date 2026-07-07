@@ -1,0 +1,34 @@
+mode: local
+
+services:
+  edge:
+    host: "127.0.0.1"
+    port: 8001
+  scheduler:
+    host: "127.0.0.1"
+    port: 8003
+  cloud:
+    host: "127.0.0.1"
+    port: 8004
+  log:
+    host: "127.0.0.1"
+    port: 8006
+
+model:
+  edge_backend: "mock"
+  cloud_backend: "mock"
+
+log:
+  path: "logs/task_trace.jsonl"
+
+demo:
+  network_state:
+    latency_ms: 30.0
+    bandwidth_mbps: 20.0
+    packet_loss: 0.01
+    cloud_available: true
+  node_state:
+    edge_cpu_usage: 0.55
+    edge_memory_usage: 0.62
+    cloud_queue_length: 3
+

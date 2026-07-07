@@ -1,0 +1,2 @@
+"""Edge inference service."""
+
