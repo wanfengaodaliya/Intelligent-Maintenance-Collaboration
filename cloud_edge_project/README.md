@@ -1,102 +1,203 @@
-# 云边协同感知与决策原型系统
+# Scheduler 调度器说明
 
-本项目从 `docs/api.md` 的 V0.3 接口开始实现，第一阶段只跑通一个工业设备轴承检测场景，不修改 API 字段和路径。
+## 1. 模块作用
 
-第一阶段主链路：
+`scheduler` 是云边协同项目中的调度器模块。
 
-```text
-SensorPacket
--> POST /edge/infer
--> POST /scheduler/decide
--> POST /cloud/infer 仅 route = cloud 时调用
--> POST /logs/task_trace
--> GET /dashboard/metrics, GET /dashboard/tasks
-```
+当前版本是一个最小可运行的规则调度器，用于根据任务信息、边缘模型结果、网络状态和节点状态，判断任务应该：
 
-赛题关注云边协同、弱网可用性、端到端时延、资源与通信效率、稳定性和可量化结果。因此当前实现先保留这些可统计字段，再逐步替换真实模型和复杂调度算法。
+- 留在边缘节点执行：`edge`
+- 上传云端执行：`cloud`
+- 云不可用或网络较差时边缘降级执行：`fallback_edge`
 
-## 目录结构
+当前版本不包含雾节点调度，也不是完整训练版 PER-DDPG 模型，而是保留 PER-DDPG 的状态输入和动作选择思想，用规则先跑通项目主流程。
+
+## 2. 文件结构
 
 ```text
-common/          公共配置、接口校验、JSONL 日志与指标
-simulator/       轴承时序 SensorPacket 生成器
-edge_service/    边缘推理服务，端口 8001
-scheduler/       规则调度服务，端口 8003
-cloud_service/   云端推理服务，端口 8004
-log_service/     日志与指标服务，端口 8006
-configs/         本地配置
-examples/        示例数据生成说明
-logs/            运行日志
-docs/api.md      冻结接口文档
-quick_demo.py    单条链路演示脚本
-start_all.py     一键启动服务脚本
+scheduler/
+  api.py              HTTP 接口入口
+  rule_scheduler.py   核心规则调度逻辑
+  __init__.py         Python 包导出入口
+  __pycache__/        Python 自动生成的缓存目录
 ```
 
-`log_service/` 是基于 API 增加的目录，因为 V0.3 已明确日志与指标服务运行在 8006。
+## 3. 主要文件说明
 
-## 当前能力
+### `api.py`
 
-- 生成符合 API 的 800 点 `bearing_timeseries` 传感器包。
-- 边缘 mock 模型输出 `EdgeResult`。
-- 调度器严格按 API 规则返回 `edge`、`cloud`、`fallback_edge`。
-- 云端 mock 模型在上云路径返回更高置信度和处理建议。
-- 日志服务写入 `logs/task_trace.jsonl`。
-- 指标服务统计成功率、平均端到端时延、上云比例、边缘完成比例、回退比例和异常比例。
+负责对外提供 HTTP 接口。
 
-## 快速运行
-
-不安装 HTTP 依赖也可以先验证主流程：
-
-```bash
-python quick_demo.py
-```
-
-生成严格 800 点示例数据：
-
-```bash
-python -m simulator.task_generator --out examples
-```
-
-安装服务依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
-启动全部服务：
-
-```bash
-python start_all.py
-```
-
-服务启动后，用真实 HTTP 接口跑一条链路：
-
-```bash
-python quick_demo.py --http
-```
-
-健康检查地址：
+主要接口：
 
 ```text
-http://127.0.0.1:8001/health
-http://127.0.0.1:8003/health
-http://127.0.0.1:8004/health
-http://127.0.0.1:8006/health
+GET  /health
+POST /scheduler/decide
 ```
 
-## 第一阶段验收标准
+如果安装了 FastAPI，可以作为 FastAPI 应用使用；如果没有安装 FastAPI，也可以直接运行：
 
-1. 一条 `SensorPacket` 可以成功进入 `/edge/infer`。
-2. `/edge/infer` 返回相同 `packet_id` 的 `EdgeResult`。
-3. `/scheduler/decide` 能根据 `confidence` 和 `cloud_available` 返回三种合法路径。
-4. `route = cloud` 时调用 `/cloud/infer`。
-5. `route = edge` 或 `fallback_edge` 时直接使用边缘结果生成最终日志。
-6. `/logs/task_trace` 能保存完整 `TaskTrace`。
-7. `/dashboard/metrics` 和 `/dashboard/tasks` 能从日志中返回统计结果。
-8. 所有服务 `/health` 返回 `status = ok`。
-9. 错误输入返回统一错误响应。
+```powershell
+python api.py
+```
 
-## 后续扩展
+默认服务地址：
 
-论文中的 DAG、优先级/紧迫性排序和 PER-DDPG 调度应放在 `scheduler/` 下作为规则调度器之后的增强实现。扩展时仍然保持 `docs/api.md` 的外部接口不变，只替换 `/scheduler/decide` 内部的决策核心。
+```text
+http://127.0.0.1:8003
+```
 
+### `rule_scheduler.py`
+
+负责核心调度决策。
+
+主要类：
+
+```python
+PreDDPGScheduler
+```
+
+主要方法：
+
+```python
+decide(request)
+```
+
+该方法接收接口文档规定的输入字段，然后返回调度结果。
+
+### `__init__.py`
+
+用于把 `scheduler` 目录声明为 Python 包，并导出常用对象：
+
+```python
+PreDDPGScheduler
+ScheduleDecision
+decide_schedule
+```
+
+其他模块可以这样导入：
+
+```python
+from scheduler import decide_schedule
+```
+
+## 4. 调度接口
+
+### 请求地址
+
+```text
+POST http://127.0.0.1:8003/scheduler/decide
+```
+
+### 请求体示例
+
+```json
+{
+  "task": {
+    "task_id": "task_0001",
+    "source_node": "edge_1",
+    "deadline_ms": 200,
+    "priority": 0.8,
+    "data_size_kb": 128
+  },
+  "edge_result": {
+    "label": "abnormal",
+    "confidence": 0.72,
+    "edge_latency_ms": 38,
+    "need_cloud": true
+  },
+  "network_state": {
+    "latency_ms": 30,
+    "bandwidth_mbps": 20,
+    "packet_loss": 0.01,
+    "cloud_available": true
+  },
+  "node_state": {
+    "edge_cpu_usage": 0.55,
+    "edge_memory_usage": 0.62,
+    "cloud_queue_length": 3,
+    "fog_available": false
+  }
+}
+```
+
+### 响应体示例
+
+```json
+{
+  "task_id": "task_0001",
+  "route": "cloud",
+  "target_node": "cloud_1",
+  "reason": "edge confidence 0.72 is below 0.80",
+  "estimated_total_latency_ms": 187.8,
+  "upload_required": true,
+  "scheduler": "PER-DDPG-rule-minimal",
+  "policy_score": {
+    "edge": 0.4861,
+    "cloud": 0.5139
+  }
+}
+```
+
+## 5. 当前调度规则
+
+当前规则调度器的主要判断逻辑如下：
+
+```text
+cloud_available = false → fallback_edge
+packet_loss 太高 → fallback_edge
+bandwidth 太低 → fallback_edge
+confidence < 0.8 → cloud
+need_cloud = true → cloud
+规则分数支持 cloud 且 cloud 预计更快 → cloud
+边缘预计时延超过 deadline 且 cloud 更快 → cloud
+其他情况 → edge
+```
+
+## 6. 关键字段含义
+
+| 字段 | 含义 |
+|---|---|
+| `deadline_ms` | 任务最大允许完成时间，单位毫秒 |
+| `priority` | 任务优先级，范围通常为 0 到 1 |
+| `data_size_kb` | 任务数据大小，单位 KB |
+| `confidence` | 边缘模型置信度 |
+| `edge_latency_ms` | 边缘模型推理耗时，来自边缘模型服务 |
+| `need_cloud` | 边缘模型是否建议上云 |
+| `latency_ms` | 当前网络延迟 |
+| `bandwidth_mbps` | 当前网络带宽 |
+| `packet_loss` | 当前网络丢包率 |
+| `cloud_available` | 云端是否可达 |
+| `edge_cpu_usage` | 边缘节点 CPU 占用率 |
+| `edge_memory_usage` | 边缘节点内存占用率 |
+| `cloud_queue_length` | 云端当前排队任务数量 |
+
+## 7. 运行方式
+
+启动服务：
+
+```powershell
+python api.py
+```
+
+健康检查：
+
+```text
+GET http://127.0.0.1:8003/health
+```
+
+调度决策：
+
+```text
+POST http://127.0.0.1:8003/scheduler/decide
+```
+
+## 8. 后续扩展方向
+
+当前版本用于先跑通接口和主流程。后续可以逐步扩展为：
+
+1. 增加更精细的时延估算模型。
+2. 接入真实云端队列和边缘资源监控。
+3. 加入完整 PER-DDPG 训练环境。
+4. 用训练好的 Actor 网络替换当前规则分数。
+5. 根据项目需要重新加入雾节点调度。
