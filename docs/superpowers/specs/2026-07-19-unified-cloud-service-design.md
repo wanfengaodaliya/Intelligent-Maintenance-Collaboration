@@ -1,55 +1,55 @@
-# Unified Cloud Service Design
+# 统一云端服务设计方案
 
-## Goal
+## 目标
 
-Maintain one `cloud_service` codebase that runs without a GPU in local development and uses the real Qwen model on AutoDL. The scheduler keeps one request contract and changes only the cloud-service URL between environments.
+维护一套统一的 `cloud_service` 代码：本地开发时无需 GPU，使用模拟后端；部署到 AutoDL 后使用真实的 Qwen 模型。调度器始终使用同一种请求格式，仅根据运行环境切换云端服务地址。
 
-## Scope
+## 实施范围
 
-This change upgrades the existing `cloud_edge_project/cloud_service` implementation. It does not create a second independent server application, change the scheduler's routing policy, modify the edge model, upload model weights, or add model fine-tuning.
+本次修改升级现有的 `cloud_edge_project/cloud_service`，不另外创建第二套独立的服务器应用，不修改调度器的路由策略，不修改边缘模型，不上传模型权重，也不包含模型微调。
 
-## Architecture
+## 总体架构
 
-The FastAPI application continues to expose `POST /cloud/infer` and `GET /health`. A service layer selects exactly one inference backend from the `CLOUD_BACKEND` environment variable:
+FastAPI 应用继续提供 `POST /cloud/infer` 和 `GET /health`。服务层读取环境变量 `CLOUD_BACKEND`，并且只选择一个推理后端：
 
-- `mock`, the default, produces deterministic local results without vLLM or a GPU.
-- `vllm` sends an OpenAI-compatible chat-completions request to the vLLM service and converts its JSON response into the existing project `CloudResult` contract.
+- `mock`：默认值，在没有 vLLM 和 GPU 的本地环境中生成确定性的模拟结果。
+- `vllm`：调用 vLLM 提供的 OpenAI 兼容聊天接口，将模型返回的 JSON 转换为项目现有的 `CloudResult` 格式。
 
-The same source tree is developed locally, committed to GitHub, and pulled onto AutoDL. Runtime configuration, not different source code, selects the backend.
+本地负责开发代码并提交到 GitHub，AutoDL 从 GitHub 拉取同一套代码。后端选择由运行配置决定，而不是维护不同源代码。
 
 ```text
-Local scheduler -> local /cloud/infer -> mock backend
+本地调度器 -> 本地 /cloud/infer -> mock 后端
 
-Team scheduler -> AutoDL /cloud/infer -> vLLM backend
+团队调度器 -> AutoDL /cloud/infer -> vLLM 后端
                                       -> 127.0.0.1:6006
                                       -> Qwen3-14B-AWQ
 ```
 
-## Files and Responsibilities
+## 文件及职责
 
 ```text
 cloud_edge_project/
 ├── cloud_service/
-│   ├── app.py              FastAPI routes and HTTP error mapping
-│   ├── model.py            Stable inference facade used by app.py
-│   ├── service.py          Backend selection and CloudResult assembly
-│   ├── mock_backend.py     Deterministic local inference
-│   ├── vllm_backend.py     HTTP client and vLLM response parsing
-│   └── prompt.py           Cloud-review system prompt and input construction
+│   ├── app.py              FastAPI 路由和 HTTP 错误转换
+│   ├── model.py            保持现有调用方式稳定的推理入口
+│   ├── service.py          后端选择和 CloudResult 组装
+│   ├── mock_backend.py     本地确定性模拟推理
+│   ├── vllm_backend.py     vLLM HTTP 客户端及响应解析
+│   └── prompt.py           云端复核系统提示词和输入构造
 ├── scripts/
-│   ├── start_vllm.sh       AutoDL vLLM and Qwen startup
-│   └── start_cloud_service.sh  AutoDL FastAPI startup with vLLM selected
+│   ├── start_vllm.sh       在 AutoDL 启动 vLLM 和 Qwen
+│   └── start_cloud_service.sh  在 AutoDL 选择 vLLM 并启动 FastAPI
 ├── configs/
-│   └── local.yaml          Existing local service defaults
+│   └── local.yaml          现有的本地服务默认配置
 └── tests/
     └── test_cloud_service.py
 ```
 
-`model.py` remains as a compatibility facade so imports from the existing `app.py` and other project modules do not break. Backend-specific behavior moves into focused modules.
+保留 `model.py` 作为兼容入口，确保现有 `app.py` 和项目其他模块的导入方式不会失效。不同后端的具体实现移动到职责单一的独立模块中。
 
-## Public Interface
+## 对外接口
 
-The request remains the existing `CloudRequest` shape from `docs/api.md`:
+请求继续使用 `docs/api.md` 中已有的 `CloudRequest` 格式：
 
 ```json
 {
@@ -80,9 +80,9 @@ The request remains the existing `CloudRequest` shape from `docs/api.md`:
 }
 ```
 
-Formal validation continues to use `common.schemas.validate_cloud_request`; production requests contain 800 numeric vibration samples as required by the existing contract.
+上例中的 `vibration` 空数组仅用于简化展示数据结构，不是合法的正式请求。正式请求仍必须按照现有接口约定提供 800 个数值采样点，并由 `common.schemas.validate_cloud_request` 完整校验。
 
-Both backends return the existing `CloudResult` shape:
+两个后端都返回项目现有的 `CloudResult` 格式：
 
 ```json
 {
@@ -96,95 +96,95 @@ Both backends return the existing `CloudResult` shape:
   "cloud_latency_ms": 852.4,
   "decision": {
     "action": "send_alert",
-    "description": "The cloud review confirms an abnormal bearing state."
+    "description": "云端复核确认轴承处于异常状态。"
   }
 }
 ```
 
-Allowed model-produced values are restricted to the contract:
+模型生成的字段值必须限制在现有接口允许的范围内：
 
-- `label`: `normal` or `abnormal`
-- `risk_level`: `low`, `medium`, or `high`
-- `decision.action`: `none`, `record_only`, `send_alert`, or `stop_machine_check`
-- `confidence`: numeric value from 0 through 1
+- `label`：`normal` 或 `abnormal`
+- `risk_level`：`low`、`medium` 或 `high`
+- `decision.action`：`none`、`record_only`、`send_alert` 或 `stop_machine_check`
+- `confidence`：0 到 1 之间的数值
 
-## Prompt and Model Input
+## 提示词和模型输入
 
-The system prompt defines the model as the cloud reviewer in an edge-cloud intelligent maintenance system. It requires a single JSON object with `label`, `confidence`, `risk_level`, `action`, and `description`, forbids invented measurements, and instructs the model to use conservative decisions when information is insufficient.
+系统提示词将模型定义为边缘—云协同智能维护系统中的云端复核模型，要求只返回一个 JSON 对象，其中必须包含 `label`、`confidence`、`risk_level`、`action` 和 `description`。提示词禁止模型编造测量数据，并要求在信息不足时采用保守判断。
 
-The user message is serialized with `json.dumps(..., ensure_ascii=False)`. It includes packet identity, scalar sensor measurements, edge-model output, and compact vibration statistics derived from the 800 samples. The raw 800-value waveform is not embedded in the language-model prompt because it consumes context without giving a text model a reliable signal-processing representation.
+用户消息通过 `json.dumps(..., ensure_ascii=False)` 序列化。输入包含数据包标识、标量传感器数据、边缘模型结果，以及从 800 个振动采样点计算出的紧凑统计特征。不会把原始的 800 个振动数值直接塞入语言模型提示词，因为这会大量占用上下文，而且纯文本语言模型无法可靠地直接完成时序信号处理。
 
-The vibration summary contains count, minimum, maximum, mean, root-mean-square value, and peak absolute value. The original request still undergoes full contract validation before the summary is produced.
+振动统计摘要包括采样数量、最小值、最大值、平均值、均方根值和绝对峰值。在生成统计摘要之前，原始请求仍会执行完整的接口校验。
 
-## Configuration
+## 配置方式
 
-Runtime settings use environment variables with safe local defaults:
+运行配置使用环境变量，并提供适合本地开发的安全默认值：
 
-| Variable | Default | Meaning |
+| 环境变量 | 默认值 | 作用 |
 |---|---|---|
-| `CLOUD_BACKEND` | `mock` | Selected backend: `mock` or `vllm` |
-| `VLLM_URL` | `http://127.0.0.1:6006/v1/chat/completions` | Internal vLLM endpoint |
-| `VLLM_MODEL_NAME` | `qwen-cloud` | Name configured by `--served-model-name` |
-| `VLLM_API_KEY` | empty | Optional bearer token; never committed |
-| `VLLM_TIMEOUT_SECONDS` | `120` | Request timeout in seconds |
+| `CLOUD_BACKEND` | `mock` | 选择 `mock` 或 `vllm` 后端 |
+| `VLLM_URL` | `http://127.0.0.1:6006/v1/chat/completions` | vLLM 内部接口地址 |
+| `VLLM_MODEL_NAME` | `qwen-cloud` | 与 `--served-model-name` 一致的模型名 |
+| `VLLM_API_KEY` | 空 | 可选鉴权密钥，禁止提交到仓库 |
+| `VLLM_TIMEOUT_SECONDS` | `120` | vLLM 请求超时时间，单位为秒 |
 
-An unsupported `CLOUD_BACKEND` value fails clearly instead of silently falling back to mock.
+如果 `CLOUD_BACKEND` 使用不支持的值，服务必须明确报错，不能悄悄回退到 mock。
 
-The scheduler uses a separate environment variable, `CLOUD_SERVICE_URL`, to select the service instance:
+调度器使用另一个环境变量 `CLOUD_SERVICE_URL` 选择调用哪个云端服务实例：
 
-- Local development: `http://127.0.0.1:8004`
-- Real integration: the AutoDL public mapping for port 6008
+- 本地开发：`http://127.0.0.1:8004`
+- 真实联调：AutoDL 为 6008 端口提供的公网映射地址
 
-The scheduler does not inspect GPU availability and does not choose the inference backend.
+调度器不检测 GPU，也不负责选择推理后端。
 
-## Startup and Deployment
+## 启动和部署
 
-`start_vllm.sh` activates the `cloud_llm` conda environment and starts Qwen3-14B-AWQ through vLLM on port 6006.
+`start_vllm.sh` 激活 `cloud_llm` Conda 环境，通过 vLLM 启动 Qwen3-14B-AWQ，并监听 6006 端口。
 
-`start_cloud_service.sh` activates the same environment, exports `CLOUD_BACKEND=vllm`, enters the checked-out project directory, and starts the FastAPI service on port 6008. Other vLLM settings rely on the code defaults unless the operator overrides them explicitly.
+`start_cloud_service.sh` 激活同一环境，设置 `CLOUD_BACKEND=vllm`，进入从 GitHub 拉取的项目目录，然后在 6008 端口启动 FastAPI 服务。其他 vLLM 配置使用代码中的默认值，除非运维人员明确覆盖。
 
-Startup order on AutoDL is:
+AutoDL 启动顺序：
 
-1. Run `start_vllm.sh` and wait for the vLLM health endpoint to respond.
-2. Run `start_cloud_service.sh`.
-3. Test `GET /health` and `POST /cloud/infer` through port 6008.
+1. 执行 `start_vllm.sh`，等待 vLLM 健康接口正常响应。
+2. 执行 `start_cloud_service.sh`。
+3. 通过 6008 端口测试 `GET /health` 和 `POST /cloud/infer`。
 
-Model weights remain at `/root/autodl-tmp/models/Qwen3-14B-AWQ` and are never committed. AutoDL pulls the application source from GitHub instead of maintaining a separate handwritten copy.
+模型权重继续放在 `/root/autodl-tmp/models/Qwen3-14B-AWQ`，禁止提交到 GitHub。AutoDL 从 GitHub 拉取应用源代码，不再单独手工维护另一份云服务代码。
 
-## Error Handling
+## 错误处理
 
-Existing request-contract errors remain HTTP 400 with the shared error response. Additional failures map as follows:
+现有请求字段错误继续返回 HTTP 400，并使用项目统一错误格式。新增错误的处理方式如下：
 
-- Unsupported backend configuration: HTTP 500, `MODEL_INFER_FAILED`
-- vLLM connection failure or timeout: HTTP 503, `CLOUD_UNAVAILABLE`
-- Non-success vLLM HTTP response: HTTP 503, `CLOUD_UNAVAILABLE`
-- Empty, malformed, fenced, or contract-invalid model JSON: HTTP 502, `MODEL_INFER_FAILED`
+- 后端配置值不受支持：HTTP 500，错误码 `MODEL_INFER_FAILED`
+- vLLM 连接失败或超时：HTTP 503，错误码 `CLOUD_UNAVAILABLE`
+- vLLM 返回非成功 HTTP 状态：HTTP 503，错误码 `CLOUD_UNAVAILABLE`
+- 模型返回空内容、非法 JSON、Markdown 代码围栏或不符合字段约定的 JSON：HTTP 502，错误码 `MODEL_INFER_FAILED`
 
-Errors preserve `packet_id` whenever it can be extracted. Secrets and full model responses are not included in client-facing error messages.
+如果能够从请求中解析出 `packet_id`，错误响应必须保留它。返回给客户端的错误消息不得包含密钥或完整模型响应。
 
-`GET /health` reports the selected backend. In mock mode it reports ready immediately. In vLLM mode it checks the configured vLLM models endpoint with a short timeout and reports unavailable when the model service cannot be reached.
+`GET /health` 返回当前选择的后端。mock 模式直接报告可用；vLLM 模式使用较短超时时间检查配置的 vLLM 模型接口，当模型服务无法连接时报告不可用。
 
-## Testing
+## 测试方案
 
-Tests run locally without a GPU. They cover:
+所有自动化测试都能在没有 GPU 的本地环境运行，覆盖：
 
-1. Default backend selection is `mock`.
-2. Mock inference preserves packet and device IDs and produces a valid `CloudResult`.
-3. `vllm` selection sends the expected model name, system prompt, compact sensor data, and timeout.
-4. Valid model JSON is converted into the existing `CloudResult` structure.
-5. Markdown-fenced JSON is rejected rather than accepted ambiguously.
-6. Invalid labels, risk levels, confidence values, actions, empty responses, timeouts, and connection errors map to the defined errors.
-7. An unsupported backend value fails without invoking mock.
-8. FastAPI health and inference routes expose the expected status codes.
+1. 未配置环境变量时默认选择 `mock`。
+2. mock 推理保留数据包和设备编号，并产生合法的 `CloudResult`。
+3. 选择 `vllm` 时，请求包含正确的模型名、系统提示词、紧凑传感器数据和超时时间。
+4. 合法的模型 JSON 能转换为现有 `CloudResult`。
+5. 拒绝 Markdown 代码围栏包裹的 JSON，避免模糊解析。
+6. 非法标签、风险等级、置信度、处理动作、空响应、超时和连接错误能转换为规定的错误。
+7. 不支持的后端配置必须失败，且不能调用 mock。
+8. FastAPI 健康检查和推理路由返回正确的 HTTP 状态码。
 
-The existing demo remains runnable in default mock mode. No test requires AutoDL, vLLM, model weights, or network access.
+项目现有演示在默认 mock 模式下仍能运行。测试不依赖 AutoDL、vLLM、模型权重或外部网络。
 
-## Success Criteria
+## 验收标准
 
-- One committed `cloud_service` codebase runs locally and on AutoDL.
-- Local startup with no backend variable uses mock and requires no GPU.
-- AutoDL startup sets `CLOUD_BACKEND=vllm` and calls the local vLLM process.
-- Both modes accept the same `CloudRequest` and return the same `CloudResult` contract.
-- The scheduler changes only `CLOUD_SERVICE_URL` between local and real integration.
-- Automated tests pass without GPU or network access.
-- Model weights, credentials, `local_word`, and runtime logs remain outside Git tracking.
+- 仓库中只维护一套 `cloud_service`，能够在本地和 AutoDL 运行。
+- 本地未配置后端时默认使用 mock，不需要 GPU。
+- AutoDL 启动脚本设置 `CLOUD_BACKEND=vllm`，调用同一服务器上的 vLLM。
+- 两种模式接收相同的 `CloudRequest`，返回相同的 `CloudResult`。
+- 调度器在本地和真实联调之间只切换 `CLOUD_SERVICE_URL`。
+- 自动化测试在没有 GPU 和网络的环境中全部通过。
+- 模型权重、访问密钥、`local_word` 和运行日志均不纳入 Git 管理。
