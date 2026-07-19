@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -29,7 +31,12 @@ def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
         "service": "cloud_service",
         "node_id": CLOUD_NODE_ID,
         "status": status,
-        "port": config["services"]["cloud"]["port"],
+        "port": int(
+            os.getenv(
+                "CLOUD_SERVICE_PORT",
+                str(config["services"]["cloud"]["port"]),
+            )
+        ),
         "model_backend": settings.backend,
     }
 

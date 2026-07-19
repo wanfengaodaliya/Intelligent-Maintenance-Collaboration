@@ -171,6 +171,17 @@ class VllmBackendTests(unittest.TestCase):
         self.assertEqual(captured.exception.code, "MODEL_INFER_FAILED")
         self.assertEqual(captured.exception.status_code, 502)
 
+    def test_empty_model_response_is_rejected(self) -> None:
+        with patch(
+            "cloud_service.vllm_backend.requests.post",
+            return_value=vllm_response(""),
+        ):
+            with self.assertRaises(CloudServiceError) as captured:
+                infer_cloud(make_valid_cloud_request(), settings=vllm_settings())
+
+        self.assertEqual(captured.exception.code, "MODEL_INFER_FAILED")
+        self.assertEqual(captured.exception.status_code, 502)
+
     def test_invalid_model_fields_are_rejected(self) -> None:
         invalid_cases = [
             {

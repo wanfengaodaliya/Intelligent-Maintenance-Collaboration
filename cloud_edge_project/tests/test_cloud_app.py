@@ -27,6 +27,12 @@ class CloudAppTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["model_backend"], "mock")
 
+    def test_health_uses_runtime_service_port(self) -> None:
+        with patch.dict(os.environ, {"CLOUD_SERVICE_PORT": "6008"}, clear=True):
+            result = cloud_app.health()
+
+        self.assertEqual(result["port"], 6008)
+
     def test_vllm_health_reports_unavailable(self) -> None:
         with (
             patch.dict(os.environ, {"CLOUD_BACKEND": "vllm"}, clear=True),
