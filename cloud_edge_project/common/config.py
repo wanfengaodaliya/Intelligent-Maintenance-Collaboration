@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,10 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def service_url(service: str, config: dict[str, Any] | None = None) -> str:
+    if service == "cloud":
+        override = os.getenv("CLOUD_SERVICE_URL", "").strip()
+        if override:
+            return override.rstrip("/")
     loaded = config or load_config()
     service_config = loaded["services"][service]
     return f"http://{service_config['host']}:{service_config['port']}"
