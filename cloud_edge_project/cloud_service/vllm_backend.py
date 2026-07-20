@@ -90,6 +90,8 @@ def infer_vllm(
                 "messages": build_cloud_messages(validated_request),
                 "temperature": 0.1,
                 "max_tokens": 512,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "response_format": {"type": "json_object"},
             },
             timeout=settings.vllm_timeout_seconds,
         )

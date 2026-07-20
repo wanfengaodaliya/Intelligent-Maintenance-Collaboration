@@ -134,7 +134,7 @@ def run_http(kind: str, config: dict[str, Any]) -> tuple[dict[str, Any], dict[st
                     "risk_level": edge_result["risk_level"],
                 },
             },
-            timeout=5,
+            timeout=180,
         )
         cloud_response.raise_for_status()
         cloud_result = cloud_response.json()
