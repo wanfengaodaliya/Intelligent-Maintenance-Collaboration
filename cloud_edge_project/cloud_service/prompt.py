@@ -41,26 +41,10 @@ def summarize_vibration(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def build_cloud_messages(request: dict[str, Any]) -> list[dict[str, str]]:
-    """Build OpenAI-compatible messages without embedding the raw waveform."""
+def build_cloud_messages(perception_result: dict[str, Any]) -> list[dict[str, str]]:
+    """Build messages from structured perception data, not raw waveforms."""
 
-    packet = request["packet"]
-    data = packet["data"]
-    user_payload = {
-        "packet": {
-            "packet_id": packet["packet_id"],
-            "device_id": packet["device_id"],
-            "sensor_id": packet["sensor_id"],
-        },
-        "sensor_data": {
-            "current": data["current"],
-            "temperature": data["temperature"],
-            "speed": data["speed"],
-            "load": data["load"],
-        },
-        "vibration_summary": summarize_vibration(data["vibration"]),
-        "edge_result": request["edge_result"],
-    }
+    user_payload = {"perception_result": perception_result}
     return [
         {"role": "system", "content": CLOUD_SYSTEM_PROMPT},
         {

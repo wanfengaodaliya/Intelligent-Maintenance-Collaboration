@@ -7,23 +7,29 @@ from typing import Any
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.errors import CloudServiceError
 from cloud_service.mock_backend import infer_mock
-from common.schemas import validate_cloud_request
+from cloud_service.perception.pipeline import run_perception
 
 
 def infer_cloud(
     request: dict[str, Any],
     settings: CloudSettings | None = None,
 ) -> dict[str, Any]:
-    validated = validate_cloud_request(request)
+    perception_result = run_perception(request)
     selected = settings or load_cloud_settings()
     if selected.backend == "mock":
-        return infer_mock(validated)
-    if selected.backend == "vllm":
+        review_result = infer_mock(perception_result)
+    elif selected.backend == "vllm":
         from cloud_service.vllm_backend import infer_vllm
 
-        return infer_vllm(validated, selected)
-    raise CloudServiceError(
-        "MODEL_INFER_FAILED",
-        f"unsupported cloud backend: {selected.backend}",
-        500,
-    )
+        review_result = infer_vllm(perception_result, selected)
+    else:
+        raise CloudServiceError(
+            "MODEL_INFER_FAILED",
+            f"unsupported cloud backend: {selected.backend}",
+            500,
+        )
+    return {
+        "success": True,
+        "perception_result": perception_result,
+        "review_result": review_result,
+    }

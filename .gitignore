@@ -1,1 +1,5 @@
 docs/superpowers/
+.worktrees/
+cloud_edge_project/tests/
+cloud_edge_project/docs/
+local_word/

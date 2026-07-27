@@ -211,6 +211,14 @@ def validate_cloud_request(payload: dict[str, Any]) -> dict[str, Any]:
     return request
 
 
+def validate_cloud_review_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the cloud perception review request without accepting legacy fields."""
+
+    from cloud_service.perception.validator import validate_cloud_review_request as validate_request
+
+    return validate_request(payload)
+
+
 def validate_task_trace(payload: dict[str, Any]) -> dict[str, Any]:
     trace = require_mapping(payload, "TaskTrace")
     packet_id = require_non_empty_string(require_field(trace, "packet_id"), "packet_id")

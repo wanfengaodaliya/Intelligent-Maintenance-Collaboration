@@ -75,7 +75,7 @@ def _model_result(content: Any) -> dict[str, Any]:
 
 
 def infer_vllm(
-    validated_request: dict[str, Any],
+    perception_result: dict[str, Any],
     settings: CloudSettings,
 ) -> dict[str, Any]:
     """Call vLLM and convert its answer to the project CloudResult."""
@@ -87,7 +87,7 @@ def infer_vllm(
             headers=_headers(settings),
             json={
                 "model": settings.vllm_model_name,
-                "messages": build_cloud_messages(validated_request),
+                "messages": build_cloud_messages(perception_result),
                 "temperature": 0.1,
                 "max_tokens": 512,
                 "chat_template_kwargs": {"enable_thinking": False},
@@ -120,11 +120,10 @@ def infer_vllm(
             502,
         ) from exc
 
-    packet = validated_request["packet"]
     elapsed_ms = (perf_counter() - start) * 1000
     return {
-        "packet_id": packet["packet_id"],
-        "device_id": packet["device_id"],
+        "packet_id": perception_result["packet_id"],
+        "device_id": perception_result["device_id"],
         "cloud_node_id": CLOUD_NODE_ID,
         "model_name": settings.vllm_model_name,
         "label": model_result["label"],

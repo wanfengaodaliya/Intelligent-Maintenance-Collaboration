@@ -77,7 +77,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except CloudServiceError as error:
-        packet = payload.get("packet", {}) if isinstance(payload.get("packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
         contract_error = ContractError(
             error.code,
             error.message,
@@ -88,6 +88,6 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
             content=error_response(contract_error),
         )
     except Exception as exc:
-        packet = payload.get("packet", {}) if isinstance(payload.get("packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
