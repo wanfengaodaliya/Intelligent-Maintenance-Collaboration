@@ -8,6 +8,7 @@ from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.errors import CloudServiceError
 from cloud_service.mock_backend import infer_mock
 from cloud_service.perception.pipeline import run_perception
+from cloud_service.storage.persistence import CloudReviewPersistence
 
 
 def infer_cloud(
@@ -16,6 +17,7 @@ def infer_cloud(
 ) -> dict[str, Any]:
     perception_result = run_perception(request)
     selected = settings or load_cloud_settings()
+    review_id = CloudReviewPersistence(selected.database_path).persist(request, perception_result)
     if selected.backend == "mock":
         review_result = infer_mock(perception_result)
     elif selected.backend == "vllm":
@@ -32,4 +34,5 @@ def infer_cloud(
         "success": True,
         "perception_result": perception_result,
         "review_result": review_result,
+        "review_id": review_id,
     }
