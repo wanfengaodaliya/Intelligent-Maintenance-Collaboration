@@ -24,13 +24,13 @@ class CloudReviewPersistence:
     def persist(self, request: dict[str, Any], perception_result: dict[str, Any]) -> str:
         edge = request["edge_perception_result"]
         raw = request["cloud_raw_packet"]
-        self.edge_features.ingest(_edge_summary(edge, perception_result))
+        self.edge_features.ingest(_edge_summary(edge))
         validation_status = "valid" if perception_result["data_quality"]["valid"] else "invalid"
         if validation_status == "valid" and perception_result["data_quality"]["warning_flags"]:
             validation_status = "warning"
         self.raw_packets.store({**raw, "validation_status": validation_status})
         review_id = self.reviews.upsert_preliminary(
-            device_id=raw["device_id"], anchor_packet_id=raw["packet_id"], task_id=raw["task_id"],
+            sender_id=raw["sender_id"], anchor_packet_id=raw["packet_id"], task_id=raw["task_id"],
             feature_extractor_version=perception_result["feature_extractor_version"],
             schema_version=perception_result["schema_version"],
             data_quality_valid=perception_result["data_quality"]["valid"],
@@ -50,34 +50,30 @@ class CloudReviewPersistence:
         return review_id
 
 
-def _edge_summary(edge: dict[str, Any], perception_result: dict[str, Any]) -> dict[str, Any]:
-    """Flatten the documented edge result, falling back only for legacy-minimal senders."""
+def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
+    """Flatten only edge-provided features; absent edge fields remain null."""
 
-    cloud = perception_result["cloud_recomputed_features"]
-    edge_features = edge.get("features", {})
-    vibration = edge_features.get("vibration", cloud["vibration"])
-    current_1 = edge_features.get("phase_current_1", cloud["phase_current_1"])
-    current_2 = edge_features.get("phase_current_2", cloud["phase_current_2"])
-    relationship = edge_features.get("current_relationship", cloud["current_relationship"])
+    edge_features = edge["features"]
+    vibration, current_1 = edge_features["vibration"], edge_features["phase_current_1"]
+    current_2, relationship = edge_features["phase_current_2"], edge_features["current_relationship"]
     quality = edge.get("perception_quality", {})
     return {
-        "device_id": edge["device_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],
-        "sequence_number": edge["sequence_number"], "timestamp_ns": edge["timestamp_ns"],
+        "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],
+        "sequence_number": edge["sequence_number"], "end_generate_timestamp_ns": edge["end_generate_timestamp_ns"],
+        "feature_generated_at_ns": edge["feature_generated_at_ns"],
         "edge_feature_extractor_version": edge.get("edge_feature_extractor_version", "edge_unversioned"),
         "edge_model_version": edge.get("edge_model_version"),
         "perception_status": quality.get("status", "good"), "perception_flags": quality.get("flags", []),
-        "operating_context": edge["operating_context"],
+        "operating_context": edge_features["operating_context"],
         "features": {
             "vibration_rms": vibration["rms"], "vibration_absolute_peak": vibration["absolute_peak"],
             "vibration_kurtosis": vibration["kurtosis"], "vibration_dominant_frequency_hz": vibration["dominant_frequency_hz"],
             "vibration_band_power_ratio_500_2000": vibration["band_power_ratio_500_2000"],
             "vibration_spectral_entropy": vibration["spectral_entropy"],
             "current_1_rms_a": current_1["rms_a"], "current_1_absolute_peak_a": current_1["absolute_peak_a"],
-            "current_1_fundamental_frequency_hz": current_1["fundamental_frequency_hz"],
-            "current_1_thd": current_1.get("total_harmonic_distortion", 0.0),
+            "current_1_fundamental_frequency_hz": None, "current_1_thd": None,
             "current_2_rms_a": current_2["rms_a"], "current_2_absolute_peak_a": current_2["absolute_peak_a"],
-            "current_2_fundamental_frequency_hz": current_2["fundamental_frequency_hz"],
-            "current_2_thd": current_2.get("total_harmonic_distortion", 0.0),
+            "current_2_fundamental_frequency_hz": None, "current_2_thd": None,
             "current_imbalance_ratio": relationship["current_imbalance_ratio"],
         },
     }

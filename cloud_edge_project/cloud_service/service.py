@@ -17,6 +17,8 @@ def infer_cloud(
 ) -> dict[str, Any]:
     perception_result = run_perception(request)
     selected = settings or load_cloud_settings()
+    if not perception_result["data_quality"]["valid"]:
+        return {"success": True, "perception_result": perception_result, "review_result": None, "review_id": None}
     review_id = CloudReviewPersistence(selected.database_path).persist(request, perception_result)
     if selected.backend == "mock":
         review_result = infer_mock(perception_result)

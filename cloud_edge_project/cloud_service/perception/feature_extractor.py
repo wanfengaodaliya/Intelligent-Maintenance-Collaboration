@@ -60,13 +60,9 @@ def _vibration_features(signal: dict[str, Any]) -> dict[str, float | None]:
 
 def _current_features(signal: dict[str, Any]) -> dict[str, float | None]:
     time_domain = signal["time_domain"]
-    frequencies, power = _power_spectrum(signal)
     return {
         "rms": _rms(time_domain),
         "peak": _peak(time_domain),
-        "fundamental_frequency_hz": _interpolated_peak_frequency(
-            frequencies, power, 40.0, 60.0
-        ),
     }
 
 

@@ -6,7 +6,11 @@ from math import cos, pi
 from typing import Any
 
 
-_SIGNAL_NAMES = ("vibration", "phase_current_1", "phase_current_2")
+_SIGNAL_NAMES = {
+    "vibration": "vibration",
+    "phase_current_1": "phase_current_1_A",
+    "phase_current_2": "phase_current_2_A",
+}
 
 
 def preprocess_packet(request: dict[str, Any]) -> dict[str, Any]:
@@ -18,8 +22,8 @@ def preprocess_packet(request: dict[str, Any]) -> dict[str, Any]:
 
     raw_packet = request["cloud_raw_packet"]
     prepared_signals: dict[str, dict[str, Any]] = {}
-    for name in _SIGNAL_NAMES:
-        signal = raw_packet["signals"][name]
+    for name, source_name in _SIGNAL_NAMES.items():
+        signal = raw_packet["data"][source_name]
         time_domain = [float(value) for value in signal["values"]]
         dc_offset = sum(time_domain) / len(time_domain)
         frequency_domain = [
@@ -37,7 +41,9 @@ def preprocess_packet(request: dict[str, Any]) -> dict[str, Any]:
     return {
         "edge_perception_result": request["edge_perception_result"],
         "cloud_raw_packet": {
-            key: value for key, value in raw_packet.items() if key != "signals"
+            **{key: value for key, value in raw_packet.items() if key != "data"},
+            "start_timestamp_ns": raw_packet["end_generate_timestamp_ns"] - 50_000_000,
+            "end_timestamp_ns": raw_packet["end_generate_timestamp_ns"],
         },
         "signals": prepared_signals,
     }

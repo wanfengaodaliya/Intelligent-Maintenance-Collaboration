@@ -30,7 +30,7 @@ def infer_mock(perception_result: dict[str, Any]) -> dict[str, Any]:
     elapsed_ms = max((perf_counter() - start) * 1000, 12.0)
     return {
         "packet_id": perception_result["packet_id"],
-        "device_id": perception_result["device_id"],
+        "sender_id": perception_result["sender_id"],
         "cloud_node_id": CLOUD_NODE_ID,
         "model_name": MODEL_NAME,
         "label": label,

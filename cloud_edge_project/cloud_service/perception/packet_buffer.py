@@ -1,4 +1,4 @@
-"""Bounded, per-device packet context and current-harmonic calculations."""
+"""Bounded, per-sender packet context and current-harmonic calculations."""
 
 from __future__ import annotations
 
@@ -9,31 +9,32 @@ from cloud_service.perception.feature_extractor import _fft, _interpolated_peak_
 from cloud_service.perception.trend_analyzer import summarize_trends
 
 
-_MAX_PACKETS_PER_DEVICE = 200
+_MAX_PACKETS_PER_SENDER = 200
 _MIN_THD_WINDOW_MS = 200.0
+_MIN_FUNDAMENTAL_WINDOW_MS = 1_000.0
 _NANOSECONDS_PER_MILLISECOND = 1_000_000
 
 
-class DevicePacketBuffer:
-    """Keep recent packets per device and expose only their continuous suffix.
+class SenderPacketBuffer:
+    """Keep recent packets per sender and expose only their continuous suffix.
 
-    ``add`` accepts a packet with ``device_id``, ``sequence_number``,
+    ``add`` accepts a packet with ``sender_id``, ``sequence_number``,
     ``preprocessed`` and ``single_packet_features``.  A top-level
     ``temperature`` is optional; otherwise it is read from the preprocessed
     edge operating context.
     """
 
     def __init__(self) -> None:
-        self._max_packets_per_device = _MAX_PACKETS_PER_DEVICE
-        self._packets_by_device: dict[str, list[dict[str, Any]]] = {}
+        self._max_packets_per_sender = _MAX_PACKETS_PER_SENDER
+        self._packets_by_sender: dict[str, list[dict[str, Any]]] = {}
         self._continuous_start: dict[str, int] = {}
 
     def add(self, packet: dict[str, Any]) -> dict[str, Any]:
         """Store one valid packet and return its continuous-context result."""
 
         normalized = _normalize_packet(packet)
-        device_id = normalized["device_id"]
-        packets = self._packets_by_device.setdefault(device_id, [])
+        sender_id = normalized["sender_id"]
+        packets = self._packets_by_sender.setdefault(sender_id, [])
 
         if packets:
             previous = packets[-1]
@@ -52,36 +53,36 @@ class DevicePacketBuffer:
                 )
             if sequence_number > previous_sequence + 1:
                 packets.append(normalized)
-                self._continuous_start[device_id] = len(packets) - 1
-                self._trim(device_id)
+                self._continuous_start[sender_id] = len(packets) - 1
+                self._trim(sender_id)
                 return self._result(
-                    "sequence_gap", self._current_window(device_id), aggregate=False
+                    "sequence_gap", self._current_window(sender_id), aggregate=False
                 )
             if timestamp_status == "timestamp_gap":
                 packets.append(normalized)
-                self._continuous_start[device_id] = len(packets) - 1
-                self._trim(device_id)
+                self._continuous_start[sender_id] = len(packets) - 1
+                self._trim(sender_id)
                 return self._result(
-                    "timestamp_gap", self._current_window(device_id), aggregate=False
+                    "timestamp_gap", self._current_window(sender_id), aggregate=False
                 )
 
         packets.append(normalized)
-        self._continuous_start.setdefault(device_id, len(packets) - 1)
-        self._trim(device_id)
-        window = self._current_window(device_id)
+        self._continuous_start.setdefault(sender_id, len(packets) - 1)
+        self._trim(sender_id)
+        window = self._current_window(sender_id)
         status = "continuous" if _window_duration_ms(window) >= _MIN_THD_WINDOW_MS else "insufficient_context"
         return self._result(status, window, aggregate=status == "continuous")
 
-    def _trim(self, device_id: str) -> None:
-        packets = self._packets_by_device[device_id]
-        excess = len(packets) - self._max_packets_per_device
+    def _trim(self, sender_id: str) -> None:
+        packets = self._packets_by_sender[sender_id]
+        excess = len(packets) - self._max_packets_per_sender
         if excess <= 0:
             return
         del packets[:excess]
-        self._continuous_start[device_id] = max(0, self._continuous_start[device_id] - excess)
+        self._continuous_start[sender_id] = max(0, self._continuous_start[sender_id] - excess)
 
-    def _current_window(self, device_id: str) -> list[dict[str, Any]]:
-        return self._packets_by_device[device_id][self._continuous_start[device_id] :]
+    def _current_window(self, sender_id: str) -> list[dict[str, Any]]:
+        return self._packets_by_sender[sender_id][self._continuous_start[sender_id] :]
 
     def _result(
         self, status: str, window: list[dict[str, Any]], *, aggregate: bool
@@ -92,7 +93,7 @@ class DevicePacketBuffer:
             "start_timestamp_ns": window[0]["start_timestamp_ns"],
             "end_timestamp_ns": window[-1]["end_timestamp_ns"],
             "aggregated_features": summarize_trends(window) if aggregate else None,
-            "thd": _calculate_thd(window) if aggregate else None,
+            "thd": _calculate_harmonics(window) if aggregate else None,
         }
 
 
@@ -100,10 +101,10 @@ def _normalize_packet(packet: dict[str, Any]) -> dict[str, Any]:
     preprocessed = packet["preprocessed"]
     features = packet["single_packet_features"]
     raw_packet = preprocessed["cloud_raw_packet"]
-    edge_context = preprocessed["edge_perception_result"]["operating_context"]
+    edge_context = preprocessed["edge_perception_result"]["features"]["operating_context"]
     temperature = packet.get("temperature", edge_context.get("bearing_module_temperature_c"))
     return {
-        "device_id": packet["device_id"],
+        "sender_id": packet["sender_id"],
         "sequence_number": packet["sequence_number"],
         "start_timestamp_ns": raw_packet["start_timestamp_ns"],
         "end_timestamp_ns": raw_packet["end_timestamp_ns"],
@@ -134,17 +135,17 @@ def _timestamp_continuity_status(
     return "continuous"
 
 
-def _calculate_thd(window: list[dict[str, Any]]) -> dict[str, float | None] | None:
+def _calculate_harmonics(window: list[dict[str, Any]]) -> dict[str, dict[str, float | None]] | None:
     if _window_duration_ms(window) < _MIN_THD_WINDOW_MS:
         return None
     result = {
-        "phase_current_1": _current_thd(window, "phase_current_1"),
-        "phase_current_2": _current_thd(window, "phase_current_2"),
+        "phase_current_1": _current_harmonics(window, "phase_current_1"),
+        "phase_current_2": _current_harmonics(window, "phase_current_2"),
     }
     return result if any(value is not None for value in result.values()) else None
 
 
-def _current_thd(window: list[dict[str, Any]], signal_name: str) -> float | None:
+def _current_harmonics(window: list[dict[str, Any]], signal_name: str) -> dict[str, float | None] | None:
     signals = [packet["signals"][signal_name] for packet in window]
     sample_rates = {float(signal["sample_rate_hz"]) for signal in signals}
     if len(sample_rates) != 1:
@@ -192,8 +193,13 @@ def _current_thd(window: list[dict[str, Any]], signal_name: str) -> float | None
         available_harmonic_count += 1
     if available_harmonic_count == 0:
         return None
-    result = sqrt(harmonic_power / fundamental_power)
-    return result if isfinite(result) else None
+    thd = sqrt(harmonic_power / fundamental_power)
+    if not isfinite(thd):
+        return None
+    result = {"total_harmonic_distortion": thd}
+    if _window_duration_ms(window) >= _MIN_FUNDAMENTAL_WINDOW_MS:
+        result["fundamental_frequency_hz"] = fundamental_frequency
+    return result
 
 
 def _hann_weight(index: int, size: int) -> float:

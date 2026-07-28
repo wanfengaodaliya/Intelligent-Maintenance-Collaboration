@@ -14,7 +14,7 @@ class EventRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
 
-    def create_pending(self, review_id: str, device_id: str, packet_id: str,
+    def create_pending(self, review_id: str, sender_id: str, packet_id: str,
                        diagnosis_model_version: str | None = None) -> str:
         """Create a diagnosis event only after the review has continuous context."""
         now = time.time_ns()
@@ -26,8 +26,8 @@ class EventRepository:
                 raise ValueError("diagnosis events require a complete review")
             event_id = str(uuid.uuid4())
             connection.execute(
-                "INSERT INTO diagnosis_events(event_id,review_id,device_id,packet_id,diagnosis_model_version,diagnosis_status,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,'pending',?,?)",
-                (event_id, review_id, device_id, packet_id, diagnosis_model_version, now, now),
+                "INSERT INTO diagnosis_events(event_id,review_id,sender_id,packet_id,diagnosis_model_version,diagnosis_status,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,'pending',?,?)",
+                (event_id, review_id, sender_id, packet_id, diagnosis_model_version, now, now),
             )
         return event_id
 

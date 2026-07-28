@@ -20,7 +20,7 @@ class CloudReviewRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
 
-    def upsert_preliminary(self, *, device_id: str, anchor_packet_id: str, task_id: str,
+    def upsert_preliminary(self, *, sender_id: str, anchor_packet_id: str, task_id: str,
                            feature_extractor_version: str, schema_version: str,
                            data_quality_valid: bool, data_quality: dict,
                            start_timestamp_ns: int | None = None,
@@ -29,15 +29,15 @@ class CloudReviewRepository:
         now = time.time_ns()
         with connect(self.database_path) as connection:
             existing = connection.execute(
-                "SELECT review_id FROM cloud_review WHERE device_id=? AND anchor_packet_id=? AND feature_extractor_version=?",
-                (device_id, anchor_packet_id, feature_extractor_version),
+                "SELECT review_id FROM cloud_review WHERE sender_id=? AND anchor_packet_id=? AND feature_extractor_version=?",
+                (sender_id, anchor_packet_id, feature_extractor_version),
             ).fetchone()
             if existing:
                 return existing["review_id"]
             review_id = str(uuid.uuid4())
             connection.execute(
-                "INSERT INTO cloud_review(review_id,device_id,anchor_packet_id,task_id,feature_extractor_version,schema_version,review_status,context_status,data_quality_valid,start_timestamp_ns,end_timestamp_ns,data_quality_json,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (review_id, device_id, anchor_packet_id, task_id, feature_extractor_version, schema_version,
+                "INSERT INTO cloud_review(review_id,sender_id,anchor_packet_id,task_id,feature_extractor_version,schema_version,review_status,context_status,data_quality_valid,start_timestamp_ns,end_timestamp_ns,data_quality_json,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (review_id, sender_id, anchor_packet_id, task_id, feature_extractor_version, schema_version,
                  "preliminary", "pending_context", int(data_quality_valid), start_timestamp_ns,
                  end_timestamp_ns, _json(data_quality), now, now),
             )
@@ -66,15 +66,15 @@ class CloudReviewRepository:
             if result.rowcount != 1:
                 raise KeyError(f"unknown review_id: {review_id}")
 
-    def add_context_packet(self, review_id: str, device_id: str, packet_id: str,
+    def add_context_packet(self, review_id: str, sender_id: str, packet_id: str,
                            relative_position: int, role: str) -> None:
         if role not in {"before", "anchor", "after"}:
             raise ValueError("role must be before, anchor, or after")
         with connect(self.database_path) as connection:
             connection.execute(
-                "INSERT INTO review_context_packets(review_id,device_id,packet_id,relative_position,role) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(review_id,device_id,packet_id) DO UPDATE SET relative_position=excluded.relative_position,role=excluded.role",
-                (review_id, device_id, packet_id, relative_position, role),
+                "INSERT INTO review_context_packets(review_id,sender_id,packet_id,relative_position,role) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(review_id,sender_id,packet_id) DO UPDATE SET relative_position=excluded.relative_position,role=excluded.role",
+                (review_id, sender_id, packet_id, relative_position, role),
             )
 
     def get(self, review_id: str) -> dict | None:

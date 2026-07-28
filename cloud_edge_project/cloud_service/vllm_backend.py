@@ -123,7 +123,7 @@ def infer_vllm(
     elapsed_ms = (perf_counter() - start) * 1000
     return {
         "packet_id": perception_result["packet_id"],
-        "device_id": perception_result["device_id"],
+        "sender_id": perception_result["sender_id"],
         "cloud_node_id": CLOUD_NODE_ID,
         "model_name": settings.vllm_model_name,
         "label": model_result["label"],
