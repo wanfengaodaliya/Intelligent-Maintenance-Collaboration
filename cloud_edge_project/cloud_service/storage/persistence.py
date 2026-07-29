@@ -51,29 +51,28 @@ class CloudReviewPersistence:
 
 
 def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
-    """Flatten only edge-provided features; absent edge fields remain null."""
+    """Adapt a cloud-review edge result to the documented summary shape."""
 
     edge_features = edge["features"]
     vibration, current_1 = edge_features["vibration"], edge_features["phase_current_1"]
     current_2, relationship = edge_features["phase_current_2"], edge_features["current_relationship"]
     quality = edge.get("perception_quality", {})
+    inference = edge.get(
+        "edge_inference",
+        {"edge_result": "warning", "confidence": 0.0, "edge_risk_level": "medium"},
+    )
     return {
         "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],
-        "sequence_number": edge["sequence_number"], "end_generate_timestamp_ns": edge["end_generate_timestamp_ns"],
-        "feature_generated_at_ns": edge["feature_generated_at_ns"],
-        "edge_feature_extractor_version": edge.get("edge_feature_extractor_version", "edge_unversioned"),
-        "edge_model_version": edge.get("edge_model_version"),
-        "perception_status": quality.get("status", "good"), "perception_flags": quality.get("flags", []),
-        "operating_context": edge_features["operating_context"],
+        "sequence_number": edge["sequence_number"], "edge_node_id": edge.get("edge_node_id", "cloud_review_edge"),
+        "end_timestamp_ns": edge["end_generate_timestamp_ns"], "summary_generated_at_ns": edge["feature_generated_at_ns"],
+        "edge_model_version": edge.get("edge_model_version", "cloud_review_legacy"),
+        "perception_quality": {"status": quality.get("status", "good"), "flags": quality.get("flags", [])},
         "features": {
-            "vibration_rms": vibration["rms"], "vibration_absolute_peak": vibration["absolute_peak"],
-            "vibration_kurtosis": vibration["kurtosis"], "vibration_dominant_frequency_hz": vibration["dominant_frequency_hz"],
-            "vibration_band_power_ratio_500_2000": vibration["band_power_ratio_500_2000"],
-            "vibration_spectral_entropy": vibration["spectral_entropy"],
-            "current_1_rms_a": current_1["rms_a"], "current_1_absolute_peak_a": current_1["absolute_peak_a"],
-            "current_1_fundamental_frequency_hz": None, "current_1_thd": None,
-            "current_2_rms_a": current_2["rms_a"], "current_2_absolute_peak_a": current_2["absolute_peak_a"],
-            "current_2_fundamental_frequency_hz": None, "current_2_thd": None,
-            "current_imbalance_ratio": relationship["current_imbalance_ratio"],
+            "vibration": {"source_sample_rate_hz": vibration.get("source_sample_rate_hz", 64_000), "analysis_sample_rate_hz": vibration.get("analysis_sample_rate_hz", 16_000), "unit": vibration.get("unit", "mm/s"), **vibration},
+            "phase_current_1": {"source_sample_rate_hz": current_1.get("source_sample_rate_hz", 64_000), "analysis_sample_rate_hz": current_1.get("analysis_sample_rate_hz", 16_000), "unit": current_1.get("unit", "A"), **current_1},
+            "phase_current_2": {"source_sample_rate_hz": current_2.get("source_sample_rate_hz", 64_000), "analysis_sample_rate_hz": current_2.get("analysis_sample_rate_hz", 16_000), "unit": current_2.get("unit", "A"), **current_2},
+            "current_relationship": relationship,
+            "operating_context": edge_features["operating_context"],
         },
+        "edge_inference": inference,
     }

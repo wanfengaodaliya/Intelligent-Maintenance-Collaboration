@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -11,26 +11,40 @@ CREATE TABLE IF NOT EXISTS senders (
 );
 CREATE TABLE IF NOT EXISTS edge_packet_summary (
     sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
-    end_generate_timestamp_ns INTEGER NOT NULL, feature_generated_at_ns INTEGER NOT NULL, received_at_ns INTEGER NOT NULL,
-    edge_feature_extractor_version TEXT NOT NULL, edge_model_version TEXT, perception_status TEXT NOT NULL CHECK (perception_status IN ('good', 'warning')),
-    perception_flags_json TEXT NOT NULL DEFAULT '[]', shaft_speed_rpm_mean REAL NOT NULL, load_torque_nm_mean REAL NOT NULL,
-    bearing_radial_load_n_mean REAL NOT NULL CHECK (bearing_radial_load_n_mean >= 0), bearing_module_temperature_c REAL NOT NULL,
+    edge_node_id TEXT NOT NULL, end_timestamp_ns INTEGER NOT NULL, summary_generated_at_ns INTEGER NOT NULL,
+    received_at_ns INTEGER NOT NULL, perception_status TEXT NOT NULL CHECK (perception_status IN ('good', 'warning')),
+    perception_flags_json TEXT NOT NULL DEFAULT '[]',
+    vibration_source_sample_rate_hz INTEGER NOT NULL, vibration_analysis_sample_rate_hz INTEGER NOT NULL, vibration_unit TEXT NOT NULL,
     vibration_rms REAL NOT NULL, vibration_absolute_peak REAL NOT NULL, vibration_kurtosis REAL NOT NULL,
     vibration_dominant_frequency_hz REAL NOT NULL, vibration_band_power_ratio_500_2000 REAL NOT NULL, vibration_spectral_entropy REAL NOT NULL,
-    current_1_rms_a REAL NOT NULL, current_1_absolute_peak_a REAL NOT NULL, current_1_fundamental_frequency_hz REAL,
-    current_1_thd REAL, current_2_rms_a REAL NOT NULL, current_2_absolute_peak_a REAL NOT NULL,
-    current_2_fundamental_frequency_hz REAL, current_2_thd REAL, current_imbalance_ratio REAL NOT NULL,
-    summary_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL, PRIMARY KEY (sender_id, packet_id),
-    FOREIGN KEY (sender_id) REFERENCES senders(sender_id), CHECK (json_valid(perception_flags_json)), CHECK (json_valid(summary_json))
+    current_1_source_sample_rate_hz INTEGER NOT NULL, current_1_analysis_sample_rate_hz INTEGER NOT NULL, current_1_unit TEXT NOT NULL,
+    current_1_rms_a REAL NOT NULL, current_1_absolute_peak_a REAL NOT NULL,
+    current_2_source_sample_rate_hz INTEGER NOT NULL, current_2_analysis_sample_rate_hz INTEGER NOT NULL, current_2_unit TEXT NOT NULL,
+    current_2_rms_a REAL NOT NULL, current_2_absolute_peak_a REAL NOT NULL, current_imbalance_ratio REAL NOT NULL,
+    shaft_speed_rpm_mean REAL NOT NULL, shaft_speed_rpm_last REAL NOT NULL, shaft_speed_rpm_minimum REAL NOT NULL,
+    shaft_speed_rpm_maximum REAL NOT NULL, shaft_speed_rpm_standard_deviation REAL NOT NULL,
+    load_torque_nm_mean REAL NOT NULL, load_torque_nm_last REAL NOT NULL, load_torque_nm_minimum REAL NOT NULL,
+    load_torque_nm_maximum REAL NOT NULL, load_torque_nm_standard_deviation REAL NOT NULL,
+    bearing_radial_load_n_mean REAL NOT NULL CHECK (bearing_radial_load_n_mean >= 0), bearing_radial_load_n_last REAL NOT NULL,
+    bearing_radial_load_n_minimum REAL NOT NULL, bearing_radial_load_n_maximum REAL NOT NULL,
+    bearing_radial_load_n_standard_deviation REAL NOT NULL, bearing_module_temperature_c REAL NOT NULL,
+    edge_result TEXT NOT NULL CHECK (edge_result IN ('normal', 'warning', 'abnormal')),
+    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    edge_risk_level TEXT NOT NULL CHECK (edge_risk_level IN ('low', 'medium', 'high')),
+    edge_model_version TEXT NOT NULL, summary_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+    PRIMARY KEY (sender_id, packet_id), UNIQUE (sender_id, task_id, sequence_number),
+    FOREIGN KEY (sender_id) REFERENCES senders(sender_id),
+    CHECK (json_valid(perception_flags_json)), CHECK (json_valid(summary_json))
 );
-CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_time ON edge_packet_summary(sender_id, end_generate_timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_sequence ON edge_packet_summary(sender_id, sequence_number);
+CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_time ON edge_packet_summary(sender_id, end_timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_edge_summary_edge_received ON edge_packet_summary(edge_node_id, received_at_ns);
 CREATE TABLE IF NOT EXISTS raw_packet_index (
     sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
     start_timestamp_ns INTEGER NOT NULL, end_generate_timestamp_ns INTEGER NOT NULL, sample_rate_hz INTEGER NOT NULL CHECK (sample_rate_hz > 0),
     sample_count INTEGER NOT NULL CHECK (sample_count > 0), storage_path TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
     compressed_size_bytes INTEGER NOT NULL CHECK (compressed_size_bytes > 0), validation_status TEXT NOT NULL CHECK (validation_status IN ('valid', 'warning', 'invalid')),
-    received_at_ns INTEGER NOT NULL, PRIMARY KEY (sender_id, packet_id), CHECK (end_generate_timestamp_ns > start_timestamp_ns), UNIQUE (sender_id, sequence_number)
+    received_at_ns INTEGER NOT NULL, PRIMARY KEY (sender_id, packet_id), CHECK (end_generate_timestamp_ns > start_timestamp_ns),
+    UNIQUE (sender_id, task_id, sequence_number)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_packet_sender_time ON raw_packet_index(sender_id, end_generate_timestamp_ns);
 CREATE TABLE IF NOT EXISTS cloud_review (
