@@ -11,6 +11,7 @@ from common.schemas import ContractError, validate_edge_feature_summary_batch
 from cloud_service.storage.database import connect, initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.app import app, edge_feature_summaries
+from fastapi.testclient import TestClient
 
 
 def completed_summary() -> dict:
@@ -201,3 +202,14 @@ class EdgeSummaryHttpTests(unittest.TestCase):
         response = edge_feature_summaries(payload)
 
         self.assertEqual(response.status_code, 400)
+
+    def test_http_post_binds_json_body_and_returns_confirmation(self) -> None:
+        client = TestClient(app)
+
+        response = client.post("/cloud/edge-feature-summaries", json=batch(completed_summary()))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "batch_id": "upload_01",
+            "results": [{"summary_id": "sender_01:task_01:packet_01", "status": "accepted"}],
+        })

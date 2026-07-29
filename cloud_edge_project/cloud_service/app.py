@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
@@ -112,7 +112,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
 
 
 @app.post("/cloud/edge-feature-summaries", response_model=None)
-def edge_feature_summaries(payload: Any) -> dict[str, object] | JSONResponse:
+def edge_feature_summaries(payload: Any = Body(...)) -> dict[str, object] | JSONResponse:
     """Receive a batch of edge summaries and acknowledge each item independently."""
 
     try:
