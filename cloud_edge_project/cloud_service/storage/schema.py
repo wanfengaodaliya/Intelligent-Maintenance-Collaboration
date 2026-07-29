@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -64,6 +64,33 @@ CREATE TABLE IF NOT EXISTS cloud_review (
     CHECK (context_features_json IS NULL OR json_valid(context_features_json))
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_review_sender_time ON cloud_review(sender_id, updated_at_ns);
+CREATE TABLE IF NOT EXISTS raw_context_request (
+    request_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    anchor_packet_id TEXT NOT NULL,
+    anchor_sequence_number INTEGER NOT NULL CHECK (anchor_sequence_number > 0),
+    before_packet_count INTEGER NOT NULL CHECK (before_packet_count > 0),
+    after_packet_count INTEGER NOT NULL CHECK (after_packet_count > 0),
+    request_status TEXT NOT NULL CHECK (
+        request_status IN (
+            'created', 'dispatched', 'pending_context',
+            'complete', 'insufficient_context', 'dispatch_failed'
+        )
+    ),
+    requested_at_ns INTEGER NOT NULL,
+    deadline_at_ns INTEGER NOT NULL,
+    edge_response_json TEXT,
+    last_error_code TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE,
+    CHECK (deadline_at_ns > requested_at_ns),
+    CHECK (edge_response_json IS NULL OR json_valid(edge_response_json))
+);
+CREATE INDEX IF NOT EXISTS idx_raw_context_request_deadline
+ON raw_context_request(request_status, deadline_at_ns);
 CREATE TABLE IF NOT EXISTS review_context_packets (
     review_id TEXT NOT NULL, sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, relative_position INTEGER NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('before', 'anchor', 'after')), PRIMARY KEY (review_id, sender_id, packet_id),

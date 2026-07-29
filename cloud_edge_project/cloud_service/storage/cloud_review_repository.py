@@ -77,6 +77,15 @@ class CloudReviewRepository:
                 (review_id, sender_id, packet_id, relative_position, role),
             )
 
+    def context_positions(self, review_id: str) -> set[int]:
+        with connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT relative_position FROM review_context_packets "
+                "WHERE review_id=?",
+                (review_id,),
+            ).fetchall()
+        return {row["relative_position"] for row in rows}
+
     def get(self, review_id: str) -> dict | None:
         with connect(self.database_path) as connection:
             row = connection.execute("SELECT * FROM cloud_review WHERE review_id=?", (review_id,)).fetchone()

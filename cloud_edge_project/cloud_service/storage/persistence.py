@@ -22,6 +22,25 @@ class CloudReviewPersistence:
         self.reviews = CloudReviewRepository(self.database_path)
 
     def persist(self, request: dict[str, Any], perception_result: dict[str, Any]) -> str:
+        review_id = self.persist_preliminary(request, perception_result)
+        enhanced = perception_result["cloud_enhanced_features"]
+        if enhanced["context_status"] == "complete":
+            self.reviews.complete(
+                review_id, cloud_recomputed_features=perception_result["cloud_recomputed_features"],
+                cloud_enhanced_features=enhanced, advanced_features=None, context_features=None,
+                packet_count=perception_result["analysis_window"]["packet_count"],
+            )
+        else:
+            self.reviews.mark_insufficient_context(review_id)
+        return review_id
+
+    def persist_preliminary(
+        self,
+        request: dict[str, Any],
+        perception_result: dict[str, Any],
+    ) -> str:
+        """Persist the trigger packet while leaving review aggregation pending."""
+
         edge = request["edge_perception_result"]
         raw = request["cloud_raw_packet"]
         self.edge_features.ingest(_edge_summary(edge))
@@ -38,15 +57,6 @@ class CloudReviewPersistence:
             start_timestamp_ns=perception_result["analysis_window"]["start_timestamp_ns"],
             end_timestamp_ns=perception_result["analysis_window"]["end_timestamp_ns"],
         )
-        enhanced = perception_result["cloud_enhanced_features"]
-        if enhanced["context_status"] == "complete":
-            self.reviews.complete(
-                review_id, cloud_recomputed_features=perception_result["cloud_recomputed_features"],
-                cloud_enhanced_features=enhanced, advanced_features=None, context_features=None,
-                packet_count=perception_result["analysis_window"]["packet_count"],
-            )
-        else:
-            self.reviews.mark_insufficient_context(review_id)
         return review_id
 
 

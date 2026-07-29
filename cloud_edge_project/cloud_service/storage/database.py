@@ -40,7 +40,11 @@ def initialize_database(database_path: Path) -> None:
             _copy_legacy_summaries(connection, legacy_summary_table)
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?)",
-            (SCHEMA_VERSION, time.time_ns(), "edge summary ingestion schema"),
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "raw context request and ingestion schema",
+            ),
         )
 
 

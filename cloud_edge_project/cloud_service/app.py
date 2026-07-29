@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import os
 import sqlite3
 from pathlib import Path
@@ -14,8 +16,13 @@ from fastapi.responses import JSONResponse
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.errors import CloudServiceError
 from cloud_service.model import CLOUD_NODE_ID, infer_cloud
+from cloud_service.raw_context.receiver import RawContextReceiver
+from cloud_service.raw_context.transport import HttpRawContextTransport
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
+from cloud_service.storage.raw_context_repository import (
+    RawContextRequestRepository,
+)
 from common.config import load_config
 from common.schemas import (
     ContractError,
@@ -26,7 +33,33 @@ from common.schemas import (
 
 
 config = load_config()
-app = FastAPI(title="cloud_service")
+
+
+async def _expire_raw_context_requests() -> None:
+    while True:
+        try:
+            settings = load_cloud_settings()
+            initialize_database(settings.database_path)
+            RawContextRequestRepository(
+                settings.database_path
+            ).expire_due()
+        except sqlite3.Error:
+            pass
+        await asyncio.sleep(0.5)
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    try:
+        yield
+    finally:
+        expiry_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await expiry_task
+
+
+app = FastAPI(title="cloud_service", lifespan=_lifespan)
 
 
 def _edge_summary_repository() -> EdgeFeatureRepository:
@@ -42,6 +75,19 @@ def _models_url(settings: CloudSettings) -> str:
     if base_url.endswith("/chat/completions"):
         return base_url[: -len("/chat/completions")] + "/models"
     return base_url + "/models"
+
+
+def _raw_context_transport() -> HttpRawContextTransport:
+    edge = config["services"]["edge"]
+    return HttpRawContextTransport(
+        os.getenv(
+            "EDGE_RAW_CONTEXT_BASE_URL",
+            f"http://{edge['host']}:{edge['port']}",
+        ),
+        timeout_seconds=float(
+            os.getenv("EDGE_RAW_CONTEXT_TIMEOUT_SECONDS", "3")
+        ),
+    )
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
@@ -91,7 +137,10 @@ def health() -> dict[str, object] | JSONResponse:
 @app.post("/cloud/infer", response_model=None)
 def cloud_infer(payload: dict) -> dict | JSONResponse:
     try:
-        return infer_cloud(payload)
+        return infer_cloud(
+            payload,
+            context_transport=_raw_context_transport(),
+        )
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except CloudServiceError as error:
@@ -109,6 +158,28 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
         packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/raw-context-batches", response_model=None)
+def raw_context_batches(
+    payload: Any = Body(...),
+) -> dict[str, object] | JSONResponse:
+    """Receive one edge raw-context batch and acknowledge each packet."""
+
+    try:
+        return RawContextReceiver(
+            load_cloud_settings().database_path
+        ).receive_batch(payload)
+    except ContractError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": error.code, "message": error.message},
+        )
+    except sqlite3.Error:
+        return JSONResponse(
+            status_code=503,
+            content={"error_code": "SERVICE_UNAVAILABLE"},
+        )
 
 
 @app.post("/cloud/edge-feature-summaries", response_model=None)
