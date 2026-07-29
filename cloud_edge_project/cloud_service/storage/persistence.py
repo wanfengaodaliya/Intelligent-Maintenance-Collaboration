@@ -65,6 +65,7 @@ def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
         "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],
         "sequence_number": edge["sequence_number"], "edge_node_id": edge.get("edge_node_id", "cloud_review_edge"),
         "end_timestamp_ns": edge["end_generate_timestamp_ns"], "summary_generated_at_ns": edge["feature_generated_at_ns"],
+        "processing_status": "perception_completed",
         "edge_model_version": edge.get("edge_model_version", "cloud_review_legacy"),
         "perception_quality": {"status": quality.get("status", "good"), "flags": quality.get("flags", [])},
         "features": {

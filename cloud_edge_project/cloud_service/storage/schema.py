@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -11,30 +11,32 @@ CREATE TABLE IF NOT EXISTS senders (
 );
 CREATE TABLE IF NOT EXISTS edge_packet_summary (
     sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
-    edge_node_id TEXT NOT NULL, end_timestamp_ns INTEGER NOT NULL, summary_generated_at_ns INTEGER NOT NULL,
-    received_at_ns INTEGER NOT NULL, perception_status TEXT NOT NULL CHECK (perception_status IN ('good', 'warning')),
-    perception_flags_json TEXT NOT NULL DEFAULT '[]',
-    vibration_source_sample_rate_hz INTEGER NOT NULL, vibration_analysis_sample_rate_hz INTEGER NOT NULL, vibration_unit TEXT NOT NULL,
-    vibration_rms REAL NOT NULL, vibration_absolute_peak REAL NOT NULL, vibration_kurtosis REAL NOT NULL,
-    vibration_dominant_frequency_hz REAL NOT NULL, vibration_band_power_ratio_500_2000 REAL NOT NULL, vibration_spectral_entropy REAL NOT NULL,
-    current_1_source_sample_rate_hz INTEGER NOT NULL, current_1_analysis_sample_rate_hz INTEGER NOT NULL, current_1_unit TEXT NOT NULL,
-    current_1_rms_a REAL NOT NULL, current_1_absolute_peak_a REAL NOT NULL,
-    current_2_source_sample_rate_hz INTEGER NOT NULL, current_2_analysis_sample_rate_hz INTEGER NOT NULL, current_2_unit TEXT NOT NULL,
-    current_2_rms_a REAL NOT NULL, current_2_absolute_peak_a REAL NOT NULL, current_imbalance_ratio REAL NOT NULL,
-    shaft_speed_rpm_mean REAL NOT NULL, shaft_speed_rpm_last REAL NOT NULL, shaft_speed_rpm_minimum REAL NOT NULL,
-    shaft_speed_rpm_maximum REAL NOT NULL, shaft_speed_rpm_standard_deviation REAL NOT NULL,
-    load_torque_nm_mean REAL NOT NULL, load_torque_nm_last REAL NOT NULL, load_torque_nm_minimum REAL NOT NULL,
-    load_torque_nm_maximum REAL NOT NULL, load_torque_nm_standard_deviation REAL NOT NULL,
-    bearing_radial_load_n_mean REAL NOT NULL CHECK (bearing_radial_load_n_mean >= 0), bearing_radial_load_n_last REAL NOT NULL,
-    bearing_radial_load_n_minimum REAL NOT NULL, bearing_radial_load_n_maximum REAL NOT NULL,
-    bearing_radial_load_n_standard_deviation REAL NOT NULL, bearing_module_temperature_c REAL NOT NULL,
-    edge_result TEXT NOT NULL CHECK (edge_result IN ('normal', 'warning', 'abnormal')),
-    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    edge_risk_level TEXT NOT NULL CHECK (edge_risk_level IN ('low', 'medium', 'high')),
-    edge_model_version TEXT NOT NULL, summary_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+    edge_node_id TEXT NOT NULL, end_timestamp_ns INTEGER NOT NULL, summary_generated_at_ns INTEGER,
+    received_at_ns INTEGER NOT NULL, processing_status TEXT NOT NULL CHECK (processing_status IN ('perception_completed', 'perception_rejected')),
+    perception_status TEXT CHECK (perception_status IN ('good', 'warning')), perception_flags_json TEXT,
+    perception_error_codes_json TEXT,
+    vibration_source_sample_rate_hz INTEGER, vibration_analysis_sample_rate_hz INTEGER, vibration_unit TEXT,
+    vibration_rms REAL, vibration_absolute_peak REAL, vibration_kurtosis REAL,
+    vibration_dominant_frequency_hz REAL, vibration_band_power_ratio_500_2000 REAL, vibration_spectral_entropy REAL,
+    current_1_source_sample_rate_hz INTEGER, current_1_analysis_sample_rate_hz INTEGER, current_1_unit TEXT,
+    current_1_rms_a REAL, current_1_absolute_peak_a REAL,
+    current_2_source_sample_rate_hz INTEGER, current_2_analysis_sample_rate_hz INTEGER, current_2_unit TEXT,
+    current_2_rms_a REAL, current_2_absolute_peak_a REAL, current_imbalance_ratio REAL,
+    shaft_speed_rpm_mean REAL, shaft_speed_rpm_last REAL, shaft_speed_rpm_minimum REAL,
+    shaft_speed_rpm_maximum REAL, shaft_speed_rpm_standard_deviation REAL,
+    load_torque_nm_mean REAL, load_torque_nm_last REAL, load_torque_nm_minimum REAL,
+    load_torque_nm_maximum REAL, load_torque_nm_standard_deviation REAL,
+    bearing_radial_load_n_mean REAL, bearing_radial_load_n_last REAL,
+    bearing_radial_load_n_minimum REAL, bearing_radial_load_n_maximum REAL,
+    bearing_radial_load_n_standard_deviation REAL, bearing_module_temperature_c REAL,
+    edge_result TEXT CHECK (edge_result IN ('normal', 'warning', 'abnormal')),
+    confidence REAL CHECK (confidence >= 0 AND confidence <= 1),
+    edge_risk_level TEXT CHECK (edge_risk_level IN ('low', 'medium', 'high')),
+    edge_model_version TEXT, summary_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
     PRIMARY KEY (sender_id, packet_id), UNIQUE (sender_id, task_id, sequence_number),
     FOREIGN KEY (sender_id) REFERENCES senders(sender_id),
-    CHECK (json_valid(perception_flags_json)), CHECK (json_valid(summary_json))
+    CHECK (perception_flags_json IS NULL OR json_valid(perception_flags_json)),
+    CHECK (perception_error_codes_json IS NULL OR json_valid(perception_error_codes_json)), CHECK (json_valid(summary_json))
 );
 CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_time ON edge_packet_summary(sender_id, end_timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_edge_summary_edge_received ON edge_packet_summary(edge_node_id, received_at_ns);
@@ -75,9 +77,10 @@ CREATE TABLE IF NOT EXISTS diagnosis_events (
     FOREIGN KEY (review_id) REFERENCES cloud_review(review_id), CHECK (result_json IS NULL OR json_valid(result_json)),
     CHECK (human_review_json IS NULL OR json_valid(human_review_json))
 );
-CREATE TABLE IF NOT EXISTS ingestion_conflicts (
+CREATE TABLE IF NOT EXISTS summary_ingestion_conflicts (
     conflict_id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id TEXT NOT NULL, packet_id TEXT NOT NULL,
     existing_payload_sha256 TEXT NOT NULL, incoming_payload_sha256 TEXT NOT NULL, incoming_summary_json TEXT NOT NULL,
-    detected_at_ns INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)), CHECK (json_valid(incoming_summary_json))
+    detected_at_ns INTEGER NOT NULL, conflict_code TEXT NOT NULL CHECK (conflict_code IN ('PACKET_CONTENT_CONFLICT', 'TASK_SEQUENCE_CONFLICT')),
+    resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)), CHECK (json_valid(incoming_summary_json))
 );
 """

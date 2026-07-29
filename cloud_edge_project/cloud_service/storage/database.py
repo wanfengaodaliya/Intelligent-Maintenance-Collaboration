@@ -34,10 +34,13 @@ def initialize_database(database_path: Path) -> None:
     with connect(database_path) as connection:
         _migrate_v1_to_sender_schema(connection)
         _migrate_v2_summary_to_document_schema(connection)
+        legacy_summary_table = _migrate_v3_summary_to_ingestion_schema(connection)
         connection.executescript(DDL)
+        if legacy_summary_table:
+            _copy_legacy_summaries(connection, legacy_summary_table)
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?)",
-            (SCHEMA_VERSION, time.time_ns(), "documented edge summary schema"),
+            (SCHEMA_VERSION, time.time_ns(), "edge summary ingestion schema"),
         )
 
 
@@ -131,4 +134,37 @@ def _migrate_v2_summary_to_document_schema(connection: sqlite3.Connection) -> No
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_edge_summary_edge_received "
         "ON edge_packet_summary(edge_node_id, received_at_ns)"
+    )
+
+
+def _migrate_v3_summary_to_ingestion_schema(connection: sqlite3.Connection) -> str | None:
+    """Retain v3 summaries while replacing its completed-only table definition."""
+
+    row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='edge_packet_summary'"
+    ).fetchone()
+    if row is None:
+        return None
+    columns = {item[1] for item in connection.execute("PRAGMA table_info(edge_packet_summary)")}
+    if "processing_status" in columns:
+        return None
+    for index_name in ("idx_edge_summary_sender_time", "idx_edge_summary_edge_received"):
+        connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+    legacy_table = "edge_packet_summary_legacy_v3"
+    connection.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+    connection.execute(f"ALTER TABLE edge_packet_summary RENAME TO {legacy_table}")
+    return legacy_table
+
+
+def _copy_legacy_summaries(connection: sqlite3.Connection, legacy_table: str) -> None:
+    """Copy completed-only v3 rows into the v4 table without altering their payload."""
+
+    new_columns = [item[1] for item in connection.execute("PRAGMA table_info(edge_packet_summary)")]
+    legacy_columns = {item[1] for item in connection.execute(f"PRAGMA table_info({legacy_table})")}
+    copied_columns = [column for column in new_columns if column in legacy_columns]
+    target_columns = copied_columns + ["processing_status"]
+    source_columns = copied_columns + ["'perception_completed'"]
+    connection.execute(
+        f"INSERT INTO edge_packet_summary ({','.join(target_columns)}) "
+        f"SELECT {','.join(source_columns)} FROM {legacy_table}"
     )

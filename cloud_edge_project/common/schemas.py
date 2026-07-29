@@ -7,6 +7,9 @@ small and explicit so the core demo can run without web-framework dependencies.
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
+import math
 from typing import Any
 
 
@@ -17,6 +20,14 @@ DURATION_MS = 50
 ROUTES = {"edge", "cloud", "fallback_edge"}
 LABELS = {"normal", "abnormal"}
 RISK_LEVELS = {"low", "medium", "high"}
+PROCESSING_STATUSES = {"perception_completed", "perception_rejected"}
+PERCEPTION_QUALITY_STATUSES = {"good", "warning"}
+EDGE_RESULTS = {"normal", "warning", "abnormal"}
+QUALITY_FLAGS = {
+    "LOW_CURRENT_VARIATION", "WAVEFORM_CLIPPING", "MISSING_SAMPLES",
+    "NONFINITE_SAMPLE", "DC_OFFSET_PRESENT", "CONTEXT_UNSTABLE",
+}
+PERCEPTION_ERROR_CODES = {"INVALID_SAMPLE_COUNT"}
 
 
 class ContractError(ValueError):
@@ -269,4 +280,157 @@ def compact_packet_for_scheduler(packet: dict[str, Any], payload_size_kb: float)
         "vibration_sample_count": data["vibration_sample_count"],
         "payload_size_kb": payload_size_kb,
     }
+
+
+def canonical_summary_sha256(summary: dict[str, Any]) -> str:
+    """Return the documented SHA-256 for one summary, excluding its envelope."""
+
+    serialized = json.dumps(
+        summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def validate_edge_feature_summary_batch(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a complete edge-summary batch for callers outside the HTTP route."""
+
+    batch = _validate_edge_feature_summary_envelope(payload)
+    seen_summary_ids: set[str] = set()
+    for summary in batch["summaries"]:
+        summary_id = validate_edge_feature_summary(summary, batch["edge_node_id"])["summary_id"]
+        if summary_id in seen_summary_ids:
+            raise ContractError("INVALID_IDENTIFIER", "summary_id must be unique within a batch")
+        seen_summary_ids.add(summary_id)
+    return batch
+
+
+def validate_edge_feature_summary_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate only the batch fields; item failures remain independently recoverable."""
+
+    return _validate_edge_feature_summary_envelope(payload)
+
+
+def _validate_edge_feature_summary_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    batch = require_mapping(payload, "EdgeFeatureSummaryBatch")
+    require_non_empty_string(require_field(batch, "batch_id"), "batch_id")
+    require_non_empty_string(require_field(batch, "edge_node_id"), "edge_node_id")
+    sent_at_ns = require_int(require_field(batch, "sent_at_ns"), "sent_at_ns")
+    if sent_at_ns <= 0:
+        raise ContractError("INVALID_TIMESTAMP", "sent_at_ns must be positive")
+    item_count = require_int(require_field(batch, "item_count"), "item_count")
+    summaries = require_field(batch, "summaries")
+    if not isinstance(summaries, list) or not 1 <= item_count <= 20 or item_count != len(summaries):
+        raise ContractError("INVALID_PACKET", "item_count must equal 1 to 20 summaries")
+    return batch
+
+
+def validate_edge_feature_summary(summary: dict[str, Any], batch_edge_node_id: str) -> dict[str, Any]:
+    """Validate one item and raise its documented rejection code on failure."""
+
+    item = require_mapping(summary, "EdgeFeatureSummary")
+    for field in ("summary_id", "task_id", "packet_id", "sender_id", "edge_node_id"):
+        try:
+            require_non_empty_string(require_field(item, field), field)
+        except ContractError as error:
+            raise ContractError("INVALID_IDENTIFIER", error.message) from error
+    sequence_number = _item_int(item, "sequence_number", "INVALID_IDENTIFIER")
+    if sequence_number < 1:
+        raise ContractError("INVALID_IDENTIFIER", "sequence_number must be greater than 0")
+    if item["edge_node_id"] != batch_edge_node_id:
+        raise ContractError("INVALID_IDENTIFIER", "summary edge_node_id must match batch edge_node_id")
+    end_timestamp_ns = _item_int(item, "end_timestamp_ns", "INVALID_TIMESTAMP")
+    if end_timestamp_ns <= 0:
+        raise ContractError("INVALID_TIMESTAMP", "end_timestamp_ns must be positive")
+    processing_status = item.get("processing_status")
+    if processing_status not in PROCESSING_STATUSES:
+        raise ContractError("INVALID_QUALITY", "processing_status is invalid")
+    if processing_status == "perception_rejected":
+        _validate_perception_rejected(item)
+    else:
+        _validate_perception_completed(item, end_timestamp_ns)
+    return item
+
+
+def _item_int(item: dict[str, Any], field: str, code: str) -> int:
+    try:
+        return require_int(require_field(item, field), field)
+    except ContractError as error:
+        raise ContractError(code, error.message) from error
+
+
+def _finite_number(item: dict[str, Any], field: str, code: str) -> float:
+    try:
+        value = require_number(require_field(item, field), field)
+    except ContractError as error:
+        raise ContractError(code, error.message) from error
+    if not math.isfinite(value):
+        raise ContractError(code, f"{field} must be finite")
+    return value
+
+
+def _required_mapping(item: dict[str, Any], field: str, code: str) -> dict[str, Any]:
+    try:
+        return require_mapping(require_field(item, field), field)
+    except ContractError as error:
+        raise ContractError(code, error.message) from error
+
+
+def _validate_perception_rejected(item: dict[str, Any]) -> None:
+    codes = item.get("perception_error_codes")
+    if not isinstance(codes, list) or not codes or any(code not in PERCEPTION_ERROR_CODES for code in codes):
+        raise ContractError("INVALID_QUALITY", "perception_error_codes must contain supported string codes")
+
+
+def _validate_perception_completed(item: dict[str, Any], end_timestamp_ns: int) -> None:
+    generated_at_ns = _item_int(item, "summary_generated_at_ns", "INVALID_TIMESTAMP")
+    if generated_at_ns < end_timestamp_ns:
+        raise ContractError("INVALID_TIMESTAMP", "summary_generated_at_ns must not precede end_timestamp_ns")
+    _validate_quality(_required_mapping(item, "perception_quality", "INVALID_QUALITY"))
+    _validate_features(_required_mapping(item, "features", "INVALID_FEATURE_VALUE"))
+    _validate_inference(_required_mapping(item, "edge_inference", "INVALID_EDGE_INFERENCE"))
+    try:
+        require_non_empty_string(require_field(item, "edge_model_version"), "edge_model_version")
+    except ContractError as error:
+        raise ContractError("INVALID_EDGE_INFERENCE", error.message) from error
+
+
+def _validate_quality(quality: dict[str, Any]) -> None:
+    status = quality.get("status")
+    flags = quality.get("flags")
+    if status not in PERCEPTION_QUALITY_STATUSES or not isinstance(flags, list) or any(flag not in QUALITY_FLAGS for flag in flags):
+        raise ContractError("INVALID_QUALITY", "perception_quality is invalid")
+    if (status == "good" and flags) or (status == "warning" and not flags):
+        raise ContractError("INVALID_QUALITY", "perception_quality status and flags disagree")
+
+
+def _validate_features(features: dict[str, Any]) -> None:
+    vibration = _required_mapping(features, "vibration", "INVALID_FEATURE_VALUE")
+    _validate_channel(vibration, "vibration", "mm/s", ("rms", "absolute_peak", "kurtosis", "dominant_frequency_hz", "band_power_ratio_500_2000", "spectral_entropy"))
+    current_1 = _required_mapping(features, "phase_current_1", "INVALID_FEATURE_VALUE")
+    current_2 = _required_mapping(features, "phase_current_2", "INVALID_FEATURE_VALUE")
+    _validate_channel(current_1, "phase_current_1", "A", ("rms_a", "absolute_peak_a"))
+    _validate_channel(current_2, "phase_current_2", "A", ("rms_a", "absolute_peak_a"))
+    relationship = _required_mapping(features, "current_relationship", "INVALID_FEATURE_VALUE")
+    _finite_number(relationship, "current_imbalance_ratio", "INVALID_FEATURE_VALUE")
+    context = _required_mapping(features, "operating_context", "INVALID_OPERATING_CONTEXT")
+    for field in ("shaft_speed_rpm", "load_torque_nm", "bearing_radial_load_n"):
+        statistics = _required_mapping(context, field, "INVALID_OPERATING_CONTEXT")
+        for name in ("mean", "last", "minimum", "maximum", "standard_deviation"):
+            _finite_number(statistics, name, "INVALID_OPERATING_CONTEXT")
+    _finite_number(context, "bearing_module_temperature_c", "INVALID_OPERATING_CONTEXT")
+
+
+def _validate_channel(channel: dict[str, Any], name: str, unit: str, values: tuple[str, ...]) -> None:
+    if channel.get("source_sample_rate_hz") != 64000 or channel.get("analysis_sample_rate_hz") != 16000 or channel.get("unit") != unit:
+        raise ContractError("INVALID_FEATURE_METADATA", f"{name} metadata is invalid")
+    for field in values:
+        _finite_number(channel, field, "INVALID_FEATURE_VALUE")
+
+
+def _validate_inference(inference: dict[str, Any]) -> None:
+    if inference.get("edge_result") not in EDGE_RESULTS or inference.get("edge_risk_level") not in RISK_LEVELS:
+        raise ContractError("INVALID_EDGE_INFERENCE", "edge inference enum is invalid")
+    confidence = _finite_number(inference, "confidence", "INVALID_EDGE_INFERENCE")
+    if not 0 <= confidence <= 1:
+        raise ContractError("INVALID_EDGE_INFERENCE", "confidence must be between 0 and 1")
 
