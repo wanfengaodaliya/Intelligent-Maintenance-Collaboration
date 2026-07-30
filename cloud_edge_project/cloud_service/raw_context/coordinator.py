@@ -13,6 +13,7 @@ from common.schemas import ContractError
 from cloud_service.storage.raw_context_repository import (
     RawContextRequestRepository,
 )
+from cloud_service.storage.raw_packet_repository import RawPacketRepository
 
 from .contracts import validate_edge_context_response
 from .transport import RawContextTransport
@@ -28,6 +29,7 @@ class RawContextCoordinator:
         request_id_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
     ):
         self.repository = RawContextRequestRepository(database_path)
+        self.raw_packets = RawPacketRepository(database_path)
         self.transport = transport
         self.clock_ns = clock_ns
         self.request_id_factory = request_id_factory
@@ -57,7 +59,21 @@ class RawContextCoordinator:
         )
         if stored["request_status"] not in {"created", "dispatch_failed"}:
             return stored
-        request = _request_payload(stored)
+        anchor_end_generate_timestamp_ns = self.raw_packets.end_timestamp(
+            sender_id=stored["sender_id"],
+            packet_id=stored["anchor_packet_id"],
+        )
+        if anchor_end_generate_timestamp_ns is None:
+            return self.repository.update_dispatch(
+                stored["request_id"],
+                request_status="dispatch_failed",
+                last_error_code="ANCHOR_RAW_PACKET_NOT_FOUND",
+                updated_at_ns=self.clock_ns(),
+            )
+        request = _request_payload(
+            stored,
+            anchor_end_generate_timestamp_ns,
+        )
         try:
             response = self.transport.send(request)
             validated = validate_edge_context_response(
@@ -97,15 +113,17 @@ class RawContextCoordinator:
         )
 
 
-def _request_payload(stored: dict[str, Any]) -> dict[str, object]:
+def _request_payload(
+    stored: dict[str, Any],
+    anchor_end_generate_timestamp_ns: int,
+) -> dict[str, object]:
     return {
         "request_id": stored["request_id"],
-        "task_id": stored["task_id"],
         "sender_id": stored["sender_id"],
         "anchor_packet_id": stored["anchor_packet_id"],
-        "anchor_sequence_number": stored["anchor_sequence_number"],
+        "anchor_end_generate_timestamp_ns": (
+            anchor_end_generate_timestamp_ns
+        ),
         "before_packet_count": stored["before_packet_count"],
-        "after_packet_count": stored["after_packet_count"],
         "requested_at_ns": stored["requested_at_ns"],
-        "deadline_at_ns": stored["deadline_at_ns"],
     }

@@ -776,20 +776,60 @@ class RawContextCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(transport.requests, [{
             "request_id": "ctx_req_001",
-            "task_id": "task_00001",
             "sender_id": "sender_01",
             "anchor_packet_id": "batch_000101",
-            "anchor_sequence_number": 101,
+            "anchor_end_generate_timestamp_ns": 5_050_000_000,
             "before_packet_count": 20,
-            "after_packet_count": 0,
             "requested_at_ns": 1_000_000_000,
-            "deadline_at_ns": 4_000_000_000,
         }])
         self.assertEqual(result["request_status"], "pending_context")
         stored = RawContextRequestRepository(self.database_path).get("ctx_req_001")
         self.assertEqual(stored["request_status"], "pending_context")
         self.assertEqual(stored["minimum_context_packet_count"], 16)
         self.assertIn('"status":"pending_context"', stored["edge_response_json"])
+
+    def test_missing_anchor_raw_packet_prevents_dispatch(self) -> None:
+        with connect(self.database_path) as connection:
+            connection.execute(
+                "DELETE FROM raw_packet_index "
+                "WHERE sender_id=? AND packet_id=?",
+                ("sender_01", "batch_000101"),
+            )
+        transport = FakeTransport({
+            "request_id": "ctx_req_001",
+            "anchor_packet_id": "batch_000101",
+            "status": "pending_context",
+            "before_context": {
+                "expected_count": 20, "available_count": 20,
+                "upload_status": "queued", "missing_sequence_numbers": [],
+            },
+            "after_context": {
+                "expected_count": 0, "available_count": 0,
+                "upload_status": "waiting_until_complete",
+                "missing_sequence_numbers": [],
+            },
+        })
+        coordinator = RawContextCoordinator(
+            self.database_path,
+            transport=transport,
+            clock_ns=lambda: 1_000_000_000,
+            request_id_factory=lambda: "ctx_req_001",
+        )
+
+        result = coordinator.create_and_dispatch(
+            review_id=self.review_id,
+            task_id="task_00001",
+            sender_id="sender_01",
+            anchor_packet_id="batch_000101",
+            anchor_sequence_number=101,
+        )
+
+        self.assertEqual(result["request_status"], "dispatch_failed")
+        self.assertEqual(
+            result["last_error_code"],
+            "ANCHOR_RAW_PACKET_NOT_FOUND",
+        )
+        self.assertEqual(transport.requests, [])
 
     def test_transport_failure_is_persisted_and_retry_reuses_request_id(self) -> None:
         failing = FakeTransport(error=TimeoutError("edge timeout"))
