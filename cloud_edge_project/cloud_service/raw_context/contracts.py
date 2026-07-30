@@ -38,12 +38,16 @@ def validate_edge_context_response(
     *,
     request_id: str,
     anchor_packet_id: str,
+    before_packet_count: int,
+    after_packet_count: int,
 ) -> dict[str, Any]:
     try:
         return _validate_edge_context_response(
             payload,
             request_id=request_id,
             anchor_packet_id=anchor_packet_id,
+            before_packet_count=before_packet_count,
+            after_packet_count=after_packet_count,
         )
     except ContractError as error:
         if error.code == "EDGE_REJECTED_CONTEXT_REQUEST":
@@ -60,6 +64,8 @@ def _validate_edge_context_response(
     *,
     request_id: str,
     anchor_packet_id: str,
+    before_packet_count: int,
+    after_packet_count: int,
 ) -> dict[str, Any]:
     response = require_mapping(payload, "RawContextResponse")
     if require_non_empty_string(
@@ -81,7 +87,11 @@ def _validate_edge_context_response(
             "EDGE_REJECTED_CONTEXT_REQUEST",
             "edge response status is invalid",
         )
-    for field in ("before_context", "after_context"):
+    expected_counts = {
+        "before_context": before_packet_count,
+        "after_context": after_packet_count,
+    }
+    for field, requested_count in expected_counts.items():
         context = require_mapping(require_field(response, field), field)
         expected_count = require_int(
             require_field(context, "expected_count"), f"{field}.expected_count"
@@ -89,7 +99,10 @@ def _validate_edge_context_response(
         available_count = require_int(
             require_field(context, "available_count"), f"{field}.available_count"
         )
-        if expected_count != 10 or not 0 <= available_count <= expected_count:
+        if (
+            expected_count != requested_count
+            or not 0 <= available_count <= expected_count
+        ):
             raise ContractError(
                 "EDGE_REJECTED_CONTEXT_REQUEST",
                 f"{field} counts are invalid",
@@ -193,12 +206,16 @@ def validate_raw_context_packet(
     *,
     batch: dict[str, Any],
     anchor_end_timestamp_ns: int,
+    before_packet_count: int,
+    after_packet_count: int,
 ) -> dict[str, Any]:
     try:
         return _validate_raw_context_packet(
             payload,
             batch=batch,
             anchor_end_timestamp_ns=anchor_end_timestamp_ns,
+            before_packet_count=before_packet_count,
+            after_packet_count=after_packet_count,
         )
     except ContractError as error:
         if error.code in {
@@ -222,6 +239,8 @@ def _validate_raw_context_packet(
     *,
     batch: dict[str, Any],
     anchor_end_timestamp_ns: int,
+    before_packet_count: int,
+    after_packet_count: int,
 ) -> dict[str, Any]:
     packet = require_mapping(payload, "cloud_raw_packet")
     packet_id = (
@@ -229,26 +248,24 @@ def _validate_raw_context_packet(
         if isinstance(packet.get("packet_id"), str)
         else None
     )
-    for field in ("task_id", "packet_id", "sender_id"):
-        require_non_empty_string(
-            require_field(packet, field, packet_id), field, packet_id
-        )
-    for field in ("task_id", "packet_id", "sender_id"):
-        if _SAFE_IDENTIFIER.fullmatch(packet[field]) is None:
-            raise ContractError(
-                "INVALID_CONTEXT_PACKET",
-                f"{field} contains unsupported characters",
-                packet_id,
-            )
-    if (
-        packet["task_id"] != batch["task_id"]
-        or packet["sender_id"] != batch["sender_id"]
-    ):
+    require_non_empty_string(
+        require_field(packet, "packet_id", packet_id), "packet_id", packet_id
+    )
+    if _SAFE_IDENTIFIER.fullmatch(packet["packet_id"]) is None:
         raise ContractError(
             "INVALID_CONTEXT_PACKET",
-            "packet identity does not match batch",
+            "packet_id contains unsupported characters",
             packet_id,
         )
+    for field in ("task_id", "sender_id"):
+        supplied = packet.get(field)
+        if supplied is not None and supplied != batch[field]:
+            raise ContractError(
+                "INVALID_CONTEXT_PACKET",
+                "packet identity does not match batch",
+                packet_id,
+            )
+        packet[field] = batch[field]
     sequence_number = require_int(
         require_field(packet, "sequence_number", packet_id),
         "sequence_number",
@@ -266,9 +283,9 @@ def _validate_raw_context_packet(
         )
     anchor = batch["anchor_sequence_number"]
     if batch["context_position"] == "before":
-        allowed = range(anchor - 10, anchor)
+        allowed = range(anchor - before_packet_count, anchor)
     else:
-        allowed = range(anchor + 1, anchor + 11)
+        allowed = range(anchor + 1, anchor + after_packet_count + 1)
     if sequence_number not in allowed:
         raise ContractError(
             "CONTEXT_SEQUENCE_OUT_OF_RANGE",

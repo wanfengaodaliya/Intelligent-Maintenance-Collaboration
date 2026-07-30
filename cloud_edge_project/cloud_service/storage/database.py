@@ -36,6 +36,7 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v2_summary_to_document_schema(connection)
         legacy_summary_table = _migrate_v3_summary_to_ingestion_schema(connection)
         connection.executescript(DDL)
+        _migrate_v5_to_v6(connection)
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         connection.execute(
@@ -43,7 +44,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "raw context request and ingestion schema",
+                "preceding raw context request schema",
             ),
         )
 
@@ -172,3 +173,188 @@ def _copy_legacy_summaries(connection: sqlite3.Connection, legacy_table: str) ->
         f"INSERT INTO edge_packet_summary ({','.join(target_columns)}) "
         f"SELECT {','.join(source_columns)} FROM {legacy_table}"
     )
+
+
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    """Rebuild v5 context tables while preserving requests and review links."""
+
+    columns = {
+        item[1]
+        for item in connection.execute(
+            "PRAGMA table_info(raw_context_request)"
+        )
+    }
+    if "minimum_context_packet_count" in columns:
+        return
+
+    foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+    legacy_alter_table = connection.execute(
+        "PRAGMA legacy_alter_table"
+    ).fetchone()[0]
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            CREATE TABLE cloud_review_v6 (
+                review_id TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                anchor_packet_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                feature_extractor_version TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                review_status TEXT NOT NULL CHECK (
+                    review_status IN (
+                        'preliminary', 'complete',
+                        'insufficient_context', 'invalid'
+                    )
+                ),
+                context_status TEXT NOT NULL CHECK (
+                    context_status IN (
+                        'pending_context', 'partial_context', 'complete',
+                        'insufficient_context', 'not_requested', 'invalid'
+                    )
+                ),
+                data_quality_valid INTEGER NOT NULL CHECK (
+                    data_quality_valid IN (0, 1)
+                ),
+                start_timestamp_ns INTEGER,
+                end_timestamp_ns INTEGER,
+                packet_count INTEGER NOT NULL DEFAULT 1 CHECK (
+                    packet_count > 0
+                ),
+                data_quality_json TEXT NOT NULL,
+                cloud_recomputed_features_json TEXT,
+                cloud_enhanced_features_json TEXT,
+                advanced_features_json TEXT,
+                context_features_json TEXT,
+                created_at_ns INTEGER NOT NULL,
+                updated_at_ns INTEGER NOT NULL,
+                UNIQUE (
+                    sender_id, anchor_packet_id, feature_extractor_version
+                ),
+                FOREIGN KEY (sender_id, anchor_packet_id)
+                    REFERENCES edge_packet_summary(sender_id, packet_id),
+                CHECK (json_valid(data_quality_json)),
+                CHECK (
+                    cloud_recomputed_features_json IS NULL
+                    OR json_valid(cloud_recomputed_features_json)
+                ),
+                CHECK (
+                    cloud_enhanced_features_json IS NULL
+                    OR json_valid(cloud_enhanced_features_json)
+                ),
+                CHECK (
+                    advanced_features_json IS NULL
+                    OR json_valid(advanced_features_json)
+                ),
+                CHECK (
+                    context_features_json IS NULL
+                    OR json_valid(context_features_json)
+                )
+            );
+            CREATE TABLE raw_context_request_v6 (
+                request_id TEXT PRIMARY KEY,
+                review_id TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                anchor_packet_id TEXT NOT NULL,
+                anchor_sequence_number INTEGER NOT NULL CHECK (
+                    anchor_sequence_number > 0
+                ),
+                before_packet_count INTEGER NOT NULL CHECK (
+                    before_packet_count > 0
+                ),
+                after_packet_count INTEGER NOT NULL CHECK (
+                    after_packet_count >= 0
+                ),
+                minimum_context_packet_count INTEGER NOT NULL CHECK (
+                    minimum_context_packet_count > 0
+                ),
+                request_status TEXT NOT NULL CHECK (
+                    request_status IN (
+                        'created', 'dispatched', 'pending_context',
+                        'partial_context', 'complete',
+                        'insufficient_context', 'dispatch_failed'
+                    )
+                ),
+                requested_at_ns INTEGER NOT NULL,
+                deadline_at_ns INTEGER NOT NULL,
+                edge_response_json TEXT,
+                last_error_code TEXT,
+                created_at_ns INTEGER NOT NULL,
+                updated_at_ns INTEGER NOT NULL,
+                FOREIGN KEY (review_id)
+                    REFERENCES cloud_review(review_id) ON DELETE CASCADE,
+                CHECK (deadline_at_ns > requested_at_ns),
+                CHECK (
+                    edge_response_json IS NULL
+                    OR json_valid(edge_response_json)
+                )
+            );
+            INSERT INTO cloud_review_v6 (
+                review_id, sender_id, anchor_packet_id, task_id,
+                feature_extractor_version, schema_version, review_status,
+                context_status, data_quality_valid, start_timestamp_ns,
+                end_timestamp_ns, packet_count, data_quality_json,
+                cloud_recomputed_features_json,
+                cloud_enhanced_features_json, advanced_features_json,
+                context_features_json, created_at_ns, updated_at_ns
+            )
+            SELECT
+                review_id, sender_id, anchor_packet_id, task_id,
+                feature_extractor_version, schema_version, review_status,
+                context_status, data_quality_valid, start_timestamp_ns,
+                end_timestamp_ns, packet_count, data_quality_json,
+                cloud_recomputed_features_json,
+                cloud_enhanced_features_json, advanced_features_json,
+                context_features_json, created_at_ns, updated_at_ns
+            FROM cloud_review;
+            INSERT INTO raw_context_request_v6 (
+                request_id, review_id, task_id, sender_id,
+                anchor_packet_id, anchor_sequence_number,
+                before_packet_count, after_packet_count,
+                minimum_context_packet_count, request_status,
+                requested_at_ns, deadline_at_ns, edge_response_json,
+                last_error_code, created_at_ns, updated_at_ns
+            )
+            SELECT
+                request_id, review_id, task_id, sender_id,
+                anchor_packet_id, anchor_sequence_number,
+                before_packet_count, after_packet_count,
+                MIN(before_packet_count + after_packet_count, 16),
+                request_status, requested_at_ns, deadline_at_ns,
+                edge_response_json, last_error_code, created_at_ns,
+                updated_at_ns
+            FROM raw_context_request;
+            DROP INDEX IF EXISTS idx_raw_context_request_deadline;
+            DROP INDEX IF EXISTS idx_cloud_review_sender_time;
+            DROP TABLE raw_context_request;
+            DROP TABLE cloud_review;
+            ALTER TABLE cloud_review_v6 RENAME TO cloud_review;
+            ALTER TABLE raw_context_request_v6
+                RENAME TO raw_context_request;
+            CREATE INDEX idx_cloud_review_sender_time
+                ON cloud_review(sender_id, updated_at_ns);
+            CREATE INDEX idx_raw_context_request_deadline
+                ON raw_context_request(request_status, deadline_at_ns);
+            """
+        )
+        violations = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"v5 to v6 migration foreign key violations: {violations}"
+            )
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.execute(
+            f"PRAGMA legacy_alter_table = {int(legacy_alter_table)}"
+        )
+        connection.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")

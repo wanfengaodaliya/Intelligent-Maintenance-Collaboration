@@ -49,8 +49,9 @@ class RawContextCoordinator:
             sender_id=sender_id,
             anchor_packet_id=anchor_packet_id,
             anchor_sequence_number=anchor_sequence_number,
-            before_packet_count=10,
-            after_packet_count=10,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
             requested_at_ns=now,
             deadline_at_ns=now + 3_000_000_000,
         )
@@ -63,6 +64,8 @@ class RawContextCoordinator:
                 response,
                 request_id=stored["request_id"],
                 anchor_packet_id=stored["anchor_packet_id"],
+                before_packet_count=stored["before_packet_count"],
+                after_packet_count=stored["after_packet_count"],
             )
         except ContractError as error:
             return self.repository.update_dispatch(
@@ -79,10 +82,11 @@ class RawContextCoordinator:
                 updated_at_ns=self.clock_ns(),
             )
         if validated["status"] == "insufficient_context":
-            return self.repository.mark_insufficient(
+            return self.repository.update_dispatch(
                 stored["request_id"],
-                error_code="EDGE_INSUFFICIENT_CONTEXT",
+                request_status="pending_context",
                 edge_response=validated,
+                last_error_code="EDGE_INSUFFICIENT_CONTEXT",
                 updated_at_ns=self.clock_ns(),
             )
         return self.repository.update_dispatch(

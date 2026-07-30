@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS cloud_review (
     review_id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, anchor_packet_id TEXT NOT NULL, task_id TEXT NOT NULL,
     feature_extractor_version TEXT NOT NULL, schema_version TEXT NOT NULL,
     review_status TEXT NOT NULL CHECK (review_status IN ('preliminary', 'complete', 'insufficient_context', 'invalid')),
-    context_status TEXT NOT NULL CHECK (context_status IN ('pending_context', 'complete', 'insufficient_context', 'not_requested', 'invalid')),
+    context_status TEXT NOT NULL CHECK (context_status IN ('pending_context', 'partial_context', 'complete', 'insufficient_context', 'not_requested', 'invalid')),
     data_quality_valid INTEGER NOT NULL CHECK (data_quality_valid IN (0, 1)), start_timestamp_ns INTEGER, end_timestamp_ns INTEGER,
     packet_count INTEGER NOT NULL DEFAULT 1 CHECK (packet_count > 0), data_quality_json TEXT NOT NULL,
     cloud_recomputed_features_json TEXT, cloud_enhanced_features_json TEXT, advanced_features_json TEXT, context_features_json TEXT,
@@ -72,11 +72,13 @@ CREATE TABLE IF NOT EXISTS raw_context_request (
     anchor_packet_id TEXT NOT NULL,
     anchor_sequence_number INTEGER NOT NULL CHECK (anchor_sequence_number > 0),
     before_packet_count INTEGER NOT NULL CHECK (before_packet_count > 0),
-    after_packet_count INTEGER NOT NULL CHECK (after_packet_count > 0),
+    after_packet_count INTEGER NOT NULL CHECK (after_packet_count >= 0),
+    minimum_context_packet_count INTEGER NOT NULL CHECK (minimum_context_packet_count > 0),
     request_status TEXT NOT NULL CHECK (
         request_status IN (
             'created', 'dispatched', 'pending_context',
-            'complete', 'insufficient_context', 'dispatch_failed'
+            'partial_context', 'complete', 'insufficient_context',
+            'dispatch_failed'
         )
     ),
     requested_at_ns INTEGER NOT NULL,

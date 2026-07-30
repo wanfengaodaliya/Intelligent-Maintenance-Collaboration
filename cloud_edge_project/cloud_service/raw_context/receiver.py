@@ -13,6 +13,7 @@ from cloud_service.storage.cloud_review_repository import CloudReviewRepository
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.raw_context_repository import (
     RawContextRequestRepository,
+    TERMINAL_REQUEST_STATUSES,
 )
 from cloud_service.storage.raw_packet_repository import RawPacketRepository
 
@@ -20,6 +21,9 @@ from .contracts import (
     validate_raw_context_batch_envelope,
     validate_raw_context_packet,
 )
+
+PROCESSING_LEASE_DURATION_NS = 30_000_000_000
+PROCESSING_LEASE_WAIT_SECONDS = 5.0
 
 
 class RawContextReceiver:
@@ -44,6 +48,13 @@ class RawContextReceiver:
                 "UNKNOWN_CONTEXT_REQUEST",
                 "raw-context request does not exist",
             )
+        received_at_ns = self.clock_ns()
+        if received_at_ns > request["deadline_at_ns"]:
+            self.requests.expire_due(now_ns=received_at_ns)
+            raise ContractError(
+                "CONTEXT_REQUEST_EXPIRED",
+                "raw-context request deadline has passed",
+            )
         self._validate_request_match(batch, request)
         anchor_end_timestamp_ns = self.raw_packets.end_timestamp(
             sender_id=request["sender_id"],
@@ -54,18 +65,10 @@ class RawContextReceiver:
                 "CONTEXT_REQUEST_MISMATCH",
                 "anchor raw packet does not exist",
             )
-        received_at_ns = self.clock_ns()
-        if received_at_ns > request["deadline_at_ns"]:
-            self.requests.mark_insufficient(
-                request["request_id"],
-                error_code="CONTEXT_DEADLINE_EXCEEDED",
-                updated_at_ns=received_at_ns,
-            )
-            raise ContractError(
-                "CONTEXT_REQUEST_EXPIRED",
-                "raw-context request deadline has passed",
-            )
-
+        self._acquire_processing_lease(
+            request,
+            received_at_ns=received_at_ns,
+        )
         results: list[dict[str, Any]] = []
         seen_packet_ids: set[str] = set()
         seen_sequences: set[int] = set()
@@ -77,6 +80,8 @@ class RawContextReceiver:
                     candidate,
                     batch=batch,
                     anchor_end_timestamp_ns=anchor_end_timestamp_ns,
+                    before_packet_count=request["before_packet_count"],
+                    after_packet_count=request["after_packet_count"],
                 )
                 if (
                     packet["packet_id"] in seen_packet_ids
@@ -128,24 +133,24 @@ class RawContextReceiver:
                     )
                 )
 
-        if (
-            batch["context_status"] == "insufficient_context"
-            or batch["missing_sequence_numbers"]
-        ):
-            current = self.requests.mark_insufficient(
-                request["request_id"],
-                error_code="EDGE_INSUFFICIENT_CONTEXT",
-                updated_at_ns=received_at_ns,
-            )
-        elif self._is_complete(request):
+        if self._is_complete(request):
             current = self.requests.mark_complete(
                 request["request_id"],
                 updated_at_ns=received_at_ns,
             )
         else:
+            warning = (
+                "EDGE_INSUFFICIENT_CONTEXT"
+                if (
+                    batch["context_status"] == "insufficient_context"
+                    or batch["missing_sequence_numbers"]
+                )
+                else None
+            )
             current = self.requests.update_dispatch(
                 request["request_id"],
                 request_status="pending_context",
+                last_error_code=warning,
                 updated_at_ns=received_at_ns,
             )
         context_status = _context_status(current["request_status"])
@@ -155,20 +160,51 @@ class RawContextReceiver:
         )
         return {
             "request_id": batch["request_id"],
-            "review_id": request["review_id"],
             "batch_id": batch["batch_id"],
             "status": "accepted" if accepted else "rejected",
             "context_status": context_status,
-            "context_ready": current["request_status"] == "complete",
             "results": results,
         }
+
+    def _acquire_processing_lease(
+        self,
+        request: dict[str, Any],
+        *,
+        received_at_ns: int,
+    ) -> None:
+        if request["request_status"] in TERMINAL_REQUEST_STATUSES:
+            return
+        wait_until = time.monotonic() + PROCESSING_LEASE_WAIT_SECONDS
+        while True:
+            if self.requests.acquire_processing_lease(
+                request["request_id"],
+                lease_until_ns=(
+                    received_at_ns + PROCESSING_LEASE_DURATION_NS
+                ),
+                updated_at_ns=received_at_ns,
+            ):
+                return
+            current = self.requests.get(request["request_id"])
+            if (
+                current is not None
+                and current["request_status"] in TERMINAL_REQUEST_STATUSES
+            ):
+                raise ContractError(
+                    "CONTEXT_REQUEST_BUSY",
+                    "raw-context request finalized before lease acquisition",
+                )
+            if time.monotonic() >= wait_until:
+                raise ContractError(
+                    "CONTEXT_REQUEST_BUSY",
+                    "raw-context request is already processing a batch",
+                )
+            time.sleep(0.001)
 
     @staticmethod
     def _validate_request_match(
         batch: dict[str, Any], request: dict[str, Any]
     ) -> None:
         for field in (
-            "task_id",
             "sender_id",
             "anchor_packet_id",
             "anchor_sequence_number",
@@ -178,6 +214,14 @@ class RawContextReceiver:
                     "CONTEXT_REQUEST_MISMATCH",
                     f"{field} does not match raw-context request",
                 )
+        if (
+            batch["context_position"] == "after"
+            and request["after_packet_count"] == 0
+        ):
+            raise ContractError(
+                "INVALID_CONTEXT_BATCH",
+                "after context was not requested",
+            )
         anchor = request["anchor_sequence_number"]
         if batch["context_position"] == "before":
             low = anchor - request["before_packet_count"]
@@ -249,6 +293,8 @@ def _sequence_number(candidate: Any) -> int | None:
 def _context_status(request_status: str) -> str:
     if request_status == "complete":
         return "complete"
+    if request_status == "partial_context":
+        return "partial_context"
     if request_status == "insufficient_context":
         return "insufficient_context"
     return "pending_context"

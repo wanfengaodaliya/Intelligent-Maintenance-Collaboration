@@ -13,6 +13,7 @@ import sqlite3
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import Mock, patch
@@ -29,11 +30,12 @@ from cloud_service.app import (
 from cloud_service.config import CloudSettings
 from cloud_service.perception import pipeline as perception_pipeline
 from cloud_service.raw_context.coordinator import RawContextCoordinator
-from cloud_service.raw_context.receiver import RawContextReceiver
+from cloud_service.raw_context.receiver import RawContextReceiver, _context_status
 from cloud_service.raw_context.transport import HttpRawContextTransport
 from cloud_service.service import infer_cloud as infer_cloud_service
 from cloud_service.storage import CloudReviewRepository, connect, initialize_database
 from cloud_service.storage.raw_context_repository import RawContextRequestRepository
+from cloud_service.storage.raw_packet_repository import RawPacketRepository
 from common.schemas import ContractError
 
 
@@ -99,8 +101,9 @@ def create_context_request(
         sender_id="sender_01",
         anchor_packet_id="batch_000101",
         anchor_sequence_number=101,
-        before_packet_count=10,
-        after_packet_count=10,
+        before_packet_count=20,
+        after_packet_count=0,
+        minimum_context_packet_count=16,
         requested_at_ns=1_000_000_000,
         deadline_at_ns=deadline,
     )
@@ -242,6 +245,199 @@ class RawContextRepositoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    def test_migrates_v5_context_requests_without_data_or_foreign_key_loss(
+        self,
+    ) -> None:
+        database_path = Path(self.temporary_directory.name) / "legacy-v5.db"
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.executescript(
+                """
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at_ns INTEGER NOT NULL,
+                    description TEXT NOT NULL
+                );
+                CREATE TABLE edge_packet_summary (
+                    sender_id TEXT NOT NULL,
+                    packet_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    sequence_number INTEGER NOT NULL,
+                    edge_node_id TEXT NOT NULL,
+                    end_timestamp_ns INTEGER NOT NULL,
+                    received_at_ns INTEGER NOT NULL,
+                    processing_status TEXT NOT NULL,
+                    PRIMARY KEY (sender_id, packet_id)
+                );
+                CREATE TABLE cloud_review (
+                    review_id TEXT PRIMARY KEY,
+                    sender_id TEXT NOT NULL,
+                    anchor_packet_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    feature_extractor_version TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    review_status TEXT NOT NULL CHECK (
+                        review_status IN (
+                            'preliminary', 'complete',
+                            'insufficient_context', 'invalid'
+                        )
+                    ),
+                    context_status TEXT NOT NULL CHECK (
+                        context_status IN (
+                            'pending_context', 'complete',
+                            'insufficient_context', 'not_requested', 'invalid'
+                        )
+                    ),
+                    data_quality_valid INTEGER NOT NULL CHECK (
+                        data_quality_valid IN (0, 1)
+                    ),
+                    start_timestamp_ns INTEGER,
+                    end_timestamp_ns INTEGER,
+                    packet_count INTEGER NOT NULL DEFAULT 1 CHECK (
+                        packet_count > 0
+                    ),
+                    data_quality_json TEXT NOT NULL,
+                    cloud_recomputed_features_json TEXT,
+                    cloud_enhanced_features_json TEXT,
+                    advanced_features_json TEXT,
+                    context_features_json TEXT,
+                    created_at_ns INTEGER NOT NULL,
+                    updated_at_ns INTEGER NOT NULL,
+                    UNIQUE (
+                        sender_id, anchor_packet_id,
+                        feature_extractor_version
+                    ),
+                    FOREIGN KEY (sender_id, anchor_packet_id)
+                        REFERENCES edge_packet_summary(sender_id, packet_id)
+                );
+                CREATE INDEX idx_cloud_review_sender_time
+                    ON cloud_review(sender_id, updated_at_ns);
+                CREATE TABLE raw_context_request (
+                    request_id TEXT PRIMARY KEY,
+                    review_id TEXT NOT NULL UNIQUE,
+                    task_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    anchor_packet_id TEXT NOT NULL,
+                    anchor_sequence_number INTEGER NOT NULL CHECK (
+                        anchor_sequence_number > 0
+                    ),
+                    before_packet_count INTEGER NOT NULL CHECK (
+                        before_packet_count > 0
+                    ),
+                    after_packet_count INTEGER NOT NULL CHECK (
+                        after_packet_count > 0
+                    ),
+                    request_status TEXT NOT NULL CHECK (
+                        request_status IN (
+                            'created', 'dispatched', 'pending_context',
+                            'complete', 'insufficient_context',
+                            'dispatch_failed'
+                        )
+                    ),
+                    requested_at_ns INTEGER NOT NULL,
+                    deadline_at_ns INTEGER NOT NULL,
+                    edge_response_json TEXT,
+                    last_error_code TEXT,
+                    created_at_ns INTEGER NOT NULL,
+                    updated_at_ns INTEGER NOT NULL,
+                    FOREIGN KEY (review_id)
+                        REFERENCES cloud_review(review_id) ON DELETE CASCADE
+                );
+                CREATE INDEX idx_raw_context_request_deadline
+                    ON raw_context_request(request_status, deadline_at_ns);
+                INSERT INTO schema_migrations VALUES (
+                    5, 1, 'raw context request and ingestion schema'
+                );
+                INSERT INTO edge_packet_summary VALUES
+                    ('sender_01', 'batch_000101', 'task_00001', 101,
+                     'edge_01', 5050000000, 6000000000,
+                     'perception_completed'),
+                    ('sender_01', 'batch_000201', 'task_00002', 201,
+                     'edge_01', 10050000000, 11000000000,
+                     'perception_completed');
+                INSERT INTO cloud_review (
+                    review_id, sender_id, anchor_packet_id, task_id,
+                    feature_extractor_version, schema_version,
+                    review_status, context_status, data_quality_valid,
+                    start_timestamp_ns, end_timestamp_ns, packet_count,
+                    data_quality_json, created_at_ns, updated_at_ns
+                ) VALUES
+                    ('review_v5', 'sender_01', 'batch_000101', 'task_00001',
+                     'cloud_high_rate_feature_v1',
+                     'cloud_perception_result/2.0',
+                     'preliminary', 'pending_context', 1,
+                     5000000000, 5050000000, 1, '{}', 1, 1),
+                    ('review_v6', 'sender_01', 'batch_000201', 'task_00002',
+                     'cloud_high_rate_feature_v1',
+                     'cloud_perception_result/2.0',
+                     'preliminary', 'not_requested', 1,
+                     10000000000, 10050000000, 1, '{}', 1, 1);
+                INSERT INTO raw_context_request (
+                    request_id, review_id, task_id, sender_id,
+                    anchor_packet_id, anchor_sequence_number,
+                    before_packet_count, after_packet_count, request_status,
+                    requested_at_ns, deadline_at_ns, created_at_ns,
+                    updated_at_ns
+                ) VALUES (
+                    'ctx_req_v5', 'review_v5', 'task_00001', 'sender_01',
+                    'batch_000101', 101, 10, 10, 'pending_context',
+                    1000, 3000001000, 1000, 1000
+                );
+                """
+            )
+
+        initialize_database(database_path)
+        migrated = RawContextRequestRepository(database_path).get(
+            "ctx_req_v5"
+        )
+        created = RawContextRequestRepository(database_path).create_or_get(
+            request_id="ctx_req_v6",
+            review_id="review_v6",
+            task_id="task_00002",
+            sender_id="sender_01",
+            anchor_packet_id="batch_000201",
+            anchor_sequence_number=201,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
+            requested_at_ns=2_000,
+            deadline_at_ns=3_000_002_000,
+        )
+        initialize_database(database_path)
+
+        self.assertEqual(migrated["minimum_context_packet_count"], 16)
+        self.assertEqual(created["after_packet_count"], 0)
+        self.assertEqual(created["minimum_context_packet_count"], 16)
+        with connect(database_path) as connection:
+            connection.execute(
+                "UPDATE raw_context_request "
+                "SET request_status='partial_context' "
+                "WHERE request_id='ctx_req_v6'"
+            )
+            connection.execute(
+                "UPDATE cloud_review SET context_status='partial_context' "
+                "WHERE review_id='review_v6'"
+            )
+            reviews = connection.execute(
+                "SELECT review_id FROM cloud_review ORDER BY review_id"
+            ).fetchall()
+            requests = connection.execute(
+                "SELECT request_id FROM raw_context_request "
+                "ORDER BY request_id"
+            ).fetchall()
+            foreign_key_violations = connection.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+        self.assertEqual(
+            [row["review_id"] for row in reviews],
+            ["review_v5", "review_v6"],
+        )
+        self.assertEqual(
+            [row["request_id"] for row in requests],
+            ["ctx_req_v5", "ctx_req_v6"],
+        )
+        self.assertEqual(foreign_key_violations, [])
+
     def test_create_or_get_reuses_one_request_per_review(self) -> None:
         first = self.repository.create_or_get(
             request_id="ctx_req_001",
@@ -250,8 +446,9 @@ class RawContextRepositoryTests(unittest.TestCase):
             sender_id="sender_01",
             anchor_packet_id="batch_000101",
             anchor_sequence_number=101,
-            before_packet_count=10,
-            after_packet_count=10,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
             requested_at_ns=10_000,
             deadline_at_ns=3_000_010_000,
         )
@@ -262,8 +459,9 @@ class RawContextRepositoryTests(unittest.TestCase):
             sender_id="sender_01",
             anchor_packet_id="batch_000101",
             anchor_sequence_number=101,
-            before_packet_count=10,
-            after_packet_count=10,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
             requested_at_ns=20_000,
             deadline_at_ns=3_000_020_000,
         )
@@ -271,6 +469,7 @@ class RawContextRepositoryTests(unittest.TestCase):
         self.assertEqual(first["request_id"], "ctx_req_001")
         self.assertEqual(retried["request_id"], "ctx_req_001")
         self.assertEqual(retried["request_status"], "created")
+        self.assertEqual(retried["minimum_context_packet_count"], 16)
         review = CloudReviewRepository(self.database_path).get(self.review_id)
         self.assertEqual(review["review_status"], "preliminary")
         self.assertEqual(review["context_status"], "pending_context")
@@ -289,8 +488,9 @@ class RawContextRepositoryTests(unittest.TestCase):
                 sender_id="sender_01",
                 anchor_packet_id="batch_000101",
                 anchor_sequence_number=101,
-                before_packet_count=10,
-                after_packet_count=10,
+                before_packet_count=20,
+                after_packet_count=0,
+                minimum_context_packet_count=16,
                 requested_at_ns=10_000,
                 deadline_at_ns=3_000_010_000,
             )
@@ -320,8 +520,9 @@ class RawContextRepositoryTests(unittest.TestCase):
             sender_id="sender_01",
             anchor_packet_id="batch_000101",
             anchor_sequence_number=101,
-            before_packet_count=10,
-            after_packet_count=10,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
             requested_at_ns=10_000,
             deadline_at_ns=20_000,
         )
@@ -333,6 +534,164 @@ class RawContextRepositoryTests(unittest.TestCase):
         self.assertEqual(expired, ["ctx_req_001"])
         self.assertEqual(request["request_status"], "insufficient_context")
         self.assertEqual(request["last_error_code"], "CONTEXT_DEADLINE_EXCEEDED")
+        self.assertEqual(review["context_status"], "insufficient_context")
+        self.assertEqual(review["review_status"], "insufficient_context")
+
+    def test_expire_due_skips_request_with_active_processing_lease(
+        self,
+    ) -> None:
+        self.repository.create_or_get(
+            request_id="ctx_req_001",
+            review_id=self.review_id,
+            task_id="task_00001",
+            sender_id="sender_01",
+            anchor_packet_id="batch_000101",
+            anchor_sequence_number=101,
+            before_packet_count=20,
+            after_packet_count=0,
+            minimum_context_packet_count=16,
+            requested_at_ns=10_000,
+            deadline_at_ns=20_000,
+        )
+        acquired = self.repository.acquire_processing_lease(
+            "ctx_req_001",
+            lease_until_ns=30_000,
+            updated_at_ns=15_000,
+        )
+
+        expired = self.repository.expire_due(now_ns=20_001)
+
+        request = self.repository.get("ctx_req_001")
+        review = CloudReviewRepository(self.database_path).get(self.review_id)
+        self.assertTrue(acquired)
+        self.assertEqual(expired, [])
+        self.assertEqual(request["request_status"], "created")
+        self.assertEqual(review["context_status"], "pending_context")
+        self.assertEqual(review["review_status"], "preliminary")
+
+    def test_expire_due_marks_contiguous_minimum_before_context_partial(
+        self,
+    ) -> None:
+        create_context_request(
+            self.database_path,
+            self.review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        receiver = RawContextReceiver(
+            self.database_path,
+            clock_ns=lambda: 1_500_000_000,
+        )
+        receiver.receive_batch(
+            context_batch(list(range(85, 95)), position="before")
+        )
+        receiver.receive_batch(
+            context_batch(list(range(95, 101)), position="before")
+        )
+
+        self.repository.expire_due(now_ns=2_000_000_001)
+
+        request = self.repository.get("ctx_req_001")
+        review = CloudReviewRepository(self.database_path).get(self.review_id)
+        self.assertEqual(request["request_status"], "partial_context")
+        self.assertEqual(review["context_status"], "partial_context")
+        self.assertEqual(review["review_status"], "preliminary")
+
+    def test_expire_due_recovers_full_pending_context_as_complete(
+        self,
+    ) -> None:
+        create_context_request(
+            self.database_path,
+            self.review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        raw_packets = RawPacketRepository(self.database_path)
+        for sequence_number in range(81, 101):
+            raw_packets.ingest_context(
+                raw_packet(sequence_number),
+                review_id=self.review_id,
+                relative_position=sequence_number - 101,
+                role="before",
+            )
+        self.repository.update_dispatch(
+            "ctx_req_001",
+            request_status="pending_context",
+            last_error_code="EDGE_INSUFFICIENT_CONTEXT",
+            updated_at_ns=1_500_000_000,
+        )
+
+        expired = self.repository.expire_due(now_ns=2_000_000_001)
+
+        request = self.repository.get("ctx_req_001")
+        review = CloudReviewRepository(self.database_path).get(self.review_id)
+        self.assertEqual(expired, ["ctx_req_001"])
+        self.assertEqual(request["request_status"], "complete")
+        self.assertIsNone(request["last_error_code"])
+        self.assertEqual(review["context_status"], "complete")
+        self.assertEqual(review["review_status"], "preliminary")
+
+    def test_expire_due_recovers_stale_full_processing_lease_as_complete(
+        self,
+    ) -> None:
+        create_context_request(
+            self.database_path,
+            self.review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        raw_packets = RawPacketRepository(self.database_path)
+        for sequence_number in range(81, 101):
+            raw_packets.ingest_context(
+                raw_packet(sequence_number),
+                review_id=self.review_id,
+                relative_position=sequence_number - 101,
+                role="before",
+            )
+        acquired = self.repository.acquire_processing_lease(
+            "ctx_req_001",
+            lease_until_ns=2_000_000_000,
+            updated_at_ns=1_500_000_000,
+        )
+
+        expired = self.repository.expire_due(now_ns=2_000_000_001)
+
+        request = self.repository.get("ctx_req_001")
+        review = CloudReviewRepository(self.database_path).get(self.review_id)
+        self.assertTrue(acquired)
+        self.assertEqual(expired, ["ctx_req_001"])
+        self.assertEqual(request["request_status"], "complete")
+        self.assertIsNone(request["last_error_code"])
+        self.assertEqual(review["context_status"], "complete")
+        self.assertEqual(review["review_status"], "preliminary")
+
+    def test_expire_due_rejects_noncontiguous_minimum_before_context(
+        self,
+    ) -> None:
+        create_context_request(
+            self.database_path,
+            self.review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        receiver = RawContextReceiver(
+            self.database_path,
+            clock_ns=lambda: 1_500_000_000,
+        )
+        receiver.receive_batch(
+            context_batch(list(range(84, 94)), position="before")
+        )
+        receiver.receive_batch(
+            context_batch(
+                list(range(94, 98)),
+                position="before",
+            )
+        )
+        receiver.receive_batch(
+            context_batch([99, 100], position="before")
+        )
+
+        self.repository.expire_due(now_ns=2_000_000_001)
+
+        request = self.repository.get("ctx_req_001")
+        review = CloudReviewRepository(self.database_path).get(self.review_id)
+        self.assertEqual(request["request_status"], "insufficient_context")
         self.assertEqual(review["context_status"], "insufficient_context")
         self.assertEqual(review["review_status"], "insufficient_context")
 
@@ -362,13 +721,13 @@ class EchoTransport:
             "anchor_packet_id": request["anchor_packet_id"],
             "status": "pending_context",
             "before_context": {
-                "expected_count": 10,
-                "available_count": 10,
+                "expected_count": 20,
+                "available_count": 20,
                 "upload_status": "queued",
                 "missing_sequence_numbers": [],
             },
             "after_context": {
-                "expected_count": 10,
+                "expected_count": 0,
                 "available_count": 0,
                 "upload_status": "waiting_until_complete",
                 "missing_sequence_numbers": [],
@@ -391,11 +750,11 @@ class RawContextCoordinatorTests(unittest.TestCase):
             "anchor_packet_id": "batch_000101",
             "status": "pending_context",
             "before_context": {
-                "expected_count": 10, "available_count": 10,
+                "expected_count": 20, "available_count": 20,
                 "upload_status": "queued", "missing_sequence_numbers": [],
             },
             "after_context": {
-                "expected_count": 10, "available_count": 3,
+                "expected_count": 0, "available_count": 0,
                 "upload_status": "waiting_until_complete",
                 "missing_sequence_numbers": [],
             },
@@ -421,14 +780,15 @@ class RawContextCoordinatorTests(unittest.TestCase):
             "sender_id": "sender_01",
             "anchor_packet_id": "batch_000101",
             "anchor_sequence_number": 101,
-            "before_packet_count": 10,
-            "after_packet_count": 10,
+            "before_packet_count": 20,
+            "after_packet_count": 0,
             "requested_at_ns": 1_000_000_000,
             "deadline_at_ns": 4_000_000_000,
         }])
         self.assertEqual(result["request_status"], "pending_context")
         stored = RawContextRequestRepository(self.database_path).get("ctx_req_001")
         self.assertEqual(stored["request_status"], "pending_context")
+        self.assertEqual(stored["minimum_context_packet_count"], 16)
         self.assertIn('"status":"pending_context"', stored["edge_response_json"])
 
     def test_transport_failure_is_persisted_and_retry_reuses_request_id(self) -> None:
@@ -456,11 +816,11 @@ class RawContextCoordinatorTests(unittest.TestCase):
             "anchor_packet_id": "batch_000101",
             "status": "complete",
             "before_context": {
-                "expected_count": 10, "available_count": 10,
+                "expected_count": 20, "available_count": 20,
                 "upload_status": "queued", "missing_sequence_numbers": [],
             },
             "after_context": {
-                "expected_count": 10, "available_count": 10,
+                "expected_count": 0, "available_count": 0,
                 "upload_status": "queued", "missing_sequence_numbers": [],
             },
         })
@@ -480,6 +840,42 @@ class RawContextCoordinatorTests(unittest.TestCase):
         self.assertEqual(succeeding.requests[0]["request_id"], "ctx_req_001")
         self.assertEqual(retried["request_id"], "ctx_req_001")
         self.assertEqual(retried["request_status"], "pending_context")
+
+    def test_edge_insufficient_response_keeps_request_pending_until_deadline(
+        self,
+    ) -> None:
+        transport = FakeTransport({
+            "request_id": "ctx_req_001",
+            "anchor_packet_id": "batch_000101",
+            "status": "insufficient_context",
+            "before_context": {
+                "expected_count": 20, "available_count": 15,
+                "upload_status": "unavailable", "missing_sequence_numbers": [85],
+            },
+            "after_context": {
+                "expected_count": 0, "available_count": 0,
+                "upload_status": "waiting_until_complete",
+                "missing_sequence_numbers": [],
+            },
+        })
+        coordinator = RawContextCoordinator(
+            self.database_path,
+            transport=transport,
+            clock_ns=lambda: 1_000_000_000,
+            request_id_factory=lambda: "ctx_req_001",
+        )
+
+        result = coordinator.create_and_dispatch(
+            review_id=self.review_id,
+            task_id="task_00001",
+            sender_id="sender_01",
+            anchor_packet_id="batch_000101",
+            anchor_sequence_number=101,
+        )
+
+        self.assertEqual(result["request_status"], "pending_context")
+        self.assertEqual(result["last_error_code"], "EDGE_INSUFFICIENT_CONTEXT")
+        self.assertIn('"status":"insufficient_context"', result["edge_response_json"])
 
 
 class RawContextProductionIntegrationTests(unittest.TestCase):
@@ -610,6 +1006,13 @@ class RawContextReceiverTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    def test_edge_acknowledgement_hides_cloud_internal_fields(self) -> None:
+        result = self.receiver.receive_batch(context_batch([100], position="before"))
+
+        self.assertNotIn("review_id", result)
+        self.assertNotIn("context_ready", result)
+        self.assertEqual(result["context_status"], "pending_context")
+
     def test_accepts_valid_packet_and_persists_raw_index_and_review_link(self) -> None:
         result = self.receiver.receive_batch(
             context_batch([100], position="before")
@@ -617,7 +1020,6 @@ class RawContextReceiverTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["context_status"], "pending_context")
-        self.assertFalse(result["context_ready"])
         self.assertEqual(result["results"], [{
             "packet_id": "batch_000100",
             "sequence_number": 100,
@@ -685,6 +1087,152 @@ class RawContextReceiverTests(unittest.TestCase):
             "status": "rejected",
             "error_code": "INVALID_SAMPLE_CONFIG",
         })
+
+    def test_expiry_cannot_finalize_request_during_active_batch(
+        self,
+    ) -> None:
+        second_database = Path(self.temporary_directory.name) / "lease.db"
+        review_id = create_review(second_database)
+        create_context_request(
+            second_database,
+            review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        receiver = RawContextReceiver(
+            second_database,
+            clock_ns=lambda: 1_999_999_999,
+        )
+        receiver.receive_batch(
+            context_batch(list(range(81, 91)), position="before")
+        )
+        original_ingest = receiver.raw_packets.ingest_context
+        expired: list[str] = []
+        call_count = 0
+
+        def ingest_with_expiry(*args: object, **kwargs: object):
+            nonlocal call_count
+            result = original_ingest(*args, **kwargs)
+            call_count += 1
+            if call_count == 1:
+                expired.extend(
+                    RawContextRequestRepository(
+                        second_database
+                    ).expire_due(now_ns=2_000_000_001)
+                )
+            return result
+
+        with patch.object(
+            receiver.raw_packets,
+            "ingest_context",
+            side_effect=ingest_with_expiry,
+        ):
+            result = receiver.receive_batch(
+                context_batch(list(range(91, 101)), position="before")
+            )
+
+        request = RawContextRequestRepository(second_database).get(
+            "ctx_req_001"
+        )
+        self.assertEqual(expired, [])
+        self.assertEqual(result["context_status"], "complete")
+        self.assertEqual(request["request_status"], "complete")
+        self.assertIsNone(request["last_error_code"])
+
+    def test_terminal_race_before_lease_stops_without_writing_packet(
+        self,
+    ) -> None:
+        second_database = Path(self.temporary_directory.name) / "race.db"
+        review_id = create_review(second_database)
+        create_context_request(
+            second_database,
+            review_id,
+            deadline_at_ns=2_000_000_000,
+        )
+        receiver = RawContextReceiver(
+            second_database,
+            clock_ns=lambda: 1_999_999_999,
+        )
+        expired: list[str] = []
+
+        def expire_before_acquire(*args: object, **kwargs: object) -> bool:
+            expired.extend(
+                RawContextRequestRepository(
+                    second_database
+                ).expire_due(now_ns=2_000_000_001)
+            )
+            return False
+
+        captured: ContractError | None = None
+        with patch.object(
+            receiver.requests,
+            "acquire_processing_lease",
+            side_effect=expire_before_acquire,
+        ):
+            try:
+                receiver.receive_batch(
+                    context_batch([100], position="before")
+                )
+            except ContractError as error:
+                captured = error
+
+        with connect(second_database) as connection:
+            raw_count = connection.execute(
+                "SELECT COUNT(*) FROM raw_packet_index "
+                "WHERE packet_id='batch_000100'"
+            ).fetchone()[0]
+            link_count = connection.execute(
+                "SELECT COUNT(*) FROM review_context_packets "
+                "WHERE review_id=?",
+                (review_id,),
+            ).fetchone()[0]
+        self.assertEqual(expired, ["ctx_req_001"])
+        self.assertEqual(raw_count, 0)
+        self.assertEqual(link_count, 0)
+        self.assertIsNotNone(captured)
+        self.assertEqual(captured.code, "CONTEXT_REQUEST_BUSY")
+
+    def test_packet_inherits_task_and_sender_from_batch(self) -> None:
+        payload = context_batch([100], position="before")
+        del payload["packets"][0]["task_id"]
+        del payload["packets"][0]["sender_id"]
+
+        result = self.receiver.receive_batch(payload)
+
+        self.assertEqual(result["results"][0]["status"], "accepted")
+
+    def test_accepts_batch_from_different_task_for_same_sender(self) -> None:
+        payload = context_batch([81], position="before")
+        payload["task_id"] = "task_00002"
+        del payload["packets"][0]["task_id"]
+
+        result = self.receiver.receive_batch(payload)
+
+        self.assertEqual(result["results"][0]["status"], "accepted")
+        with connect(self.database_path) as connection:
+            stored_task_id = connection.execute(
+                "SELECT task_id FROM raw_packet_index "
+                "WHERE sender_id='sender_01' AND packet_id='batch_000081'"
+            ).fetchone()[0]
+        self.assertEqual(stored_task_id, "task_00002")
+
+    def test_rejects_after_batch_for_preceding_only_request(self) -> None:
+        with self.assertRaises(ContractError) as captured:
+            self.receiver.receive_batch(
+                context_batch([102], position="after")
+            )
+
+        self.assertEqual(captured.exception.code, "INVALID_CONTEXT_BATCH")
+
+    def test_explicit_packet_identity_mismatch_is_rejected(self) -> None:
+        payload = context_batch([100], position="before")
+        payload["packets"][0]["sender_id"] = "other_sender"
+
+        result = self.receiver.receive_batch(payload)
+
+        self.assertEqual(
+            result["results"][0]["error_code"],
+            "INVALID_CONTEXT_PACKET",
+        )
 
     def test_missing_packet_field_uses_stable_item_error_code(self) -> None:
         payload = context_batch([100], position="before")
@@ -781,6 +1329,41 @@ class RawContextReceiverTests(unittest.TestCase):
         review = CloudReviewRepository(second_database).get(review_id)
         self.assertEqual(review["context_status"], "insufficient_context")
 
+    def test_expired_batch_finalizes_existing_contiguous_context_as_partial(
+        self,
+    ) -> None:
+        second_database = Path(self.temporary_directory.name) / "partial.db"
+        review_id = create_review(second_database)
+        create_context_request(
+            second_database,
+            review_id,
+            deadline_at_ns=1_500_000_000,
+        )
+        RawContextReceiver(
+            second_database,
+            clock_ns=lambda: 1_000_000_000,
+        ).receive_batch(
+            context_batch(list(range(85, 95)), position="before")
+        )
+        RawContextReceiver(
+            second_database,
+            clock_ns=lambda: 1_000_000_000,
+        ).receive_batch(
+            context_batch(list(range(95, 101)), position="before")
+        )
+
+        with self.assertRaises(ContractError) as captured:
+            RawContextReceiver(
+                second_database,
+                clock_ns=lambda: 2_000_000_000,
+            ).receive_batch(context_batch([84], position="before"))
+
+        self.assertEqual(captured.exception.code, "CONTEXT_REQUEST_EXPIRED")
+        request = RawContextRequestRepository(second_database).get("ctx_req_001")
+        review = CloudReviewRepository(second_database).get(review_id)
+        self.assertEqual(request["request_status"], "partial_context")
+        self.assertEqual(review["context_status"], "partial_context")
+
     def test_same_packet_with_changed_content_is_conflict(self) -> None:
         payload = context_batch([100], position="before")
         self.receiver.receive_batch(payload)
@@ -871,20 +1454,18 @@ class RawContextReceiverTests(unittest.TestCase):
 
     def test_all_twenty_positions_mark_context_ready_without_completing_review(self) -> None:
         before = self.receiver.receive_batch(
-            context_batch(list(range(91, 101)), position="before")
+            context_batch(list(range(81, 91)), position="before")
         )
-        after = self.receiver.receive_batch(
+        preceding = self.receiver.receive_batch(
             context_batch(
-                list(range(102, 112)),
-                position="after",
+                list(range(91, 101)),
+                position="before",
                 status="complete",
             )
         )
 
-        self.assertFalse(before["context_ready"])
-        self.assertTrue(after["context_ready"])
-        self.assertEqual(after["review_id"], self.review_id)
-        self.assertEqual(after["context_status"], "complete")
+        self.assertEqual(before["context_status"], "pending_context")
+        self.assertEqual(preceding["context_status"], "complete")
         request = RawContextRequestRepository(self.database_path).get(
             "ctx_req_001"
         )
@@ -895,10 +1476,10 @@ class RawContextReceiverTests(unittest.TestCase):
 
     def test_complete_request_cannot_regress_to_insufficient(self) -> None:
         self.receiver.receive_batch(
-            context_batch(list(range(91, 101)), position="before")
+            context_batch(list(range(81, 91)), position="before")
         )
         self.receiver.receive_batch(
-            context_batch(list(range(102, 112)), position="after")
+            context_batch(list(range(91, 101)), position="before")
         )
 
         late_missing = self.receiver.receive_batch(
@@ -911,7 +1492,6 @@ class RawContextReceiverTests(unittest.TestCase):
         )
 
         self.assertEqual(late_missing["context_status"], "complete")
-        self.assertTrue(late_missing["context_ready"])
         request = RawContextRequestRepository(self.database_path).get(
             "ctx_req_001"
         )
@@ -920,7 +1500,7 @@ class RawContextReceiverTests(unittest.TestCase):
         self.assertEqual(review["context_status"], "complete")
         self.assertEqual(review["review_status"], "preliminary")
 
-    def test_edge_reported_missing_packet_marks_context_insufficient(self) -> None:
+    def test_edge_reported_missing_packet_keeps_context_pending_until_deadline(self) -> None:
         result = self.receiver.receive_batch(
             context_batch(
                 [91],
@@ -930,10 +1510,15 @@ class RawContextReceiverTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["context_status"], "insufficient_context")
-        self.assertFalse(result["context_ready"])
+        self.assertEqual(result["context_status"], "pending_context")
+        request = RawContextRequestRepository(self.database_path).get("ctx_req_001")
         review = CloudReviewRepository(self.database_path).get(self.review_id)
-        self.assertEqual(review["review_status"], "insufficient_context")
+        self.assertEqual(request["request_status"], "pending_context")
+        self.assertEqual(request["last_error_code"], "EDGE_INSUFFICIENT_CONTEXT")
+        self.assertEqual(review["review_status"], "preliminary")
+
+    def test_partial_context_status_is_returned_as_partial(self) -> None:
+        self.assertEqual(_context_status("partial_context"), "partial_context")
 
 
 def response_body(response: JSONResponse) -> dict:
