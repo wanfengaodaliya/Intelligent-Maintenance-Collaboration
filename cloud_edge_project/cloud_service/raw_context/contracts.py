@@ -39,7 +39,6 @@ def validate_edge_context_response(
     request_id: str,
     anchor_packet_id: str,
     before_packet_count: int,
-    after_packet_count: int,
 ) -> dict[str, Any]:
     try:
         return _validate_edge_context_response(
@@ -47,7 +46,6 @@ def validate_edge_context_response(
             request_id=request_id,
             anchor_packet_id=anchor_packet_id,
             before_packet_count=before_packet_count,
-            after_packet_count=after_packet_count,
         )
     except ContractError as error:
         if error.code == "EDGE_REJECTED_CONTEXT_REQUEST":
@@ -65,7 +63,6 @@ def _validate_edge_context_response(
     request_id: str,
     anchor_packet_id: str,
     before_packet_count: int,
-    after_packet_count: int,
 ) -> dict[str, Any]:
     response = require_mapping(payload, "RawContextResponse")
     if require_non_empty_string(
@@ -89,7 +86,6 @@ def _validate_edge_context_response(
         )
     expected_counts = {
         "before_context": before_packet_count,
-        "after_context": after_packet_count,
     }
     for field, requested_count in expected_counts.items():
         context = require_mapping(require_field(response, field), field)
@@ -170,12 +166,12 @@ def _validate_raw_context_batch_envelope(payload: Any) -> dict[str, Any]:
     item_count = batch["item_count"]
     if (
         not isinstance(packets, list)
-        or not 1 <= item_count <= 10
+        or not 1 <= item_count <= 20
         or len(packets) != item_count
     ):
         raise ContractError(
             "INVALID_CONTEXT_BATCH",
-            "item_count must equal 1 to 10 packets",
+            "item_count must equal 1 to 20 packets",
         )
     if (
         batch["last_sequence_number"]

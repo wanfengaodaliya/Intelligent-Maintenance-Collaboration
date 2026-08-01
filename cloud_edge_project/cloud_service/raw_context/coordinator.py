@@ -81,7 +81,6 @@ class RawContextCoordinator:
                 request_id=stored["request_id"],
                 anchor_packet_id=stored["anchor_packet_id"],
                 before_packet_count=stored["before_packet_count"],
-                after_packet_count=stored["after_packet_count"],
             )
         except ContractError as error:
             return self.repository.update_dispatch(
