@@ -1,4 +1,5 @@
-docs/superpowers/
+# 本地设计、实施文档，不提交到远程仓库。
+docs/
 .worktrees/
 cloud_edge_project/tests/
 cloud_edge_project/docs/
