@@ -40,8 +40,10 @@ config = load_config()
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
     from cloud_service.enhanced_analysis.service import EnhancedAnalysisService
+    from cloud_service.final_summary.service import FinalSummaryService
 
-    EnhancedAnalysisService(database_path).analyze(review_id)
+    result = EnhancedAnalysisService(database_path).analyze(review_id)
+    FinalSummaryService(database_path).summarize(result)
 
 
 async def _expire_raw_context_requests() -> None:
@@ -207,6 +209,16 @@ def raw_context_batches(
             status_code=503,
             content={"error_code": "SERVICE_UNAVAILABLE"},
         )
+
+
+@app.get("/cloud/reviews/{review_id}/summary", response_model=None)
+def final_summary(review_id: str) -> dict[str, object] | JSONResponse:
+    from cloud_service.final_summary.service import FinalSummaryService
+
+    summary = FinalSummaryService(load_cloud_settings().database_path).get(review_id)
+    if summary is None:
+        return JSONResponse(status_code=404, content={"error_code": "SUMMARY_NOT_READY"})
+    return summary
 
 
 @app.post("/cloud/edge-feature-summaries", response_model=None)

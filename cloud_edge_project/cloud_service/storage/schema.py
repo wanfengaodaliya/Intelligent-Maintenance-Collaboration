@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -222,4 +222,15 @@ CREATE TABLE IF NOT EXISTS enhanced_analysis_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_enhanced_analysis_outbox_status
 ON enhanced_analysis_outbox(status, updated_at_ns);
+CREATE TABLE IF NOT EXISTS final_diagnosis_summary (
+    review_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+    backend TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    summary_json TEXT,
+    error_code TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    CHECK (summary_json IS NULL OR json_valid(summary_json))
+);
 """
