@@ -38,6 +38,12 @@ from common.schemas import (
 config = load_config()
 
 
+def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
+    from cloud_service.enhanced_analysis.service import EnhancedAnalysisService
+
+    EnhancedAnalysisService(database_path).analyze(review_id)
+
+
 async def _expire_raw_context_requests() -> None:
     while True:
         try:
@@ -52,7 +58,12 @@ async def _expire_raw_context_requests() -> None:
                 limit=20,
             )
             await asyncio.to_thread(
-                AggregationReadyDispatcher(settings.database_path).dispatch_pending,
+                AggregationReadyDispatcher(
+                    settings.database_path,
+                    handler=lambda payload: _run_enhanced_analysis(
+                        settings.database_path, payload["review_id"]
+                    ),
+                ).dispatch_pending,
                 limit=20,
             )
         except sqlite3.Error:

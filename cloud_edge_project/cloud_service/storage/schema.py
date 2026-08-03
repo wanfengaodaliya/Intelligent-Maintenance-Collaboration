@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -161,4 +161,65 @@ CREATE TABLE IF NOT EXISTS aggregation_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_aggregation_outbox_pending
 ON aggregation_outbox(dispatch_status, updated_at_ns);
+CREATE TABLE IF NOT EXISTS bearing_configuration (
+    configuration_id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL,
+    configuration_version TEXT NOT NULL,
+    bearing_model TEXT,
+    rolling_element_count INTEGER NOT NULL,
+    rolling_element_diameter_mm REAL NOT NULL,
+    pitch_diameter_mm REAL NOT NULL,
+    contact_angle_deg REAL NOT NULL,
+    resonance_low_hz REAL,
+    resonance_high_hz REAL,
+    effective_from_ns INTEGER NOT NULL,
+    effective_to_ns INTEGER,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    source TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (sender_id) REFERENCES senders(sender_id),
+    CHECK (
+        resonance_low_hz IS NULL
+        OR resonance_high_hz IS NULL
+        OR resonance_low_hz < resonance_high_hz
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_bearing_configuration_sender_time
+ON bearing_configuration(sender_id, effective_from_ns);
+CREATE TABLE IF NOT EXISTS enhanced_analysis_result (
+    analysis_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+    context_status TEXT NOT NULL CHECK (context_status IN ('complete', 'partial_context')),
+    algorithm_version TEXT NOT NULL,
+    config_version TEXT NOT NULL,
+    aggregation_id TEXT NOT NULL,
+    result_json TEXT,
+    limitations_json TEXT NOT NULL DEFAULT '[]',
+    retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_retry_at_ns INTEGER,
+    error_code TEXT,
+    error_detail TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE,
+    CHECK (result_json IS NULL OR json_valid(result_json)),
+    CHECK (limitations_json IS NULL OR json_valid(limitations_json))
+);
+CREATE INDEX IF NOT EXISTS idx_enhanced_analysis_status
+ON enhanced_analysis_result(status, updated_at_ns);
+CREATE TABLE IF NOT EXISTS enhanced_analysis_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL CHECK (event_type = 'enhanced_analysis.succeeded'),
+    review_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+    error_code TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_enhanced_analysis_outbox_status
+ON enhanced_analysis_outbox(status, updated_at_ns);
 """
