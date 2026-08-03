@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+.pytest_cache/
+
+runtime/logs/
+runtime/state/
+
+*.mat
+*.rar
+*.zip
