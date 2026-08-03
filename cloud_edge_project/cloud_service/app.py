@@ -14,6 +14,9 @@ from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
+from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
+from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
+from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
 from cloud_service.model import CLOUD_NODE_ID, infer_cloud
 from cloud_service.raw_context.receiver import RawContextReceiver
@@ -43,6 +46,15 @@ async def _expire_raw_context_requests() -> None:
             RawContextRequestRepository(
                 settings.database_path
             ).expire_due()
+            await asyncio.to_thread(
+                ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
+                config_version="cloud-preprocess-v1",
+                limit=20,
+            )
+            await asyncio.to_thread(
+                AggregationReadyDispatcher(settings.database_path).dispatch_pending,
+                limit=20,
+            )
         except sqlite3.Error:
             pass
         await asyncio.sleep(0.5)
@@ -50,6 +62,10 @@ async def _expire_raw_context_requests() -> None:
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
+    settings = load_cloud_settings()
+    await asyncio.to_thread(
+        WindowRecoveryScanner(settings.database_path).warn_orphan_files
+    )
     expiry_task = asyncio.create_task(_expire_raw_context_requests())
     try:
         yield

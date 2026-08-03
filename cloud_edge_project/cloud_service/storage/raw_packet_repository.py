@@ -25,7 +25,7 @@ class RawPacketRepository:
         self.raw_root = Path(raw_root) if raw_root else self.database_path.parent / "raw"
 
     def store(self, packet: dict) -> dict:
-        payload = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        payload = canonical_payload(packet)
         digest, sender_id, packet_id = hashlib.sha256(payload).hexdigest(), packet["sender_id"], packet["packet_id"]
         _require_safe_path_component(sender_id, "sender_id")
         _require_safe_path_component(packet_id, "packet_id")
@@ -222,6 +222,36 @@ class RawPacketRepository:
             ).fetchone()
         return row["end_generate_timestamp_ns"] if row else None
 
+    def load_indexed_packet(
+        self, sender_id: str, packet_id: str
+    ) -> tuple[dict, dict]:
+        """Load an indexed packet and verify its immutable payload hash."""
+        with connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM raw_packet_index WHERE sender_id=? AND packet_id=?",
+                (sender_id, packet_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"raw packet not found: {sender_id}/{packet_id}")
+        index = dict(row)
+        try:
+            root = self.raw_root.resolve()
+            path = (root / index["storage_path"]).resolve()
+            path.relative_to(root)
+        except (OSError, ValueError) as error:
+            raise ValueError("indexed raw packet path escapes raw root") from error
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as stream:
+                packet = json.load(stream)
+        except (OSError, json.JSONDecodeError) as error:
+            raise OSError("indexed raw packet is unavailable") from error
+        if not isinstance(packet, dict):
+            raise OSError("indexed raw packet is not an object")
+        digest = hashlib.sha256(canonical_payload(packet)).hexdigest()
+        if digest != index["payload_sha256"]:
+            raise PayloadHashMismatch(sender_id, packet_id)
+        return packet, index
+
     def _read_packet(self, storage_path: str) -> dict | None:
         path = self.raw_root / storage_path
         if not path.exists():
@@ -234,7 +264,11 @@ class RawPacketRepository:
         return value if isinstance(value, dict) else None
 
 
-def _canonical_payload(packet: dict) -> bytes:
+class PayloadHashMismatch(ValueError):
+    """Raised when an indexed raw packet differs from its recorded hash."""
+
+
+def canonical_payload(packet: dict) -> bytes:
     normalized = {
         key: value for key, value in packet.items()
         if key != "validation_status"
@@ -246,6 +280,9 @@ def _canonical_payload(packet: dict) -> bytes:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+_canonical_payload = canonical_payload
 
 
 def _require_safe_path_component(value: str, field: str) -> None:

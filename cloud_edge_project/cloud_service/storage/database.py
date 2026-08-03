@@ -44,7 +44,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "preceding raw context request schema",
+                "context aggregation window schema",
             ),
         )
 

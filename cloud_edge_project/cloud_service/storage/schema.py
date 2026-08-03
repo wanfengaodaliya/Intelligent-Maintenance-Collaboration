@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -112,4 +112,53 @@ CREATE TABLE IF NOT EXISTS summary_ingestion_conflicts (
     detected_at_ns INTEGER NOT NULL, conflict_code TEXT NOT NULL CHECK (conflict_code IN ('PACKET_CONTENT_CONFLICT', 'TASK_SEQUENCE_CONFLICT')),
     resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)), CHECK (json_valid(incoming_summary_json))
 );
+CREATE TABLE IF NOT EXISTS aggregation_result (
+    aggregation_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    preprocessing_config_version TEXT NOT NULL,
+    aggregation_status TEXT NOT NULL CHECK (aggregation_status IN ('queued', 'running', 'succeeded', 'failed')),
+    context_status TEXT NOT NULL CHECK (context_status IN ('complete', 'partial_context')),
+    relative_positions_json TEXT,
+    packet_manifest_json TEXT,
+    packet_boundaries_json TEXT,
+    raw_window_path TEXT,
+    raw_window_sha256 TEXT,
+    preprocessed_window_path TEXT,
+    preprocessed_window_sha256 TEXT,
+    sample_counts_json TEXT,
+    quality_summary_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    lease_until_ns INTEGER,
+    retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
+    next_retry_at_ns INTEGER,
+    error_code TEXT,
+    error_detail TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    succeeded_at_ns INTEGER,
+    UNIQUE (review_id, source_fingerprint, preprocessing_config_version),
+    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE,
+    CHECK (relative_positions_json IS NULL OR json_valid(relative_positions_json)),
+    CHECK (packet_manifest_json IS NULL OR json_valid(packet_manifest_json)),
+    CHECK (packet_boundaries_json IS NULL OR json_valid(packet_boundaries_json)),
+    CHECK (sample_counts_json IS NULL OR json_valid(sample_counts_json)),
+    CHECK (quality_summary_json IS NULL OR json_valid(quality_summary_json))
+);
+CREATE INDEX IF NOT EXISTS idx_aggregation_result_pending
+ON aggregation_result(aggregation_status, updated_at_ns);
+CREATE TABLE IF NOT EXISTS aggregation_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    aggregation_id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL CHECK (event_type = 'preprocessed_window_ready'),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    dispatch_status TEXT NOT NULL CHECK (dispatch_status IN ('pending', 'delivered', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_error TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (aggregation_id) REFERENCES aggregation_result(aggregation_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_aggregation_outbox_pending
+ON aggregation_outbox(dispatch_status, updated_at_ns);
 """
