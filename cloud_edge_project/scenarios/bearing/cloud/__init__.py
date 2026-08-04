@@ -1,0 +1,1 @@
+"""Bearing cloud scenario adapter."""

@@ -4,4 +4,6 @@ docs/
 cloud_edge_project/tests/
 cloud_edge_project/docs/
 local_word/
+cloud_edge_project/local_demos/
 cloud_edge_project/data/
+.gitignore

@@ -18,7 +18,7 @@ from cloud_service.context_aggregation.coordinator import ContextAggregationCoor
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
-from cloud_service.model import CLOUD_NODE_ID, infer_cloud
+from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
 from cloud_service.raw_context.transport import HttpRawContextTransport
 from cloud_service.storage.database import initialize_database
@@ -33,17 +33,22 @@ from common.schemas import (
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
+from core.scenario_registry import (
+    DEFAULT_SCENARIO_TYPE,
+    get_scenario_handler,
+)
+from core.scenario_errors import UnsupportedScenarioError
 
 
 config = load_config()
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
-    from cloud_service.enhanced_analysis.service import EnhancedAnalysisService
-    from cloud_service.final_summary.service import FinalSummaryService
-
-    result = EnhancedAnalysisService(database_path).analyze(review_id)
-    FinalSummaryService(database_path).summarize(result)
+    handler = get_scenario_handler(
+        DEFAULT_SCENARIO_TYPE,
+        database_path=database_path,
+    )
+    handler.run_enhanced_analysis(review_id)
 
 
 async def _expire_raw_context_requests() -> None:
@@ -166,9 +171,22 @@ def health() -> dict[str, object] | JSONResponse:
 @app.post("/cloud/infer", response_model=None)
 def cloud_infer(payload: dict) -> dict | JSONResponse:
     try:
-        return infer_cloud(
+        settings = load_cloud_settings()
+        handler = get_scenario_handler(
+            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            database_path=settings.database_path,
+        )
+        return handler.infer(
             payload,
             context_transport=_raw_context_transport(),
+        )
+    except UnsupportedScenarioError as error:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error_code": "UNSUPPORTED_SCENARIO",
+                "message": str(error),
+            },
         )
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
@@ -213,9 +231,11 @@ def raw_context_batches(
 
 @app.get("/cloud/reviews/{review_id}/summary", response_model=None)
 def final_summary(review_id: str) -> dict[str, object] | JSONResponse:
-    from cloud_service.final_summary.service import FinalSummaryService
-
-    summary = FinalSummaryService(load_cloud_settings().database_path).get(review_id)
+    handler = get_scenario_handler(
+        DEFAULT_SCENARIO_TYPE,
+        database_path=load_cloud_settings().database_path,
+    )
+    summary = handler.get_final_summary(review_id)
     if summary is None:
         return JSONResponse(status_code=404, content={"error_code": "SUMMARY_NOT_READY"})
     return summary
