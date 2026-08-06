@@ -11,6 +11,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.arbitration_contracts import ArbitrationValidationError
 from cloud_service.device_arbitration.fusion import calculate_fusion
+from cloud_service.device_arbitration.service import DeviceArbitrationService
+from cloud_service.storage.database import connect
 from scenarios.bearing.cloud.device_arbitration.adapter import (
     BearingDeviceArbitrationAdapter,
 )
@@ -282,3 +284,56 @@ def test_fusion_uses_more_severe_action_for_exact_tie() -> None:
 
     assert result["status"] == "resolved"
     assert result["final_action"] == "shutdown"
+
+
+def test_service_persists_rule_result_and_reuses_conflict_id(
+    tmp_path: Path,
+) -> None:
+    service = DeviceArbitrationService(
+        tmp_path / "cloud.db", BearingDeviceArbitrationAdapter()
+    )
+    first = service.arbitrate(valid_arbitration_request())
+    changed_request = valid_arbitration_request()
+    changed_request["scenario_payload"]["bearing_results"][1][
+        "recommended_action"
+    ] = "continue_operation"
+
+    second = service.arbitrate(changed_request)
+
+    assert first["status"] == "resolved"
+    assert first["resolution_method"] == "scenario_rule"
+    assert first["final_state"] == "abnormal"
+    assert first["final_action"] == "shutdown"
+    assert second == first
+    assert service.get(first["conflict_id"]) == first
+    with connect(tmp_path / "cloud.db") as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM device_arbitration_record"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_service_returns_manual_review_when_fusion_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    request = valid_arbitration_request()
+    request["scenario_payload"]["bearing_results"][0].update(
+        {"confidence": 0.51, "data_quality_score": 1.0}
+    )
+    request["scenario_payload"]["bearing_results"][1].update(
+        {
+            "confidence": 0.49,
+            "data_quality_score": 1.0,
+            "risk_level": "medium",
+            "rule_facts": [],
+        }
+    )
+
+    result = DeviceArbitrationService(
+        tmp_path / "cloud.db", BearingDeviceArbitrationAdapter()
+    ).arbitrate(request)
+
+    assert result["status"] == "manual_review"
+    assert result["final_state"] == "unknown"
+    assert result["final_action"] is None
+    assert result["resolution_method"] == "weighted_fusion"
