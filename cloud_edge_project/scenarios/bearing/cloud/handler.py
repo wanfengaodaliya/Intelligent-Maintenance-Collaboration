@@ -6,6 +6,10 @@ from typing import Any
 from cloud_service.enhanced_analysis.service import EnhancedAnalysisService
 from cloud_service.final_summary.service import FinalSummaryService
 from cloud_service.model import infer_cloud
+from cloud_service.device_arbitration.service import DeviceArbitrationService
+from scenarios.bearing.cloud.device_arbitration.adapter import (
+    BearingDeviceArbitrationAdapter,
+)
 
 
 class BearingCloudHandler:
@@ -28,3 +32,15 @@ class BearingCloudHandler:
 
     def get_final_summary(self, review_id: str) -> dict[str, Any] | None:
         return FinalSummaryService(self.database_path).get(review_id)
+
+    def arbitrate_device_conflict(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return DeviceArbitrationService(
+            self.database_path,
+            adapter=BearingDeviceArbitrationAdapter(),
+        ).arbitrate(payload)
+
+    def get_device_arbitration(self, conflict_id: str) -> dict[str, Any] | None:
+        return DeviceArbitrationService(
+            self.database_path,
+            adapter=BearingDeviceArbitrationAdapter(),
+        ).get(conflict_id)
