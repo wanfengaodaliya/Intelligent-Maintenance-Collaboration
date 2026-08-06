@@ -38,6 +38,7 @@ from core.scenario_registry import (
     get_scenario_handler,
 )
 from core.scenario_errors import UnsupportedScenarioError
+from core.arbitration_contracts import ArbitrationValidationError
 
 
 config = load_config()
@@ -205,6 +206,44 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
         packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/device-arbitration", response_model=None)
+def device_arbitration(payload: dict) -> dict | JSONResponse:
+    try:
+        settings = load_cloud_settings()
+        handler = get_scenario_handler(
+            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            database_path=settings.database_path,
+        )
+        return handler.arbitrate_device_conflict(payload)
+    except UnsupportedScenarioError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "UNSUPPORTED_SCENARIO", "message": str(error)},
+        )
+    except ArbitrationValidationError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": error.code, "message": error.message},
+        )
+    except Exception:
+        return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
+
+
+@app.get("/cloud/device-arbitration/{conflict_id}", response_model=None)
+def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
+    try:
+        handler = get_scenario_handler(
+            DEFAULT_SCENARIO_TYPE,
+            database_path=load_cloud_settings().database_path,
+        )
+        result = handler.get_device_arbitration(conflict_id)
+    except Exception:
+        return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
+    if result is None:
+        return JSONResponse(status_code=404, content={"error_code": "ARBITRATION_NOT_FOUND"})
+    return result
 
 
 @app.post("/cloud/raw-context-batches", response_model=None)

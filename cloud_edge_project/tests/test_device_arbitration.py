@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -337,3 +340,97 @@ def test_service_returns_manual_review_when_fusion_is_ambiguous(
     assert result["final_state"] == "unknown"
     assert result["final_action"] is None
     assert result["resolution_method"] == "weighted_fusion"
+
+
+def test_handler_assembles_bearing_adapter_and_service(tmp_path: Path) -> None:
+    result = _run_isolated_integration(tmp_path, "handler")
+
+    assert result["created"]["scenario_type"] == "bearing"
+    assert result["fetched"] == result["created"]
+
+
+def test_post_device_arbitration_creates_result_and_get_returns_it(
+    tmp_path: Path,
+) -> None:
+    result = _run_isolated_integration(tmp_path, "post_get")
+    created = result["created"]
+    fetched = result["fetched"]
+
+    assert created["status"] == "resolved"
+    assert fetched == created
+
+
+def test_post_invalid_arbitration_request_returns_400_with_error_code(
+    tmp_path: Path,
+) -> None:
+    result = _run_isolated_integration(tmp_path, "invalid")
+
+    assert result["status_code"] == 400
+    assert result["body"]["error_code"] == "INVALID_REQUEST"
+
+
+def test_get_missing_arbitration_returns_404(tmp_path: Path) -> None:
+    result = _run_isolated_integration(tmp_path, "missing")
+
+    assert result["status_code"] == 404
+    assert result["body"] == {
+        "error_code": "ARBITRATION_NOT_FOUND"
+    }
+
+
+def _run_isolated_integration(tmp_path: Path, mode: str) -> dict:
+    script = """
+import json
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from cloud_service import app as cloud_app
+from cloud_service.config import CloudSettings
+from fastapi.responses import JSONResponse
+from scenarios.bearing.cloud.handler import BearingCloudHandler
+
+database_path = Path(sys.argv[1]) / 'cloud.db'
+mode = sys.argv[2]
+request = {
+    'scenario_type': 'bearing',
+    'conflict_id': 'conflict_machine_01_task_0001',
+    'subject_id': 'machine_01',
+    'task_id': 'task_0001',
+    'scenario_payload': {'bearing_results': [
+        {'bearing_id': 'bearing_01', 'bearing_state': 'normal', 'confidence': 0.92,
+         'data_quality_score': 0.95, 'risk_level': 'low',
+         'recommended_action': 'continue_operation'},
+        {'bearing_id': 'bearing_02', 'bearing_state': 'abnormal', 'confidence': 0.93,
+         'data_quality_score': 0.96, 'risk_level': 'high',
+         'recommended_action': 'shutdown'},
+    ]},
+}
+settings = CloudSettings('mock', 'http://unused', 'unused', '', 120, database_path)
+if mode == 'handler':
+    handler = BearingCloudHandler(database_path)
+    created = handler.arbitrate_device_conflict(request)
+    output = {'created': created, 'fetched': handler.get_device_arbitration(created['conflict_id'])}
+else:
+    with patch('cloud_service.app.load_cloud_settings', return_value=settings):
+        if mode == 'post_get':
+            created = cloud_app.device_arbitration(request)
+            output = {'created': created, 'fetched': cloud_app.get_device_arbitration(created['conflict_id'])}
+        elif mode == 'invalid':
+            request.pop('conflict_id')
+            result = cloud_app.device_arbitration(request)
+            output = {'status_code': result.status_code, 'body': json.loads(result.body)}
+        else:
+            result = cloud_app.get_device_arbitration('missing')
+            output = {'status_code': result.status_code, 'body': json.loads(result.body)}
+print(json.dumps(output, ensure_ascii=False))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), mode],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return json.loads(completed.stdout)

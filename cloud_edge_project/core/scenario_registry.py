@@ -24,6 +24,10 @@ class ScenarioHandler(Protocol):
 
     def get_final_summary(self, review_id: str) -> dict[str, Any] | None: ...
 
+    def arbitrate_device_conflict(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def get_device_arbitration(self, conflict_id: str) -> dict[str, Any] | None: ...
+
 
 SCENARIO_HANDLERS = {"bearing": BearingCloudHandler}
 
