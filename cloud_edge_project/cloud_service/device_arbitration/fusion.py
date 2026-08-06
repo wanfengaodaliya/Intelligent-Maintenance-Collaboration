@@ -48,9 +48,7 @@ def calculate_fusion(
     tie = len(ranked) > 1 and math.isclose(
         top_score, second_score, rel_tol=0.0, abs_tol=1e-12
     )
-    resolved = tie or (
-        top_score >= min_top_score and margin >= min_margin
-    )
+    resolved = top_score >= min_top_score and (tie or margin >= min_margin)
     if not resolved:
         return {
             "status": "manual_review",

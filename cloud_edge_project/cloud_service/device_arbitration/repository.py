@@ -22,7 +22,9 @@ class DeviceArbitrationRepository:
             return None
         return json.loads(row["result_json"])
 
-    def save(self, *, request: dict[str, Any], result: dict[str, Any]) -> None:
+    def save(
+        self, *, request: dict[str, Any], result: dict[str, Any]
+    ) -> dict[str, Any]:
         with connect(self.database_path) as connection:
             connection.execute(
                 """
@@ -31,6 +33,7 @@ class DeviceArbitrationRepository:
                     status, final_action, confidence, request_json, result_json,
                     error_code, created_at_ns
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                ON CONFLICT(conflict_id) DO NOTHING
                 """,
                 (
                     result["arbitration_id"],
@@ -46,3 +49,11 @@ class DeviceArbitrationRepository:
                     result["created_at_ns"],
                 ),
             )
+            row = connection.execute(
+                "SELECT result_json FROM device_arbitration_record "
+                "WHERE conflict_id=?",
+                (result["conflict_id"],),
+            ).fetchone()
+        if row is None or row["result_json"] is None:
+            raise RuntimeError("device arbitration result was not persisted")
+        return json.loads(row["result_json"])

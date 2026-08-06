@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -289,6 +292,41 @@ def test_fusion_uses_more_severe_action_for_exact_tie() -> None:
     assert result["final_action"] == "shutdown"
 
 
+def test_fusion_requires_minimum_top_score_for_three_way_tie() -> None:
+    request = valid_arbitration_request()
+    request["scenario_payload"]["bearing_results"].append(
+        {
+            "bearing_id": "bearing_03",
+            "bearing_state": "warning",
+            "confidence": 0.5,
+            "data_quality_score": 1.0,
+            "risk_level": "medium",
+            "recommended_action": "scheduled_inspection",
+        }
+    )
+    for result in request["scenario_payload"]["bearing_results"]:
+        result.update(
+            {
+                "confidence": 0.5,
+                "data_quality_score": 1.0,
+                "risk_level": "medium",
+                "rule_facts": [],
+            }
+        )
+    adapter = BearingDeviceArbitrationAdapter()
+    context = adapter.build_context(request)
+
+    result = calculate_fusion(
+        context.decision_units,
+        action_severity=adapter.action_severity(),
+        min_top_score=0.40,
+        min_margin=0.05,
+    )
+
+    assert result["status"] == "manual_review"
+    assert result["final_action"] is None
+
+
 def test_service_persists_rule_result_and_reuses_conflict_id(
     tmp_path: Path,
 ) -> None:
@@ -340,6 +378,36 @@ def test_service_returns_manual_review_when_fusion_is_ambiguous(
     assert result["final_state"] == "unknown"
     assert result["final_action"] is None
     assert result["resolution_method"] == "weighted_fusion"
+
+
+def test_service_concurrently_returns_one_idempotent_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = DeviceArbitrationService(
+        tmp_path / "cloud.db", BearingDeviceArbitrationAdapter()
+    )
+    original_get = service.repository.get_by_conflict_id
+    barrier = Barrier(2)
+
+    def synchronized_get(conflict_id: str):
+        existing = original_get(conflict_id)
+        if existing is None:
+            barrier.wait(timeout=5)
+        return existing
+
+    monkeypatch.setattr(service.repository, "get_by_conflict_id", synchronized_get)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(service.arbitrate, deepcopy(valid_arbitration_request()))
+            for _ in range(2)
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert results[0] == results[1]
+    with connect(tmp_path / "cloud.db") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM device_arbitration_record"
+        ).fetchone()[0] == 1
 
 
 def test_handler_assembles_bearing_adapter_and_service(tmp_path: Path) -> None:

@@ -79,8 +79,7 @@ class DeviceArbitrationService:
         }
         if decision["resolution_method"] == "weighted_fusion":
             result["decision_margin"] = decision["decision_margin"]
-        self.repository.save(request=request, result=result)
-        return result
+        return self.repository.save(request=request, result=result)
 
     def get(self, conflict_id: str) -> dict[str, Any] | None:
         return self.repository.get_by_conflict_id(conflict_id)
