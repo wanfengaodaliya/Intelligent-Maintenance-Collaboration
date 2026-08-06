@@ -1,2 +1,0 @@
-"""Synthetic sensor packet generator."""
-
