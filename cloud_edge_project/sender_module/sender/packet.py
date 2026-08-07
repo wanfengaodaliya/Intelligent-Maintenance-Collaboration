@@ -19,6 +19,7 @@ ARRAY_SIGNALS = {
 }
 TEMPERATURE_SIGNAL = "bearing_module_temperature_c"
 TASK_ID_PATTERN = re.compile(r"^task_(\d{5,})$")
+BEARING_ID_PATTERN = re.compile(r"^bearing_\d{2,}$")
 
 
 def _validate_data(data: dict[str, Any]) -> None:
@@ -48,7 +49,9 @@ def _validate_data(data: dict[str, Any]) -> None:
 
 def build_sensor_packet(
     *,
+    device_id: str,
     task_id: str,
+    bearing_id: str,
     sender_id: str,
     sequence_number: int,
     data: dict[str, Any],
@@ -57,6 +60,10 @@ def build_sensor_packet(
     match = TASK_ID_PATTERN.fullmatch(task_id)
     if not match:
         raise PacketValidationError("task_id must match task_<number>")
+    if not isinstance(device_id, str) or not device_id.strip():
+        raise PacketValidationError("device_id cannot be empty")
+    if not isinstance(bearing_id, str) or not BEARING_ID_PATTERN.fullmatch(bearing_id):
+        raise PacketValidationError("bearing_id must match bearing_<number>")
     if not sender_id:
         raise PacketValidationError("sender_id cannot be empty")
     if not 1 <= sequence_number <= 999:
@@ -65,10 +72,11 @@ def build_sensor_packet(
         raise PacketValidationError("end_generate_timestamp_ns must be positive")
     _validate_data(data)
 
-    task_number = match.group(1)
     return {
+        "device_id": device_id.strip(),
         "task_id": task_id,
-        "packet_id": f"batch_{task_number}_{sequence_number:03d}",
+        "bearing_id": bearing_id,
+        "packet_id": f"{task_id}_{bearing_id}_pkt_{sequence_number:03d}",
         "sender_id": sender_id,
         "sequence_number": sequence_number,
         "end_generate_timestamp_ns": end_generate_timestamp_ns,

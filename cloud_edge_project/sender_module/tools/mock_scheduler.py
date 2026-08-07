@@ -6,8 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class SchedulerHandler(BaseHTTPRequestHandler):
-    target_topic = "edge/edge_2/input"
-
     def do_POST(self) -> None:
         if self.path != "/scheduler/decide":
             self.send_error(404)
@@ -16,9 +14,15 @@ class SchedulerHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             request = json.loads(self.rfile.read(length).decode("utf-8"))
             response = {
+                "device_id": request["device_id"],
                 "task_id": request["task_id"],
-                "sender_id": request["sender_id"],
-                "target_topic": self.target_topic,
+                "assignments": [
+                    {
+                        "bearing_id": bearing["bearing_id"],
+                        "target_topic": f"edge/edge_{index % 2 + 1}/input",
+                    }
+                    for index, bearing in enumerate(request["bearings"])
+                ],
             }
             encoded = json.dumps(response).encode("utf-8")
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
@@ -39,9 +43,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Local scheduler test double")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8003)
-    parser.add_argument("--topic", default="edge/edge_2/input")
     args = parser.parse_args()
-    SchedulerHandler.target_topic = args.topic
     server = ThreadingHTTPServer((args.host, args.port), SchedulerHandler)
     print(f"mock scheduler listening on http://{args.host}:{args.port}/scheduler/decide")
     server.serve_forever()

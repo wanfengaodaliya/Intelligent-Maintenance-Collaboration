@@ -387,6 +387,8 @@ class MqttPublisher:
         self._condition.notify_all()
         return {
             "task_id": pending.packet["task_id"],
+            "device_id": pending.packet["device_id"],
+            "bearing_id": pending.packet["bearing_id"],
             "packet_id": pending.packet["packet_id"],
             "sequence_number": pending.packet["sequence_number"],
             "packet_size_bytes": len(pending.payload),

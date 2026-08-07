@@ -11,12 +11,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Count unique SensorPacket messages")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=1883)
-    parser.add_argument("--topic", default="edge/edge_2/input")
-    parser.add_argument("--expected", type=int, default=80)
+    parser.add_argument("--topic", default="edge/+/input")
+    parser.add_argument("--expected", type=int, default=240)
     args = parser.parse_args()
 
     completed = threading.Event()
     packet_ids: set[str] = set()
+    bearing_counts: dict[str, int] = {}
 
     def on_connect(client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
@@ -27,7 +28,12 @@ def main() -> None:
     def on_message(client, userdata, message) -> None:
         packet = json.loads(message.payload.decode("utf-8"))
         packet_ids.add(packet["packet_id"])
-        print(f"received {len(packet_ids)}/{args.expected}: {packet['packet_id']}")
+        bearing_id = packet["bearing_id"]
+        bearing_counts[bearing_id] = bearing_counts.get(bearing_id, 0) + 1
+        print(
+            f"received {len(packet_ids)}/{args.expected}: {packet['packet_id']} "
+            f"bearing_counts={bearing_counts}"
+        )
         if len(packet_ids) >= args.expected:
             completed.set()
 
