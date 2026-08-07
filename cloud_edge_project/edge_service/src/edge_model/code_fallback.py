@@ -3,7 +3,7 @@
 
 当前规则标记为 edge_rule_test_v1：只证明降级流程可用，不代表业务规则正确。
 以下内容确认后才能冻结为正式规则版本：
-- 使用哪些 PerceptionResult / 窗口字段；
+- 使用当前包 PerceptionResult 中的哪些字段；
 - normal / warning / fault 阈值；
 - 多特征如何合并；
 - 缺失特征如何处理；
@@ -17,11 +17,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from model_input_contract import validate_model_input
+
 from .contracts import (
     EDGE_RESULT_VALUES,
     EDGE_RISK_VALUES,
     EdgeResult,
-    WindowAggregate,
+    PacketInferenceTask,
 )
 
 
@@ -30,12 +32,11 @@ class CodeFallbackRunner:
 
     rule_version: str
 
-    def run(self, window: WindowAggregate) -> EdgeResult:
+    def run(self, task: PacketInferenceTask) -> EdgeResult:
         raise NotImplementedError
 
-    def _validate_input(self, window: WindowAggregate):
-        if not isinstance(window.payload, dict) or "features" not in window.payload:
-            raise ValueError("code_fallback: payload 缺少 'features'")
+    def _validate_input(self, task: PacketInferenceTask):
+        validate_model_input(task.perception)
 
     def _validate_output(self, edge: EdgeResult):
         if edge.edge_result not in EDGE_RESULT_VALUES:
@@ -84,11 +85,10 @@ class TestRuleRunner(CodeFallbackRunner):
     def __init__(self, rule_version: str = "edge_rule_test_v1"):
         self.rule_version = rule_version
 
-    def run(self, window: WindowAggregate) -> EdgeResult:
-        self._validate_input(window)
-        payload = window.payload
-        features = payload.get("features") or {}
-        flags = (payload.get("perception_quality") or {}).get("flags") or []
+    def run(self, task: PacketInferenceTask) -> EdgeResult:
+        self._validate_input(task)
+        features = task.perception.get("features") or {}
+        flags = (task.perception.get("perception_quality") or {}).get("flags") or []
         edge, risk = _classify_test_rule(features, flags)
         score = {"normal": 0.6, "warning": 0.7, "fault": 0.85}[edge]
         if "DEVICE_NOT_RUNNING" in flags:

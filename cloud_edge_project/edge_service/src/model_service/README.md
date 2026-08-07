@@ -29,7 +29,8 @@
 | 最大输出 | 64 tokens |
 | 服务地址 | `http://127.0.0.1:8001` |
 
-本阶段只使用`model-train`环境。不要激活、升级或修改`vllm`环境，也不要为了消除非阻塞警告直接升级已验证的PyTorch环境。
+`model-train`环境保留为Transformers正确性基线；`vllm`环境用于后续逐包吞吐压测。
+两个环境独立管理，不要为了消除某一环境的警告而修改另一个已验证环境。
 
 ## 2. 运行结构
 
@@ -43,7 +44,7 @@ Windows边缘程序
                            └─ Qwen2.5-1.5B-Instruct（GPU/BF16）
 ```
 
-Windows侧负责窗口聚合、有界队列、超时、熔断和代码替代路线。WSL服务只负责加载模型、GPU预热、串行推理以及输出结构校验。
+Windows侧负责逐包任务封装、有界队列、超时、熔断和代码替代路线。WSL服务只负责加载模型、GPU预热、推理以及输出结构校验。
 
 模型服务内部只有一把非阻塞推理锁。同一时刻只执行一次`generate()`；服务忙时立即返回`MODEL_BUSY`，不会在WSL侧形成第二条隐式队列。
 
@@ -328,8 +329,8 @@ synthetic_development_test
 → 原始环形缓存
 → FIR降采样
 → 感知特征
-→ 四个1秒窗口
-→ WSL真实Qwen推理
+→ 80个独立包级模型任务
+→ WSL真实Qwen逐包推理
 → 80个PacketResult
 ```
 
@@ -344,15 +345,16 @@ cache_available_slots = 80
 downsampled_packets = 80
 perceived_packets = 80
 bearing_data_completeness = COMPLETE
-non_empty_windows = 4
-window_packet_counts = [20, 20, 20, 20]
+model_packet_tasks = 80
+unique_model_request_ids = 80
 packet_results = 80
-execution_modes = {"LOCAL_MODEL": 4}
+execution_modes = {"LOCAL_MODEL": 80}
 fallback_reasons = {}
 model_versions = {"qwen2.5-1.5b-instruct/phase1": 80}
 ```
 
 只要出现`CODE_FALLBACK`或非空`fallback_reasons`，就不能宣称真实模型闭环通过。
+该最小闭环会等待上一包完成后再提交下一包，只验证逐包正确性，不验证`20包/秒`吞吐。
 
 当前闭环尚未包含包摘要、`BearingTaskResult`和`DeviceTaskResult`，因此报告中的`device_result_generated=false`是预期结果。
 
@@ -485,7 +487,7 @@ QUEUE_TIMEOUT
 
 新环境交付前逐项确认：
 
-- [ ] 使用`model-train`，未修改`vllm`环境；
+- [ ] 明确本次使用`model-train`正确性基线或`vllm`吞吐测试环境；
 - [ ] Python和关键运行库版本已记录；
 - [ ] `torch.cuda.is_available()`为`True`；
 - [ ] GPU名称和CUDA版本已记录；
@@ -495,7 +497,8 @@ QUEUE_TIMEOUT
 - [ ] 模型服务启动时完整可用性检查通过；
 - [ ] `/health`返回`ok`；
 - [ ] `/readiness`返回`ready=true`；
-- [ ] 最小闭环产生4个`LOCAL_MODEL`窗口；
+- [ ] 最小闭环产生80个独立`LOCAL_MODEL`包级记录；
+- [ ] 80个包具有80个唯一`request_id`并与结果一一对应；
 - [ ] `fallback_reasons`为空；
 - [ ] 模型版本为`qwen2.5-1.5b-instruct/phase1`；
 - [ ] 明确记录当前只完成技术闭环，不宣称真实轴承诊断准确率。

@@ -19,6 +19,12 @@ import threading
 import time
 from typing import Dict, Optional
 
+from model_input_contract import (
+    ModelInputValidationError,
+    model_input_probe,
+    validate_model_input,
+)
+
 from .output_validator import validate_model_output
 from .prompt import build_prompt
 
@@ -28,31 +34,12 @@ ERR_UNAVAILABLE = "MODEL_UNAVAILABLE"
 ERR_INFERENCE_FAILED = "MODEL_INFERENCE_FAILED"
 ERR_INFERENCE_TIMEOUT = "MODEL_INFERENCE_TIMEOUT"
 ERR_OUTPUT_INVALID = "MODEL_OUTPUT_INVALID"
+ERR_INPUT_INVALID = "MODEL_INPUT_INVALID"
 
 
 def _bearing_probe() -> dict:
     """完整特征探针：能产生合法 3 字段 JSON 的轴承感知输入。"""
-    return {
-        "perception_quality": {"status": "good", "flags": []},
-        "features": {
-            "vibration": {"rms": 0.35, "absolute_peak": 1.8, "kurtosis": 3.1,
-                          "dominant_frequency_hz": 120.0, "band_power_ratio_500_2000": 0.31,
-                          "spectral_entropy": 0.64},
-            "phase_current_1": {"rms_a": 2.4, "absolute_peak_a": 3.4},
-            "phase_current_2": {"rms_a": 2.35, "absolute_peak_a": 3.38},
-            "current_relationship": {"current_imbalance_ratio": 0.03},
-            "operating_context": {
-                "shaft_speed_rpm": {"mean": 900.0, "last": 900.0, "minimum": 899.5,
-                                    "maximum": 900.5, "standard_deviation": 0.3},
-                "load_torque_nm": {"mean": 0.7, "last": 0.7, "minimum": 0.69,
-                                   "maximum": 0.71, "standard_deviation": 0.01},
-                "bearing_radial_load_n": {"mean": 1000.0, "last": 1000.0,
-                                          "minimum": 998.0, "maximum": 1002.0,
-                                          "standard_deviation": 1.0},
-                "bearing_module_temperature_c": 46.0,
-            },
-        },
-    }
+    return model_input_probe()
 
 
 class ModelRunner:
@@ -107,8 +94,7 @@ class ModelRunner:
     # ---- 预热与可用性 ----
     def _gpu_warmup(self, calls: int):
         """8 token 短推理：只作 GPU 预热，不代表模型可用。"""
-        probe = {"perception_quality": {"status": "good", "flags": []},
-                 "features": {"vibration": {"rms": 0.3, "absolute_peak": 1.8, "kurtosis": 3.1}}}
+        probe = _bearing_probe()
         saved = self.max_new_tokens
         self.max_new_tokens = 8
         try:
@@ -137,6 +123,11 @@ class ModelRunner:
               remaining_timeout_ms: Optional[float] = None) -> Dict:
         """执行推理。忙 → 立即 MODEL_BUSY；剩余时间不足 → 立即拒绝。"""
         t_start = time.monotonic()
+        try:
+            validate_model_input(model_input)
+        except ModelInputValidationError as exc:
+            return {"valid": False, "error": ERR_INPUT_INVALID,
+                    "detail": str(exc), "request_id": request_id, "latency_ms": 0.0}
         # 剩余时间不足：响应赶不上客户端总截止时间，立即拒绝
         if remaining_timeout_ms is not None and remaining_timeout_ms <= 0:
             return {"valid": False, "error": ERR_INFERENCE_TIMEOUT,

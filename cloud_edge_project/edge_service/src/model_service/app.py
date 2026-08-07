@@ -4,7 +4,7 @@
 端点：
     GET  /health     存活检查（进程活着即 ok）
     GET  /readiness  就绪检查（模型加载 + warmup 完成）
-    POST /infer      窗口聚合输入 → 模型诊断结果（或错误）
+    POST /infer      当前包 PerceptionResult → 当前包模型诊断结果（或错误）
 
 模型加载 + warmup 在启动时完成；infer 由 ThreadingHTTPServer 多线程处理，
 generate() 由 ModelRunner 内部推理锁串行化。
@@ -27,6 +27,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from model_service.model_runner import ModelRunner  # noqa: E402
+from model_input_contract import (  # noqa: E402
+    ModelInputValidationError,
+    validate_model_input,
+)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -58,9 +62,6 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") != "/infer":
             self._send_json(404, {"error": "not_found"})
             return
-        if self.runner is None or not self.runner.ready:
-            self._send_json(503, {"valid": False, "error": "MODEL_UNAVAILABLE"})
-            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -68,11 +69,25 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._send_json(400, {"valid": False, "error": "bad_request: %s" % exc})
             return
-        if not isinstance(model_input, dict):
-            self._send_json(400, {"valid": False, "error": "bad_request: input 必须是对象"})
-            return
         # 内部字段：request_id / remaining_timeout_ms（相对剩余时间，避免跨机单调时钟同步问题）
         request_id = payload.get("request_id") if isinstance(payload.get("request_id"), str) else None
+        if self.runner is None or not self.runner.ready:
+            self._send_json(503, {
+                "valid": False,
+                "error": "MODEL_UNAVAILABLE",
+                "request_id": request_id,
+            })
+            return
+        try:
+            validate_model_input(model_input)
+        except ModelInputValidationError as exc:
+            self._send_json(400, {
+                "valid": False,
+                "error": "MODEL_INPUT_INVALID",
+                "request_id": request_id,
+                "detail": str(exc),
+            })
+            return
         remaining_timeout_ms = payload.get("remaining_timeout_ms")
         if not isinstance(remaining_timeout_ms, (int, float)):
             remaining_timeout_ms = None

@@ -1,56 +1,34 @@
 # -*- coding: utf-8 -*-
 """边缘模型运行模块配置。
 
-参数为【第一阶段实测默认值】，数据来源 Qwen2.5-1.5B-Instruct + Transformers
-+ RTX 5060 Laptop（见 docs/01-本地实时闭环/边缘模型运行实现流程.md）。不是
-永久标准：更换模型后需复用 tests/performance/closed_loop 重测模型相关参数。
-
-命名说明：
-    max_waiting_requests  队列中「等待中」任务数上限，不含正在推理的 1 条。
-                          语义 = 1 条正在推理 + 最多 N 条等待。
-    full_policy           reject：队列满 → 新窗口立即走代码降级；
-                          replace：用新窗口替换尚未开始的旧窗口。
+当前超时和队列数值只用于逐包技术闭环，不是 200 ms 端到端目标下的生产值。
+生产值必须在 vLLM 逐包压测和整链路时延分配后重新冻结。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-
-
-@dataclass
-class WindowConfig:
-    length_seconds: float = 1.0            # 第一阶段实测默认
-    expected_samples_per_window: int = 20  # 发送器 20 包/秒 → 每窗期望 20 条
-    min_samples_for_full: int = 15         # 稀疏窗口判定（低于此值标记 WINDOW_SPARSE）
-    late_rule: str = "drop_and_count"      # 已关窗口后到达：丢弃并计数（当前唯一实现）
-    submit_sparse_window: bool = True
+from typing import Dict, List
 
 
 @dataclass
 class QueueConfig:
-    max_waiting_requests: int = 1          # 等待中任务上限（不含正在推理的 1 条）
-    worker_count: int = 1
-    full_policy: str = "reject"            # reject | replace
+    max_waiting_requests: int = 1
+    full_policy: str = "reject"  # reject | replace
 
 
 @dataclass
 class TimeoutConfig:
-    # 超时语义（文档冻结）：
-    #   queue_wait_ms   从进入模型队列到获得执行资格
-    #   inference_ms    从调用模型服务到等待响应超时（逻辑超时，不终止已开始的 generate）
-    #   total_ms        从窗口诊断任务创建到最终模型或降级结果完成
-    #   fallback_reserve_ms  降级预留：模型等待预算 = min(inference_ms, 剩余总时间 - reserve)
-    queue_wait_ms: int = 250               # 第一阶段实测默认
-    inference_ms: int = 1500               # 第一阶段实测默认
-    total_ms: int = 2000                   # 第一阶段实测默认
-    fallback_reserve_ms: int = 50          # 保证代码降级有足够时间完成
+    queue_wait_ms: int = 250
+    inference_ms: int = 1500
+    total_ms: int = 2000
+    fallback_reserve_ms: int = 50
 
 
 @dataclass
 class BreakerConfig:
     enabled: bool = True
-    consecutive_failure_threshold: int = 5    # 连续失败熔断（Windows 调用侧维护）
-    recovery_probe_interval_s: float = 60.0   # 恢复探测周期
+    consecutive_failure_threshold: int = 5
+    recovery_probe_interval_s: float = 60.0
     probe_inference_timeout_ms: int = 2000
 
 
@@ -61,62 +39,25 @@ class ModelClientConfig:
     health_path: str = "/health"
     readiness_path: str = "/readiness"
     connect_timeout_ms: int = 500
-    read_timeout_ms: int = 1500            # 与 inference_ms 对齐
+    read_timeout_ms: int = 1500
 
 
 @dataclass
 class FallbackConfig:
-    rule_version: str = "edge_rule_test_v1"   # 待业务规则确认后才冻结为正式版本
-    # 使用测试规则（edge_rule_test_*）必须显式允许；否则启动失败，
-    # 防止把测试规则静默当成正式业务规则使用
+    rule_version: str = "edge_rule_test_v1"
     allow_test_rule: bool = True
 
 
 @dataclass
-class FeatureAggConfig:
-    """特征聚合字段映射（P2c）。
-
-    当前业务映射未确定：field_mapping 为空时用占位均值（仅技术闭环），
-    必须显式承认占位（placeholder_acknowledged=True）才能正式启动；
-    否则视为「未确认字段」，启动失败，不默认取均值。
-
-    字段映射示例（待业务确认后填写）：
-        "vibration.rms": "mean",            # 或 "max"
-        "vibration.absolute_peak": "max",
-        "vibration.kurtosis": "max",        # 或 "p95"
-        "vibration.dominant_frequency_hz": "last",
-        "vibration.band_power_ratio_500_2000": "mean",
-        "phase_current_1.rms_a": "mean",
-        "current_relationship.current_imbalance_ratio": "mean",
-        "operating_context.bearing_module_temperature_c": "last",
-        "operating_context.shaft_speed_rpm.mean": "mean",
-    支持: mean / max / min / last / first / std
-    """
-    field_mapping: Dict[str, str] = field(default_factory=dict)
-    placeholder_acknowledged: bool = False  # 占位均值仅用于技术闭环，须显式允许
-
-
-@dataclass
 class EdgeModelConfig:
-    window: WindowConfig = field(default_factory=WindowConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
     breaker: BreakerConfig = field(default_factory=BreakerConfig)
     model_client: ModelClientConfig = field(default_factory=ModelClientConfig)
     fallback: FallbackConfig = field(default_factory=FallbackConfig)
-    feature_agg: FeatureAggConfig = field(default_factory=FeatureAggConfig)
 
     def validate(self) -> List[str]:
-        """启动校验：参数不合法时返回错误列表，由调用方决定是否停止启动。"""
         errors: List[str] = []
-        if self.window.length_seconds <= 0:
-            errors.append("window.length_seconds 必须为正数")
-        if self.window.expected_samples_per_window <= 0:
-            errors.append("window.expected_samples_per_window 必须为正数")
-        if not (0 < self.window.min_samples_for_full <= self.window.expected_samples_per_window):
-            errors.append("min_samples_for_full 必须在 (0, expected_samples_per_window]")
-        if self.window.late_rule not in ("drop_and_count",):
-            errors.append("late_rule 仅支持 drop_and_count（当前阶段）")
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):
@@ -136,23 +77,17 @@ class EdgeModelConfig:
             errors.append("breaker.recovery_probe_interval_s 必须为正数")
         if not self.fallback.rule_version:
             errors.append("fallback.rule_version 不能为空")
-        # 测试规则必须显式允许
         if self.fallback.rule_version.startswith("edge_rule_test") and not self.fallback.allow_test_rule:
             errors.append("fallback.rule_version 是测试规则但 fallback.allow_test_rule 未开启")
-        # 特征聚合：业务映射未确定时，占位均值必须显式承认；不允许默认取均值
-        if not self.feature_agg.field_mapping and not self.feature_agg.placeholder_acknowledged:
-            errors.append("feature_agg 未确认：字段映射为空且未显式承认占位均值（placeholder_acknowledged 必须为 True 才能以占位启动）")
         return errors
 
     def as_dict(self) -> Dict:
         return {
-            "window": _asdict(self.window),
             "queue": _asdict(self.queue),
             "timeout": _asdict(self.timeout),
             "breaker": _asdict(self.breaker),
             "model_client": _asdict(self.model_client),
             "fallback": _asdict(self.fallback),
-            "feature_agg": _asdict(self.feature_agg),
         }
 
 

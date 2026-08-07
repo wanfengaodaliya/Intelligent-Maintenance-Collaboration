@@ -4,8 +4,8 @@
 正确性约束：
 - 请求携带内部字段 request_id / remaining_timeout_ms（相对剩余时间，避免跨机
   单调时钟同步问题），这些字段不进入外部 EdgeResult；
-- 服务端错误码（MODEL_BUSY / MODEL_UNAVAILABLE / MODEL_INFERENCE_FAILED /
-  MODEL_INFERENCE_TIMEOUT / MODEL_OUTPUT_INVALID）从响应体读取并原样映射到
+- 服务端错误码（MODEL_BUSY / MODEL_UNAVAILABLE / MODEL_INPUT_INVALID /
+  MODEL_INFERENCE_FAILED / MODEL_INFERENCE_TIMEOUT / MODEL_OUTPUT_INVALID）从响应体读取并原样映射到
   内部降级原因，不丢失；
 - inference_timeout 在两层生效：HTTP 读取超时 + worker 侧 join 兜底。超时是
   逻辑超时，WSL 侧已开始的 generate 不会被中止，推理锁保证不并发。
@@ -31,6 +31,7 @@ class ModelInferResult:
     edge: Optional[EdgeResult] = None
     latency_ms: Optional[float] = None
     raw_text: Optional[str] = None
+    request_id: Optional[str] = None
 
 
 @dataclass
@@ -110,10 +111,17 @@ class ModelClient:
                                     error="MODEL_INFERENCE_FAILED")
         latency_ms = (self._clock() - t0) * 1000.0
 
+        response_request_id = body.get("request_id")
+        if request_id is not None and response_request_id != request_id:
+            return ModelInferResult(success=False, timed_out=False, latency_ms=latency_ms,
+                                    error="MODEL_OUTPUT_INVALID",
+                                    request_id=response_request_id)
+
         if body.get("valid") is not True:
             # 原样保留服务端错误码（MODEL_BUSY 等），供 worker 映射内部降级原因
             return ModelInferResult(success=False, timed_out=False, latency_ms=latency_ms,
-                                    error=body.get("error") or "MODEL_INFERENCE_FAILED")
+                                    error=body.get("error") or "MODEL_INFERENCE_FAILED",
+                                    request_id=response_request_id)
         edge = EdgeResult(
             edge_result=body["edge_result"],
             confidence=float(body["confidence"]),
@@ -121,4 +129,4 @@ class ModelClient:
             model_version=body["model_version"],
         )
         return ModelInferResult(success=True, edge=edge, latency_ms=latency_ms,
-                                raw_text=body.get("raw_text"))
+                                raw_text=body.get("raw_text"), request_id=response_request_id)

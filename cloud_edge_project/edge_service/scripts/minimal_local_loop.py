@@ -183,7 +183,6 @@ def _packet(sequence: int, signals: dict[str, np.ndarray]) -> dict:
 
 def _model_pipeline(mode: str, records: list, packet_results: list):
     cfg = EdgeModelConfig()
-    cfg.feature_agg.placeholder_acknowledged = True
     cfg.fallback.allow_test_rule = True
     if mode == "fallback":
         cfg.model_client = ModelClientConfig(
@@ -258,24 +257,17 @@ def run_minimal_loop(mode: str) -> dict:
                 f"第{sequence}包振动RMS非法",
             )
             perceived_count += 1
-            pipeline.ingest(
-                _SENDER_ID,
-                perceived.payload,
-                arrival_ts=(sequence - 1) * 0.05,
-            )
+            pipeline.ingest(_SENDER_ID, perceived.payload)
             _require(pipeline.wait_idle(timeout_s=5), "模型队列未在5秒内清空")
-        pipeline.flush_task(_TASK_ID, _SENDER_ID)
-        _require(pipeline.wait_idle(timeout_s=10), "模型收尾未在10秒内完成")
     finally:
         pipeline.stop()
 
     task = ingress.task_snapshot(_TASK_ID)
     bearing = task.bearing_task_records[_BEARING_ID]
     slots = cache.context_snapshot(_SENDER_ID)
-    non_empty = [record for record in records if not record.is_empty]
-    execution_modes = Counter(record.execution_mode for record in non_empty)
+    execution_modes = Counter(record.execution_mode for record in records)
     fallback_reasons = Counter(
-        record.fallback_reason for record in non_empty if record.fallback_reason
+        record.fallback_reason for record in records if record.fallback_reason
     )
     versions = Counter(result.edge.model_version for result in packet_results)
 
@@ -287,11 +279,9 @@ def run_minimal_loop(mode: str) -> dict:
     _require(bearing.data_completeness == "COMPLETE", "轴承任务数据不完整")
     _require(bearing.missing_packet_count == 0, "轴承任务出现缺失包")
     _require(bearing.summary_generated_count == 0, "当前阶段不应生成包摘要")
-    _require(len(non_empty) == 4, f"非空窗口数应为4，实际{len(non_empty)}")
-    _require(
-        sorted(record.packet_count for record in non_empty) == [20, 20, 20, 20],
-        "四个窗口的包数不是20",
-    )
+    _require(len(records) == PACKET_COUNT, "包级模型运行记录数量不是80")
+    _require(len({record.request_id for record in records}) == PACKET_COUNT,
+             "包级模型请求request_id不唯一")
     _require(len(packet_results) == PACKET_COUNT, "PacketResult数量不是80")
     _require(
         {result.sequence_number for result in packet_results}
@@ -302,7 +292,7 @@ def run_minimal_loop(mode: str) -> dict:
         EXECUTION_CODE_FALLBACK if mode == "fallback" else EXECUTION_LOCAL_MODEL
     )
     _require(
-        execution_modes == Counter({expected_mode: 4}),
+        execution_modes == Counter({expected_mode: PACKET_COUNT}),
         f"执行路线不符合{mode}模式: {dict(execution_modes)}",
     )
     if mode == "real":
@@ -319,7 +309,7 @@ def run_minimal_loop(mode: str) -> dict:
 
     return {
         "status": "PASS",
-        "scope": "packet_and_window_technical_loop",
+        "scope": "packet_level_technical_loop",
         "data_source": DATA_SOURCE,
         "model_mode_requested": mode,
         "model_service_health": health.ok,
@@ -331,8 +321,8 @@ def run_minimal_loop(mode: str) -> dict:
         "perceived_packets": perceived_count,
         "bearing_data_completeness": bearing.data_completeness,
         "missing_packet_count": bearing.missing_packet_count,
-        "non_empty_windows": len(non_empty),
-        "window_packet_counts": [record.packet_count for record in non_empty],
+        "model_packet_tasks": len(records),
+        "unique_model_request_ids": len({record.request_id for record in records}),
         "packet_results": len(packet_results),
         "execution_modes": dict(execution_modes),
         "fallback_reasons": dict(fallback_reasons),
@@ -366,7 +356,7 @@ def main() -> int:
     except Exception as exc:
         report = {
             "status": "FAIL",
-            "scope": "packet_and_window_technical_loop",
+            "scope": "packet_level_technical_loop",
             "data_source": DATA_SOURCE,
             "error": f"{type(exc).__name__}: {exc}",
         }

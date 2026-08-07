@@ -24,7 +24,8 @@ _SRC = Path(__file__).resolve().parents[1]  # src/ 目录
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from model_service.prompt import PROMPT_VERSION  # noqa: E402
+from model_service.prompt import PROMPT_VERSION, SYSTEM_PROMPT  # noqa: E402
+from model_input_contract import MODEL_INPUT_SCHEMA_VERSION  # noqa: E402
 from model_service.output_validator import OUTPUT_SCHEMA_VERSION  # noqa: E402
 
 MANIFEST_SCHEMA_VERSION = "edge-model-manifest/1.0"
@@ -47,17 +48,8 @@ def sha256_text(text: str) -> str:
 
 
 def prompt_template_text() -> str:
-    """取 prompt.py 中的系统提示词模板（与 build_prompt 内联的 system 文本一致）。"""
-    return (
-        "你是轴承设备状态诊断助手。把给定的感知结果转换为一个 JSON 诊断结论。\n"
-        "严格要求：\n"
-        "1. 只输出一个 JSON 对象，禁止输出 <think>、任何解释、分析或思考过程，禁止 Markdown 代码块。\n"
-        "2. JSON 只包含以下三个字段，不允许增加或缺失：\n"
-        '   edge_result: 只能是 "normal" | "warning" | "fault"\n'
-        '   edge_risk_level: 只能是 "low" | "medium" | "high"\n'
-        "   confidence: [0,1] 的浮点数，表示诊断分数\n"
-        "3. 立即输出 JSON，不要有任何前言。"
-    )
+    """Return the exact system prompt used by the runtime."""
+    return SYSTEM_PROMPT
 
 
 def main():
@@ -108,7 +100,7 @@ def main():
         "precision": "bfloat16",
         "quantization": "none",
         "max_new_tokens": args.max_new_tokens,
-        "input_schema_version": "edge-model-input/1.0",
+        "input_schema_version": MODEL_INPUT_SCHEMA_VERSION,
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
         "prompt_sha256": sha256_text(prompt_template_text()),

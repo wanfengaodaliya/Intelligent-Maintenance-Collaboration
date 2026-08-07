@@ -1,53 +1,54 @@
 # -*- coding: utf-8 -*-
-"""公共契约：外部接口、窗口聚合、内部运行记录。
+"""边缘模型运行契约。
 
-对外（与《边缘部分需要的接口.md》保持一致，不新增字段）：
-    EdgeResult      扁平 4 字段
-    PacketResult    每包输出 = 包身份 + EdgeResult
+对外：
+    EdgeResult          扁平 4 字段
+    PacketResult        当前包身份 + 该包的 EdgeResult
 
-内部（只写运行记录，不进外部接口）：
-    WindowAggregate 窗口聚合结果与元数据
-    RunRecord       一次窗口诊断的完整执行记录
+内部：
+    PacketInferenceTask 一个 PerceptionResult 对应的独立推理任务
+    RunRecord           一次包级诊断的执行记录
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
-# 外部枚举（封闭）
+
 EDGE_RESULT_VALUES = ("normal", "warning", "fault")
 EDGE_RISK_VALUES = ("low", "medium", "high")
 
 EXECUTION_LOCAL_MODEL = "LOCAL_MODEL"
 EXECUTION_CODE_FALLBACK = "CODE_FALLBACK"
-EXECUTION_NONE = "NONE"  # 空窗口：不调用任何路线
 
-# 内部降级原因（区分 HTTP 模型服务返回的各类失败）
 REASON_QUEUE_FULL = "QUEUE_FULL"
 REASON_QUEUE_TIMEOUT = "QUEUE_TIMEOUT"
 REASON_TOTAL_TIMEOUT = "TOTAL_TIMEOUT"
-REASON_MODEL_BUSY = "MODEL_BUSY"                    # 服务繁忙，立即返回（不排队等锁）
-REASON_MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"      # 连接失败 / 服务未就绪
-REASON_MODEL_INFERENCE_FAILED = "MODEL_INFERENCE_FAILED"    # 服务端推理异常 / HTTP 错误
-REASON_MODEL_INFERENCE_TIMEOUT = "MODEL_INFERENCE_TIMEOUT"  # 模型调用超时（逻辑超时）
-REASON_MODEL_OUTPUT_INVALID = "MODEL_OUTPUT_INVALID"        # 模型输出非法（含 confidence null/NaN）
+REASON_MODEL_BUSY = "MODEL_BUSY"
+REASON_MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+REASON_MODEL_INFERENCE_FAILED = "MODEL_INFERENCE_FAILED"
+REASON_MODEL_INFERENCE_TIMEOUT = "MODEL_INFERENCE_TIMEOUT"
+REASON_MODEL_OUTPUT_INVALID = "MODEL_OUTPUT_INVALID"
+REASON_MODEL_INPUT_INVALID = "MODEL_INPUT_INVALID"
 REASON_BREAKER_OPEN = "BREAKER_OPEN"
 REASON_CODE_FALLBACK_FAILED = "CODE_FALLBACK_FAILED"
-# 模型服务响应体中的 error 码（客户端据此映射到上面的 REASON_*）
+
 HTTP_ERROR_MODEL_BUSY = "MODEL_BUSY"
 HTTP_ERROR_MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
 HTTP_ERROR_MODEL_INFERENCE_FAILED = "MODEL_INFERENCE_FAILED"
 HTTP_ERROR_MODEL_INFERENCE_TIMEOUT = "MODEL_INFERENCE_TIMEOUT"
 HTTP_ERROR_MODEL_OUTPUT_INVALID = "MODEL_OUTPUT_INVALID"
+HTTP_ERROR_MODEL_INPUT_INVALID = "MODEL_INPUT_INVALID"
 
 
-@dataclass
+@dataclass(frozen=True)
 class EdgeResult:
     """对外统一结果（扁平 4 字段，接口冻结）。"""
-    edge_result: str            # normal | warning | fault
-    confidence: float           # 0~1；模型路线为未校准诊断分数，规则路线为规则分数
-    edge_risk_level: str        # low | medium | high
-    model_version: str          # 模型版本 或 edge_rule_* 规则版本
+
+    edge_result: str
+    confidence: float
+    edge_risk_level: str
+    model_version: str
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -58,13 +59,12 @@ class EdgeResult:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class PacketResult:
-    """每包输出：包身份 + 窗口级 EdgeResult（诊断映射给窗口内所有数据包）。
+    """每包输出：包身份 + 当前包独立产生的 EdgeResult。"""
 
-    窗口元数据（window_id/window_start_ns/window_end_ns）只进内部记录，
-    不加入外部接口。
-    """
+    device_id: str
+    bearing_id: str
     task_id: str
     packet_id: str
     sender_id: str
@@ -73,6 +73,8 @@ class PacketResult:
 
     def as_dict(self) -> Dict[str, Any]:
         return {
+            "device_id": self.device_id,
+            "bearing_id": self.bearing_id,
             "task_id": self.task_id,
             "packet_id": self.packet_id,
             "sender_id": self.sender_id,
@@ -82,63 +84,34 @@ class PacketResult:
 
 
 @dataclass
-class WindowAggregate:
-    """一个 (task_id, sender_id)、一个时间窗口内的聚合结果（内部）。"""
-    task_id: str
-    sender_id: str
-    window_id: int
-    window_start_ns: int
-    window_end_ns: int
-    close_ts_ns: int
-    expected_samples: int
-    sample_count: int = 0
-    first_sample_ts_ns: Optional[int] = None
-    last_sample_ts_ns: Optional[int] = None
-    missing_ratio: float = 0.0
-    quality_status: str = "good"
-    quality_flags: List[str] = field(default_factory=list)
-    late_dropped_count: int = 0
-    is_empty: bool = False
-    sparse: bool = False
-    # 窗口内全部包的身份（用于把窗口诊断映射回每个数据包）
-    included_packets: List[Dict[str, Any]] = field(default_factory=list)
-    payload: Dict[str, Any] = field(default_factory=dict)  # 交给模型/规则的聚合输入
-    submit_ts: Optional[float] = None  # 提交到模型队列的单调秒
+class PacketInferenceTask:
+    """一个数据包的内部模型任务；不含任何跨包聚合数据。"""
 
-    def meta_dict(self) -> Dict[str, Any]:
-        return {
-            "sender_id": self.sender_id,
-            "window_id": self.window_id,
-            "window_start_ns": self.window_start_ns,
-            "window_end_ns": self.window_end_ns,
-            "sample_count": self.sample_count,
-            "expected_samples": self.expected_samples,
-            "missing_ratio": self.missing_ratio,
-            "quality_status": self.quality_status,
-            "quality_flags": self.quality_flags,
-            "sparse": self.sparse,
-            "is_empty": self.is_empty,
-            "late_dropped_count": self.late_dropped_count,
-            "included_packet_ids": [p["packet_id"] for p in self.included_packets],
-        }
+    request_id: str
+    device_id: str
+    bearing_id: str
+    task_id: str
+    packet_id: str
+    sender_id: str
+    sequence_number: int
+    perception: Dict[str, Any]
+    submit_ts: Optional[float] = None
 
 
 @dataclass
 class RunRecord:
-    """一次窗口诊断的执行记录（内部，只写日志/指标）。"""
-    sender_id: str
-    window_id: int
+    """一次包级诊断的内部执行记录。"""
+
+    request_id: str
+    device_id: str
+    bearing_id: str
     task_id: str
-    window_start_ns: int
-    window_end_ns: int
-    sample_count: int
-    missing_ratio: float
-    sparse: bool
-    is_empty: bool
+    packet_id: str
+    sender_id: str
+    sequence_number: int
     execution_mode: str
     fallback_reason: Optional[str]
-    packet_count: int = 0
-    output_valid: bool = True   # 是否产出合法 EdgeResult（两条路线都失败时为 False）
+    output_valid: bool = True
     edge_result: Optional[str] = None
     edge_risk_level: Optional[str] = None
     confidence: Optional[float] = None
@@ -147,21 +120,18 @@ class RunRecord:
     inference_latency_ms: Optional[float] = None
     total_latency_ms: Optional[float] = None
     exceeded_total_timeout: bool = False
-    late_dropped_count: int = 0
     breaker_state: Optional[str] = None
     note: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
+            "request_id": self.request_id,
+            "device_id": self.device_id,
+            "bearing_id": self.bearing_id,
+            "task_id": self.task_id,
+            "packet_id": self.packet_id,
             "sender_id": self.sender_id,
-            "window_id": self.window_id,
-            "window_start_ns": self.window_start_ns,
-            "window_end_ns": self.window_end_ns,
-            "sample_count": self.sample_count,
-            "missing_ratio": self.missing_ratio,
-            "sparse": self.sparse,
-            "is_empty": self.is_empty,
-            "packet_count": self.packet_count,
+            "sequence_number": self.sequence_number,
             "output_valid": self.output_valid,
             "execution_mode": self.execution_mode,
             "fallback_reason": self.fallback_reason,
@@ -173,7 +143,6 @@ class RunRecord:
             "inference_latency_ms": self.inference_latency_ms,
             "total_latency_ms": self.total_latency_ms,
             "exceeded_total_timeout": self.exceeded_total_timeout,
-            "late_dropped_count": self.late_dropped_count,
             "breaker_state": self.breaker_state,
             "note": self.note,
         }
