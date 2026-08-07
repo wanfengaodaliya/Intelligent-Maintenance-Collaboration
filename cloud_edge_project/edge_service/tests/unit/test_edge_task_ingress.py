@@ -138,6 +138,19 @@ def test_task_is_registered_atomically_and_exact_duplicate_is_idempotent():
     assert snapshot.bearing_task_records["bearing-1"].sender_id == "sender-1"
 
 
+def test_task_ack_has_a_fixed_json_ready_shape():
+    ack = _ingress().register_task(_dispatch())
+
+    assert ack.as_dict() == {
+        "task_id": "task-1",
+        "edge_node_id": "edge-1",
+        "ack_status": "ACCEPTED",
+        "reason_code": None,
+        "received_at_ns": _BASE_NS,
+        "acknowledged_at_ns": _BASE_NS + 1,
+    }
+
+
 def test_invalid_wrong_target_unsupported_and_conflicting_tasks_are_rejected():
     ingress = _ingress()
     wrong_target = ingress.register_task(

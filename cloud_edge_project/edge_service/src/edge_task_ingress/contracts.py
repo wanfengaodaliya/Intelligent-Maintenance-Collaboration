@@ -55,6 +55,16 @@ class TaskAck:
     received_at_ns: int
     acknowledged_at_ns: int
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "edge_node_id": self.edge_node_id,
+            "ack_status": self.ack_status,
+            "reason_code": self.reason_code,
+            "received_at_ns": self.received_at_ns,
+            "acknowledged_at_ns": self.acknowledged_at_ns,
+        }
+
 
 @dataclass
 class PacketRecord:
