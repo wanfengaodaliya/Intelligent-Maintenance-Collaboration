@@ -1,0 +1,28 @@
+plugins:
+  logger:
+    enabled: true
+    required: true
+  toxiproxy:
+    enabled: true
+    required: true
+  markov:
+    enabled: true
+    required: true
+  score:
+    enabled: true
+    required: true
+  reporter:
+    enabled: true
+    required: false
+  api:
+    enabled: true
+    required: false
+    host: 0.0.0.0
+    port: 8090
+  health:
+    enabled: true
+    required: false
+
+logging:
+  max_bytes: 10485760
+  backup_count: 5
