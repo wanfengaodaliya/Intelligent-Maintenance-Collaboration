@@ -18,6 +18,7 @@ def main() -> None:
     completed = threading.Event()
     packet_ids: set[str] = set()
     bearing_counts: dict[str, int] = {}
+    sender_counts: dict[str, int] = {}
 
     def on_connect(client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
@@ -30,9 +31,11 @@ def main() -> None:
         packet_ids.add(packet["packet_id"])
         bearing_id = packet["bearing_id"]
         bearing_counts[bearing_id] = bearing_counts.get(bearing_id, 0) + 1
+        sender_id = packet["sender_id"]
+        sender_counts[sender_id] = sender_counts.get(sender_id, 0) + 1
         print(
             f"received {len(packet_ids)}/{args.expected}: {packet['packet_id']} "
-            f"bearing_counts={bearing_counts}"
+            f"sender_counts={sender_counts} bearing_counts={bearing_counts}"
         )
         if len(packet_ids) >= args.expected:
             completed.set()

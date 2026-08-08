@@ -14,67 +14,44 @@ class SchedulerError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class BearingAssignment:
-    bearing_id: str
-    target_topic: str
-
-
-@dataclass(frozen=True)
 class ScheduleAssignment:
     device_id: str
+    sender_id: str
     task_id: str
-    assignments: tuple[BearingAssignment, ...]
+    bearing_id: str
+    target_topic: str
     schedule_retry_count: int
-
-    def topic_for(self, bearing_id: str) -> str:
-        for assignment in self.assignments:
-            if assignment.bearing_id == bearing_id:
-                return assignment.target_topic
-        raise SchedulerError(f"bearing has no assignment: {bearing_id}")
 
 
 def validate_assignment(
     payload: dict[str, Any],
     *,
     expected_device_id: str,
+    expected_sender_id: str,
     expected_task_id: str,
-    expected_bearing_ids: set[str],
+    expected_bearing_id: str,
     retry_count: int = 0,
 ) -> ScheduleAssignment:
     if not isinstance(payload, dict):
         raise SchedulerError("scheduler response must be a JSON object", retry_count)
-    if payload.get("device_id") != expected_device_id:
-        raise SchedulerError("scheduler response device_id does not match request", retry_count)
-    if payload.get("task_id") != expected_task_id:
-        raise SchedulerError("scheduler response task_id does not match request", retry_count)
-
-    raw_assignments = payload.get("assignments")
-    if not isinstance(raw_assignments, list):
-        raise SchedulerError("scheduler response assignments must be an array", retry_count)
-
-    assignments: list[BearingAssignment] = []
-    seen: set[str] = set()
-    for item in raw_assignments:
-        if not isinstance(item, dict):
-            raise SchedulerError("scheduler assignment must be an object", retry_count)
-        bearing_id = item.get("bearing_id")
-        target_topic = item.get("target_topic")
-        if not isinstance(bearing_id, str) or not bearing_id.strip():
-            raise SchedulerError("scheduler assignment bearing_id is missing", retry_count)
-        if bearing_id in seen:
-            raise SchedulerError(f"duplicate bearing assignment: {bearing_id}", retry_count)
-        if not isinstance(target_topic, str) or not target_topic.strip():
-            raise SchedulerError(f"target_topic is missing for {bearing_id}", retry_count)
-        seen.add(bearing_id)
-        assignments.append(BearingAssignment(bearing_id, target_topic.strip()))
-
-    if seen != expected_bearing_ids:
-        raise SchedulerError("scheduler assignments do not match requested bearings", retry_count)
-
+    expected = {
+        "device_id": expected_device_id,
+        "sender_id": expected_sender_id,
+        "task_id": expected_task_id,
+        "bearing_id": expected_bearing_id,
+    }
+    for field, value in expected.items():
+        if payload.get(field) != value:
+            raise SchedulerError(f"scheduler response {field} does not match request", retry_count)
+    target_topic = payload.get("target_topic")
+    if not isinstance(target_topic, str) or not target_topic.strip():
+        raise SchedulerError("scheduler response target_topic is missing", retry_count)
     return ScheduleAssignment(
         device_id=expected_device_id,
+        sender_id=expected_sender_id,
         task_id=expected_task_id,
-        assignments=tuple(assignments),
+        bearing_id=expected_bearing_id,
+        target_topic=target_topic.strip(),
         schedule_retry_count=retry_count,
     )
 
@@ -96,40 +73,29 @@ class SchedulerClient:
         self.session = session or requests.Session()
 
     def assign(self, request: dict[str, Any]) -> ScheduleAssignment:
-        device_id = request.get("device_id")
-        task_id = request.get("task_id")
-        sender_id = request.get("sender_id")
-        raw_bearings = request.get("bearings")
-        if not all(isinstance(value, str) and value for value in (device_id, task_id, sender_id)):
-            raise SchedulerError("schedule request needs device_id, task_id, and sender_id")
-        if not isinstance(raw_bearings, list) or not raw_bearings:
-            raise SchedulerError("schedule request needs bearings")
-        bearing_ids = [item.get("bearing_id") for item in raw_bearings if isinstance(item, dict)]
-        if len(bearing_ids) != len(raw_bearings) or not all(
-            isinstance(bearing_id, str) and bearing_id for bearing_id in bearing_ids
-        ):
-            raise SchedulerError("schedule request has invalid bearings")
-        expected_bearing_ids = set(bearing_ids)
-        if len(expected_bearing_ids) != len(bearing_ids):
-            raise SchedulerError("schedule request has duplicate bearings")
+        string_fields = ("device_id", "sender_id", "task_id", "bearing_id")
+        values = {field: request.get(field) for field in string_fields}
+        if not all(isinstance(value, str) and value for value in values.values()):
+            raise SchedulerError("schedule request needs device_id, sender_id, task_id, and bearing_id")
+        for field in ("packet_size_bytes", "expected_packet_count", "expected_duration_ms", "created_timestamp_ns"):
+            value = request.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise SchedulerError(f"schedule request {field} must be a positive integer")
 
         last_error = "scheduler request failed"
         for attempt in range(self.max_retries + 1):
             try:
-                response = self.session.post(
-                    self.url,
-                    json=request,
-                    timeout=self.timeout_seconds,
-                )
+                response = self.session.post(self.url, json=request, timeout=self.timeout_seconds)
                 if not 200 <= response.status_code < 300:
                     last_error = f"scheduler returned HTTP {response.status_code}"
                 else:
                     try:
                         return validate_assignment(
                             response.json(),
-                            expected_device_id=device_id,
-                            expected_task_id=task_id,
-                            expected_bearing_ids=expected_bearing_ids,
+                            expected_device_id=values["device_id"],
+                            expected_sender_id=values["sender_id"],
+                            expected_task_id=values["task_id"],
+                            expected_bearing_id=values["bearing_id"],
                             retry_count=attempt,
                         )
                     except SchedulerError as exc:

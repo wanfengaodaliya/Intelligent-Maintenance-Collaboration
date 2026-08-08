@@ -13,16 +13,13 @@ class SchedulerHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             request = json.loads(self.rfile.read(length).decode("utf-8"))
+            bearing_number = int(request["bearing_id"].rsplit("_", 1)[1])
             response = {
                 "device_id": request["device_id"],
+                "sender_id": request["sender_id"],
                 "task_id": request["task_id"],
-                "assignments": [
-                    {
-                        "bearing_id": bearing["bearing_id"],
-                        "target_topic": f"edge/edge_{index % 2 + 1}/input",
-                    }
-                    for index, bearing in enumerate(request["bearings"])
-                ],
+                "bearing_id": request["bearing_id"],
+                "target_topic": f"edge/edge_{(bearing_number - 1) % 2 + 1}/input",
             }
             encoded = json.dumps(response).encode("utf-8")
         except (KeyError, ValueError, json.JSONDecodeError) as exc:

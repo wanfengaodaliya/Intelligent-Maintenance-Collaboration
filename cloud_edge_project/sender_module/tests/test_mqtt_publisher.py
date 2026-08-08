@@ -72,9 +72,9 @@ class ExplicitlyFailingMqttClient(FakeMqttClient):
 def sample_packet(sequence: int) -> dict:
     return {
         "device_id": "machine_01",
-        "task_id": "task_00001",
+        "task_id": "sd_01_tk_0001",
         "bearing_id": "bearing_01",
-        "packet_id": f"task_00001_bearing_01_pkt_{sequence:03d}",
+        "packet_id": f"sd_01_tk_0001_bearing_01_pkt_{sequence:03d}",
         "sender_id": "sender_01",
         "sequence_number": sequence,
         "end_generate_timestamp_ns": time.time_ns(),
@@ -224,6 +224,7 @@ class MqttPublisherUnitTests(unittest.TestCase):
         self.assertEqual(sink.packet_records[0]["publish_status"], "confirmed")
         self.assertIsNone(sink.packet_records[0]["error_code"])
         self.assertEqual(sink.packet_records[0]["device_id"], "machine_01")
+        self.assertEqual(sink.packet_records[0]["sender_id"], "sender_01")
         self.assertEqual(sink.packet_records[0]["bearing_id"], "bearing_01")
 
     def test_unacknowledged_packet_fails_at_delivery_deadline(self) -> None:
@@ -251,7 +252,7 @@ class MqttPublisherUnitTests(unittest.TestCase):
 
         self.assertEqual(sink.packet_records[0]["publish_status"], "failed")
         self.assertEqual(sink.packet_records[0]["error_code"], "PUBACK_TIMEOUT")
-        self.assertIn("task_00001_bearing_01_pkt_001", publisher.warning_packet_ids)
+        self.assertIn("sd_01_tk_0001_bearing_01_pkt_001", publisher.warning_packet_ids)
 
     def test_full_queue_drops_oldest_pending_packet(self) -> None:
         from sender.mqtt_publisher import MqttPublisher
@@ -277,7 +278,7 @@ class MqttPublisherUnitTests(unittest.TestCase):
         publisher.stop()
 
         dropped = sink.packet_records[0]
-        self.assertEqual(dropped["packet_id"], "task_00001_bearing_01_pkt_001")
+        self.assertEqual(dropped["packet_id"], "sd_01_tk_0001_bearing_01_pkt_001")
         self.assertEqual(dropped["publish_status"], "dropped")
         self.assertEqual(dropped["error_code"], "SEND_QUEUE_FULL")
 
@@ -336,7 +337,7 @@ class RealMosquittoIntegrationTests(unittest.TestCase):
         subscriber.disconnect()
         subscriber.loop_stop()
         self.assertTrue(received.wait(1))
-        self.assertEqual(payloads[0]["packet_id"], "task_00001_bearing_01_pkt_001")
+        self.assertEqual(payloads[0]["packet_id"], "sd_01_tk_0001_bearing_01_pkt_001")
         self.assertEqual(records[0]["publish_status"], "confirmed")
 
 

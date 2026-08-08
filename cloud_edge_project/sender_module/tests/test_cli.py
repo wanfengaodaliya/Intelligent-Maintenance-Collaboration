@@ -3,41 +3,29 @@ from pathlib import Path
 
 
 class CliTests(unittest.TestCase):
-    def test_parse_bearing_files_returns_three_sources(self) -> None:
-        from sender.__main__ import parse_bearing_files
+    def test_parse_source_files_returns_three_sender_sources(self) -> None:
+        from sender.__main__ import parse_source_files
 
         self.assertEqual(
-            parse_bearing_files(
-                [
-                    "bearing_01=one.mat",
-                    "bearing_02=two.mat",
-                    "bearing_03=three.mat",
-                ]
-            ),
+            parse_source_files(["sender_01=one.mat", "sender_02=two.mat", "sender_03=three.mat"]),
             {
-                "bearing_01": Path("one.mat"),
-                "bearing_02": Path("two.mat"),
-                "bearing_03": Path("three.mat"),
+                "sender_01": Path("one.mat"),
+                "sender_02": Path("two.mat"),
+                "sender_03": Path("three.mat"),
             },
         )
 
-    def test_parse_bearing_files_rejects_duplicate_id(self) -> None:
-        from sender.__main__ import parse_bearing_files
+    def test_parse_source_files_rejects_duplicate_sender(self) -> None:
+        from sender.__main__ import parse_source_files
 
-        with self.assertRaisesRegex(ValueError, "duplicate bearing_id"):
-            parse_bearing_files(
-                [
-                    "bearing_01=one.mat",
-                    "bearing_01=two.mat",
-                    "bearing_03=three.mat",
-                ]
-            )
+        with self.assertRaisesRegex(ValueError, "duplicate sender_id"):
+            parse_source_files(["sender_01=one.mat", "sender_01=two.mat"])
 
-    def test_parse_bearing_files_rejects_malformed_entry(self) -> None:
-        from sender.__main__ import parse_bearing_files
+    def test_parse_source_files_rejects_malformed_entry(self) -> None:
+        from sender.__main__ import parse_source_files
 
-        with self.assertRaisesRegex(ValueError, "bearing_id=MAT_PATH"):
-            parse_bearing_files(["bearing_01", "bearing_02=two.mat", "bearing_03=three.mat"])
+        with self.assertRaisesRegex(ValueError, "sender_id=MAT_PATH"):
+            parse_source_files(["sender_01"])
 
 
 if __name__ == "__main__":
