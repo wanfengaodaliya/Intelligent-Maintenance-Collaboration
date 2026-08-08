@@ -1,10 +1,30 @@
 {
-  "sender_id": "sender_01",
-  "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+  "device_id": "machine_01",
+  "senders": [
+    {
+      "sender_id": "sender_01",
+      "bearing_id": "bearing_01",
+      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+      "mqtt_host": "127.0.0.1",
+      "mqtt_port": 1883
+    },
+    {
+      "sender_id": "sender_02",
+      "bearing_id": "bearing_02",
+      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+      "mqtt_host": "127.0.0.1",
+      "mqtt_port": 1883
+    },
+    {
+      "sender_id": "sender_03",
+      "bearing_id": "bearing_03",
+      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+      "mqtt_host": "127.0.0.1",
+      "mqtt_port": 1883
+    }
+  ],
   "scheduler_timeout_seconds": 2.0,
   "schedule_max_retries": 2,
-  "mqtt_host": "127.0.0.1",
-  "mqtt_port": 1883,
   "mqtt_keepalive_seconds": 30,
   "qos": 1,
   "retain": false,

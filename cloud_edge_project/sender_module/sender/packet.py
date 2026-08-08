@@ -18,7 +18,9 @@ ARRAY_SIGNALS = {
     "bearing_radial_load_n": 4000,
 }
 TEMPERATURE_SIGNAL = "bearing_module_temperature_c"
-TASK_ID_PATTERN = re.compile(r"^task_(\d{5,})$")
+TASK_ID_PATTERN = re.compile(r"^sd_(\d{2,})_tk_(\d{4,})$")
+SENDER_ID_PATTERN = re.compile(r"^sender_(\d{2,})$")
+BEARING_ID_PATTERN = re.compile(r"^bearing_\d{2,}$")
 
 
 def _validate_data(data: dict[str, Any]) -> None:
@@ -48,7 +50,9 @@ def _validate_data(data: dict[str, Any]) -> None:
 
 def build_sensor_packet(
     *,
+    device_id: str,
     task_id: str,
+    bearing_id: str,
     sender_id: str,
     sequence_number: int,
     data: dict[str, Any],
@@ -56,19 +60,27 @@ def build_sensor_packet(
 ) -> dict[str, Any]:
     match = TASK_ID_PATTERN.fullmatch(task_id)
     if not match:
-        raise PacketValidationError("task_id must match task_<number>")
-    if not sender_id:
-        raise PacketValidationError("sender_id cannot be empty")
+        raise PacketValidationError("task_id must match sd_<sender>_tk_<number>")
+    if not isinstance(device_id, str) or not device_id.strip():
+        raise PacketValidationError("device_id cannot be empty")
+    if not isinstance(bearing_id, str) or not BEARING_ID_PATTERN.fullmatch(bearing_id):
+        raise PacketValidationError("bearing_id must match bearing_<number>")
+    sender_match = SENDER_ID_PATTERN.fullmatch(sender_id)
+    if not sender_match:
+        raise PacketValidationError("sender_id must match sender_<number>")
+    if sender_match.group(1) != match.group(1):
+        raise PacketValidationError("task_id does not belong to sender_id")
     if not 1 <= sequence_number <= 999:
         raise PacketValidationError("sequence_number must be between 1 and 999")
     if end_generate_timestamp_ns <= 0:
         raise PacketValidationError("end_generate_timestamp_ns must be positive")
     _validate_data(data)
 
-    task_number = match.group(1)
     return {
+        "device_id": device_id.strip(),
         "task_id": task_id,
-        "packet_id": f"batch_{task_number}_{sequence_number:03d}",
+        "bearing_id": bearing_id,
+        "packet_id": f"{task_id}_{bearing_id}_pkt_{sequence_number:03d}",
         "sender_id": sender_id,
         "sequence_number": sequence_number,
         "end_generate_timestamp_ns": end_generate_timestamp_ns,

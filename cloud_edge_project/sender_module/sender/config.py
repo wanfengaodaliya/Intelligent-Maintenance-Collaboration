@@ -11,13 +11,20 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class SenderConfig:
+class SenderNodeConfig:
     sender_id: str
+    bearing_id: str
     scheduler_url: str
-    scheduler_timeout_seconds: float
-    schedule_max_retries: int
     mqtt_host: str
     mqtt_port: int
+
+
+@dataclass(frozen=True)
+class SenderConfig:
+    device_id: str
+    senders: tuple[SenderNodeConfig, ...]
+    scheduler_timeout_seconds: float
+    schedule_max_retries: int
     mqtt_keepalive_seconds: int
     qos: int
     retain: bool
@@ -33,12 +40,36 @@ class SenderConfig:
 
 
 REQUIRED_FIELDS = tuple(SenderConfig.__dataclass_fields__)
+SENDER_REQUIRED_FIELDS = tuple(SenderNodeConfig.__dataclass_fields__)
 
 
 def _non_empty_text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{field} must be a non-empty string")
     return value.strip()
+
+
+def _load_sender(raw: Any, index: int) -> SenderNodeConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"senders[{index}] must be an object")
+    missing = [field for field in SENDER_REQUIRED_FIELDS if field not in raw]
+    if missing:
+        raise ConfigError(f"senders[{index}] missing fields: {', '.join(missing)}")
+
+    sender_id = _non_empty_text(raw["sender_id"], f"senders[{index}].sender_id")
+    bearing_id = _non_empty_text(raw["bearing_id"], f"senders[{index}].bearing_id")
+    scheduler_url = _non_empty_text(raw["scheduler_url"], f"senders[{index}].scheduler_url")
+    mqtt_host = _non_empty_text(raw["mqtt_host"], f"senders[{index}].mqtt_host")
+    if not scheduler_url.startswith(("http://", "https://")):
+        raise ConfigError(f"senders[{index}].scheduler_url must start with http:// or https://")
+    try:
+        mqtt_port = int(raw["mqtt_port"])
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"senders[{index}].mqtt_port must be an integer") from exc
+    if not 1 <= mqtt_port <= 65535:
+        raise ConfigError(f"senders[{index}].mqtt_port is outside the valid range")
+
+    return SenderNodeConfig(sender_id, bearing_id, scheduler_url, mqtt_host, mqtt_port)
 
 
 def load_config(path: Path | str) -> SenderConfig:
@@ -51,21 +82,23 @@ def load_config(path: Path | str) -> SenderConfig:
     missing = [field for field in REQUIRED_FIELDS if field not in raw]
     if missing:
         raise ConfigError(f"missing config fields: {', '.join(missing)}")
-
-    sender_id = _non_empty_text(raw["sender_id"], "sender_id")
-    scheduler_url = _non_empty_text(raw["scheduler_url"], "scheduler_url")
-    mqtt_host = _non_empty_text(raw["mqtt_host"], "mqtt_host")
-    if not scheduler_url.startswith(("http://", "https://")):
-        raise ConfigError("scheduler_url must start with http:// or https://")
+    raw_senders = raw["senders"]
+    if not isinstance(raw_senders, list) or len(raw_senders) != 3:
+        raise ConfigError("senders must contain exactly three sender configurations")
+    senders = tuple(_load_sender(item, index) for index, item in enumerate(raw_senders))
+    sender_ids = [item.sender_id for item in senders]
+    bearing_ids = [item.bearing_id for item in senders]
+    if len(set(sender_ids)) != len(sender_ids):
+        raise ConfigError("sender_id values must be unique")
+    if len(set(bearing_ids)) != len(bearing_ids):
+        raise ConfigError("bearing_id values must be unique")
 
     try:
         config = SenderConfig(
-            sender_id=sender_id,
-            scheduler_url=scheduler_url,
+            device_id=_non_empty_text(raw["device_id"], "device_id"),
+            senders=senders,
             scheduler_timeout_seconds=float(raw["scheduler_timeout_seconds"]),
             schedule_max_retries=int(raw["schedule_max_retries"]),
-            mqtt_host=mqtt_host,
-            mqtt_port=int(raw["mqtt_port"]),
             mqtt_keepalive_seconds=int(raw["mqtt_keepalive_seconds"]),
             qos=int(raw["qos"]),
             retain=bool(raw["retain"]),
@@ -86,19 +119,24 @@ def load_config(path: Path | str) -> SenderConfig:
         raise ConfigError("current contract requires qos=1 and retain=false")
     if config.schedule_max_retries < 0 or config.max_publish_retries < 0:
         raise ConfigError("retry counts cannot be negative")
+    if config.scheduler_timeout_seconds <= 0 or config.mqtt_keepalive_seconds <= 0:
+        raise ConfigError("scheduler timeout and MQTT keepalive must be positive")
     if config.puback_warning_timeout_ms <= 0:
         raise ConfigError("puback warning timeout must be positive")
     if config.packet_delivery_timeout_ms <= config.puback_warning_timeout_ms:
         raise ConfigError("delivery timeout must exceed PUBACK warning timeout")
     if config.packet_interval_ms <= 0 or config.task_duration_ms <= 0:
         raise ConfigError("task and packet durations must be positive")
+    if (
+        config.packet_interval_ms != 50
+        or config.expected_packet_count != 80
+        or config.task_duration_ms != 4000
+    ):
+        raise ConfigError("current contract requires 50 ms windows, 80 packets, and 4000 ms tasks")
     expected = config.task_duration_ms // config.packet_interval_ms
     if config.task_duration_ms % config.packet_interval_ms or expected != config.expected_packet_count:
         raise ConfigError("expected_packet_count must match task duration / packet interval")
-    if not 1 <= config.pending_queue_max_packets:
+    if config.pending_queue_max_packets <= 0:
         raise ConfigError("pending queue size must be positive")
-    if not 1 <= config.mqtt_port <= 65535:
-        raise ConfigError("mqtt_port is outside the valid range")
 
     return config
-
