@@ -49,7 +49,8 @@ class CloudReviewPersistence:
             validation_status = "warning"
         self.raw_packets.store({**raw, "validation_status": validation_status})
         review_id = self.reviews.upsert_preliminary(
-            sender_id=raw["sender_id"], anchor_packet_id=raw["packet_id"], task_id=raw["task_id"],
+            device_id=raw["device_id"], bearing_id=raw["bearing_id"], sender_id=raw["sender_id"],
+            anchor_packet_id=raw["packet_id"], task_id=raw["task_id"],
             feature_extractor_version=perception_result["feature_extractor_version"],
             schema_version=perception_result["schema_version"],
             data_quality_valid=perception_result["data_quality"]["valid"],
@@ -72,6 +73,7 @@ def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
         {"edge_result": "warning", "confidence": 0.0, "edge_risk_level": "medium"},
     )
     return {
+        "device_id": edge["device_id"], "bearing_id": edge["bearing_id"],
         "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],
         "sequence_number": edge["sequence_number"], "edge_node_id": edge.get("edge_node_id", "cloud_review_edge"),
         "end_timestamp_ns": edge["end_generate_timestamp_ns"], "summary_generated_at_ns": edge["feature_generated_at_ns"],

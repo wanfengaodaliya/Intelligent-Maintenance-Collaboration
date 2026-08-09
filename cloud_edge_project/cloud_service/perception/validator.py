@@ -10,7 +10,13 @@ from common.schemas import ContractError
 
 
 _TOP_LEVEL_FIELDS = {"edge_perception_result", "cloud_raw_packet"}
-_IDENTITY_FIELDS = ("task_id", "packet_id", "sender_id")
+_IDENTITY_FIELDS = (
+    "device_id",
+    "task_id",
+    "bearing_id",
+    "sender_id",
+    "packet_id",
+)
 _HIGH_RATE_SIGNALS = ("vibration", "phase_current_1_A", "phase_current_2_A")
 _CONTEXT_SIGNALS = ("shaft_speed_rpm", "load_torque_nm", "bearing_radial_load_n")
 _CONTEXT_STATS = ("mean", "last", "minimum", "maximum", "standard_deviation")

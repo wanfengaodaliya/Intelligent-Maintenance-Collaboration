@@ -185,14 +185,16 @@ class EnhancedAnalysisRepository:
         value = _load_json(row["result_json"])
         return EnhancedAnalysisResult.from_dict(value)
 
-    def enhanced_history(self, review_id: str, sender_id: str) -> list[dict[str, Any]]:
+    def enhanced_history(
+        self, review_id: str, device_id: str, bearing_id: str
+    ) -> list[dict[str, Any]]:
         with connect(self.database_path) as connection:
             rows = connection.execute(
                 "SELECT er.review_id,er.result_json,er.created_at_ns FROM enhanced_analysis_result er "
                 "JOIN cloud_review cr ON cr.review_id=er.review_id "
-                "WHERE cr.sender_id=? AND er.status='succeeded' AND er.review_id<>? "
+                "WHERE cr.device_id=? AND cr.bearing_id=? AND er.status='succeeded' AND er.review_id<>? "
                 "ORDER BY er.created_at_ns",
-                (sender_id, review_id),
+                (device_id, bearing_id, review_id),
             ).fetchall()
         return [
             {
@@ -203,13 +205,15 @@ class EnhancedAnalysisRepository:
             for row in rows
         ]
 
-    def edge_history(self, sender_id: str, now_ns: int, lookback_days: int) -> list[dict[str, Any]]:
+    def edge_history(
+        self, device_id: str, bearing_id: str, now_ns: int, lookback_days: int
+    ) -> list[dict[str, Any]]:
         since_ns = now_ns - lookback_days * 86_400 * 1_000_000_000
         with connect(self.database_path) as connection:
             rows = connection.execute(
-                "SELECT * FROM edge_packet_summary WHERE sender_id=? AND processing_status='perception_completed' "
+                "SELECT * FROM edge_packet_summary WHERE device_id=? AND bearing_id=? AND processing_status='perception_completed' "
                 "AND end_timestamp_ns>=? ORDER BY end_timestamp_ns DESC LIMIT 1000",
-                (sender_id, since_ns),
+                (device_id, bearing_id, since_ns),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -218,13 +222,15 @@ class BearingMetadataRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
 
-    def active_for_sender_at(self, sender_id: str, timestamp_ns: int) -> dict[str, Any] | None:
+    def active_for_bearing_at(
+        self, device_id: str, bearing_id: str, timestamp_ns: int
+    ) -> dict[str, Any] | None:
         with connect(self.database_path) as connection:
             rows = connection.execute(
-                "SELECT * FROM bearing_configuration WHERE sender_id=? AND active=1 "
+                "SELECT * FROM bearing_configuration WHERE device_id=? AND bearing_id=? AND active=1 "
                 "AND effective_from_ns<=? AND (effective_to_ns IS NULL OR effective_to_ns>?) "
                 "ORDER BY effective_from_ns DESC LIMIT 2",
-                (sender_id, timestamp_ns, timestamp_ns),
+                (device_id, bearing_id, timestamp_ns, timestamp_ns),
             ).fetchall()
         if len(rows) > 1:
             raise EnhancedAnalysisError(

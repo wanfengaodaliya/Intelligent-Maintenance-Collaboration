@@ -328,7 +328,15 @@ def validate_edge_feature_summary(summary: dict[str, Any], batch_edge_node_id: s
     """Validate one item and raise its documented rejection code on failure."""
 
     item = require_mapping(summary, "EdgeFeatureSummary")
-    for field in ("summary_id", "task_id", "packet_id", "sender_id", "edge_node_id"):
+    for field in (
+        "summary_id",
+        "device_id",
+        "task_id",
+        "bearing_id",
+        "packet_id",
+        "sender_id",
+        "edge_node_id",
+    ):
         try:
             require_non_empty_string(require_field(item, field), field)
         except ContractError as error:

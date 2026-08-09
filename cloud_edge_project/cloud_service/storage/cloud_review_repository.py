@@ -20,7 +20,7 @@ class CloudReviewRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
 
-    def upsert_preliminary(self, *, sender_id: str, anchor_packet_id: str, task_id: str,
+    def upsert_preliminary(self, *, device_id: str, bearing_id: str, sender_id: str, anchor_packet_id: str, task_id: str,
                            feature_extractor_version: str, schema_version: str,
                            data_quality_valid: bool, data_quality: dict,
                            start_timestamp_ns: int | None = None,
@@ -29,15 +29,22 @@ class CloudReviewRepository:
         now = time.time_ns()
         with connect(self.database_path) as connection:
             existing = connection.execute(
-                "SELECT review_id FROM cloud_review WHERE sender_id=? AND anchor_packet_id=? AND feature_extractor_version=?",
+                "SELECT review_id,device_id,task_id,bearing_id FROM cloud_review "
+                "WHERE sender_id=? AND anchor_packet_id=? AND feature_extractor_version=?",
                 (sender_id, anchor_packet_id, feature_extractor_version),
             ).fetchone()
             if existing:
+                if (
+                    existing["device_id"] != device_id
+                    or existing["task_id"] != task_id
+                    or existing["bearing_id"] != bearing_id
+                ):
+                    raise ValueError("REVIEW_IDENTITY_CONFLICT")
                 return existing["review_id"]
             review_id = str(uuid.uuid4())
             connection.execute(
-                "INSERT INTO cloud_review(review_id,sender_id,anchor_packet_id,task_id,feature_extractor_version,schema_version,review_status,context_status,data_quality_valid,start_timestamp_ns,end_timestamp_ns,data_quality_json,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (review_id, sender_id, anchor_packet_id, task_id, feature_extractor_version, schema_version,
+                "INSERT INTO cloud_review(review_id,sender_id,anchor_packet_id,device_id,task_id,bearing_id,feature_extractor_version,schema_version,review_status,context_status,data_quality_valid,start_timestamp_ns,end_timestamp_ns,data_quality_json,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (review_id, sender_id, anchor_packet_id, device_id, task_id, bearing_id, feature_extractor_version, schema_version,
                  "preliminary", "pending_context", int(data_quality_valid), start_timestamp_ns,
                  end_timestamp_ns, _json(data_quality), now, now),
             )

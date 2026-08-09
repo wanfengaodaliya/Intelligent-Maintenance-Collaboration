@@ -115,9 +115,14 @@ class EnhancedAnalysisService:
             )
             history_evidence = analyze_history(
                 edge_rows=self.repository.edge_history(
-                    context.sender_id, started_at, self.config.history_lookback_days
+                    context.device_id,
+                    context.bearing_id,
+                    started_at,
+                    self.config.history_lookback_days,
                 ),
-                enhanced_rows=self.repository.enhanced_history(review_id, context.sender_id),
+                enhanced_rows=self.repository.enhanced_history(
+                    review_id, context.device_id, context.bearing_id
+                ),
                 current_speed_rpm=context.speed_rpm,
                 current_radial_load_n=context.radial_load_n,
                 current_time_domain=time_domain_evidence,

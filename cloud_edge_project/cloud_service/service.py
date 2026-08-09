@@ -76,7 +76,9 @@ def _begin_context_review(
         transport=transport,
     ).create_and_dispatch(
         review_id=review_id,
+        device_id=raw["device_id"],
         task_id=raw["task_id"],
+        bearing_id=raw["bearing_id"],
         sender_id=raw["sender_id"],
         anchor_packet_id=raw["packet_id"],
         anchor_sequence_number=raw["sequence_number"],

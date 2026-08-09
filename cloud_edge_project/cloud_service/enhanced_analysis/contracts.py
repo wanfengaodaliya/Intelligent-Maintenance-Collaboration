@@ -86,7 +86,11 @@ class PreparedWindow:
 @dataclass(frozen=True)
 class AnalysisContext:
     review_id: str
+    device_id: str
+    task_id: str
+    bearing_id: str
     sender_id: str
+    anchor_packet_id: str
     aggregation_result_id: str
     context_status: str
     preprocessed_window_path: str

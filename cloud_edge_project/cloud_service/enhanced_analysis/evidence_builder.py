@@ -74,6 +74,12 @@ def build_enhanced_analysis_result(
         algorithm_version=config.algorithm_version,
         config_version=config.config_version,
         input={
+            "analysis_scope": "bearing_packet_review",
+            "device_id": context.device_id,
+            "task_id": context.task_id,
+            "bearing_id": context.bearing_id,
+            "sender_id": context.sender_id,
+            "anchor_packet_id": context.anchor_packet_id,
             "aggregation_result_id": context.aggregation_result_id,
             "preprocessed_window_path": context.preprocessed_window_path,
             "preprocessed_window_sha256": context.preprocessed_window_sha256,

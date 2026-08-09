@@ -40,7 +40,7 @@ class ContextAggregationService:
 
     @staticmethod
     def _metadata(aggregation_id: str, review_id: str, context_status: str, config_version: str, packets: list[LoadedPacket], raw, raw_path: str, raw_sha: str, processed_path: str, processed_sha: str) -> dict:
-        manifest = [{"relative_position": item.relative_position, "packet_id": item.packet["packet_id"], "task_id": item.packet["task_id"], "sequence_number": item.packet["sequence_number"], "end_generate_timestamp_ns": item.packet["end_generate_timestamp_ns"], "payload_sha256": item.index["payload_sha256"], "storage_path": item.index["storage_path"]} for item in packets]
+        manifest = [{"device_id": item.packet["device_id"], "task_id": item.packet["task_id"], "bearing_id": item.packet["bearing_id"], "sender_id": item.packet["sender_id"], "relative_position": item.relative_position, "packet_id": item.packet["packet_id"], "sequence_number": item.packet["sequence_number"], "end_generate_timestamp_ns": item.packet["end_generate_timestamp_ns"], "payload_sha256": item.index["payload_sha256"], "storage_path": item.index["storage_path"]} for item in packets]
         boundaries = [{"relative_position": int(position), "start_index": int(start), "end_index_exclusive": int(start + 3_200)} for position, start in zip(raw.relative_positions, raw.packet_start_samples)]
         return {
             "relative_positions": raw.relative_positions.tolist(), "manifest": manifest, "boundaries": boundaries,

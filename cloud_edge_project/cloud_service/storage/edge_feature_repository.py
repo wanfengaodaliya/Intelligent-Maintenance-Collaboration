@@ -31,13 +31,9 @@ class EdgeFeatureRepository:
         digest = canonical_summary_sha256(summary)
         now = time.time_ns()
         sender_id, packet_id = summary["sender_id"], summary["packet_id"]
+        device_id, bearing_id = summary["device_id"], summary["bearing_id"]
         task_id, sequence_number = summary["task_id"], summary["sequence_number"]
         with connect(self.database_path) as connection:
-            connection.execute(
-                "INSERT INTO senders(sender_id,created_at_ns,updated_at_ns) VALUES (?,?,?) "
-                "ON CONFLICT(sender_id) DO UPDATE SET updated_at_ns=excluded.updated_at_ns",
-                (sender_id, now, now),
-            )
             existing = connection.execute(
                 "SELECT payload_sha256 FROM edge_packet_summary WHERE sender_id=? AND packet_id=?",
                 (sender_id, packet_id),
@@ -54,6 +50,15 @@ class EdgeFeatureRepository:
                     "PACKET_CONTENT_CONFLICT",
                 )
                 return "conflict", "PACKET_CONTENT_CONFLICT"
+
+            if not self._bind_sender(
+                connection,
+                sender_id=sender_id,
+                device_id=device_id,
+                bearing_id=bearing_id,
+                now=now,
+            ):
+                return "conflict", "SENDER_BINDING_CONFLICT"
 
             sequence_row = connection.execute(
                 "SELECT packet_id,payload_sha256 FROM edge_packet_summary "
@@ -74,15 +79,47 @@ class EdgeFeatureRepository:
             )
         return "accepted", None
 
+    @staticmethod
+    def _bind_sender(
+        connection,
+        *,
+        sender_id: str,
+        device_id: str,
+        bearing_id: str,
+        now: int,
+    ) -> bool:
+        existing = connection.execute(
+            "SELECT device_id,bearing_id FROM senders WHERE sender_id=?",
+            (sender_id,),
+        ).fetchone()
+        if existing and (
+            existing["device_id"] is not None
+            or existing["bearing_id"] is not None
+        ) and (
+            existing["device_id"] != device_id
+            or existing["bearing_id"] != bearing_id
+        ):
+            return False
+        connection.execute(
+            "INSERT INTO senders("
+            "sender_id,created_at_ns,updated_at_ns,device_id,bearing_id"
+            ") VALUES (?,?,?,?,?) ON CONFLICT(sender_id) DO UPDATE SET "
+            "updated_at_ns=excluded.updated_at_ns,"
+            "device_id=COALESCE(senders.device_id,excluded.device_id),"
+            "bearing_id=COALESCE(senders.bearing_id,excluded.bearing_id)",
+            (sender_id, now, now, device_id, bearing_id),
+        )
+        return True
+
     @classmethod
     def _summary_columns(cls, summary: dict, serialized: str, digest: str, now: int) -> tuple[tuple[str, ...], tuple[object, ...]]:
         columns = [
-            "sender_id", "packet_id", "task_id", "sequence_number", "edge_node_id", "end_timestamp_ns",
+            "sender_id", "packet_id", "device_id", "task_id", "bearing_id", "sequence_number", "edge_node_id", "end_timestamp_ns",
             "summary_generated_at_ns", "received_at_ns", "processing_status", "perception_status",
             "perception_flags_json", "perception_error_codes_json", "summary_json", "payload_sha256",
         ]
         values: list[object] = [
-            summary["sender_id"], summary["packet_id"], summary["task_id"], summary["sequence_number"],
+            summary["sender_id"], summary["packet_id"], summary["device_id"], summary["task_id"], summary["bearing_id"], summary["sequence_number"],
             summary["edge_node_id"], summary["end_timestamp_ns"], summary.get("summary_generated_at_ns"), now,
             summary["processing_status"], None, None, _json(summary.get("perception_error_codes")) if "perception_error_codes" in summary else None,
             serialized, digest,
@@ -91,7 +128,7 @@ class EdgeFeatureRepository:
             return tuple(columns), tuple(values)
 
         quality = summary["perception_quality"]
-        values[9:11] = [quality["status"], _json(quality["flags"])]
+        values[11:13] = [quality["status"], _json(quality["flags"])]
         features = summary["features"]
         vibration = features["vibration"]
         current_1 = features["phase_current_1"]

@@ -1,16 +1,18 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS senders (
     sender_id TEXT PRIMARY KEY, created_at_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL,
+    device_id TEXT, bearing_id TEXT,
     sender_config_version TEXT, sensor_unit_json TEXT NOT NULL DEFAULT '{}', active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-    CHECK (json_valid(sensor_unit_json))
+    CHECK (json_valid(sensor_unit_json)),
+    CHECK ((device_id IS NULL AND bearing_id IS NULL) OR (device_id IS NOT NULL AND bearing_id IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS edge_packet_summary (
-    sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
+    sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, device_id TEXT, task_id TEXT NOT NULL, bearing_id TEXT, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
     edge_node_id TEXT NOT NULL, end_timestamp_ns INTEGER NOT NULL, summary_generated_at_ns INTEGER,
     received_at_ns INTEGER NOT NULL, processing_status TEXT NOT NULL CHECK (processing_status IN ('perception_completed', 'perception_rejected')),
     perception_status TEXT CHECK (perception_status IN ('good', 'warning')), perception_flags_json TEXT,
@@ -40,8 +42,9 @@ CREATE TABLE IF NOT EXISTS edge_packet_summary (
 );
 CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_time ON edge_packet_summary(sender_id, end_timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_edge_summary_edge_received ON edge_packet_summary(edge_node_id, received_at_ns);
+CREATE INDEX IF NOT EXISTS idx_edge_summary_device_task_bearing ON edge_packet_summary(device_id, task_id, bearing_id, end_timestamp_ns);
 CREATE TABLE IF NOT EXISTS raw_packet_index (
-    sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
+    sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, device_id TEXT NOT NULL, task_id TEXT NOT NULL, bearing_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
     start_timestamp_ns INTEGER NOT NULL, end_generate_timestamp_ns INTEGER NOT NULL, sample_rate_hz INTEGER NOT NULL CHECK (sample_rate_hz > 0),
     sample_count INTEGER NOT NULL CHECK (sample_count > 0), storage_path TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
     compressed_size_bytes INTEGER NOT NULL CHECK (compressed_size_bytes > 0), validation_status TEXT NOT NULL CHECK (validation_status IN ('valid', 'warning', 'invalid')),
@@ -49,8 +52,9 @@ CREATE TABLE IF NOT EXISTS raw_packet_index (
     UNIQUE (sender_id, task_id, sequence_number)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_packet_sender_time ON raw_packet_index(sender_id, end_generate_timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_raw_packet_device_bearing_time ON raw_packet_index(device_id, bearing_id, end_generate_timestamp_ns);
 CREATE TABLE IF NOT EXISTS cloud_review (
-    review_id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, anchor_packet_id TEXT NOT NULL, task_id TEXT NOT NULL,
+    review_id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, anchor_packet_id TEXT NOT NULL, device_id TEXT NOT NULL, task_id TEXT NOT NULL, bearing_id TEXT NOT NULL,
     feature_extractor_version TEXT NOT NULL, schema_version TEXT NOT NULL,
     review_status TEXT NOT NULL CHECK (review_status IN ('preliminary', 'complete', 'insufficient_context', 'invalid')),
     context_status TEXT NOT NULL CHECK (context_status IN ('pending_context', 'partial_context', 'complete', 'insufficient_context', 'not_requested', 'invalid')),
@@ -64,10 +68,13 @@ CREATE TABLE IF NOT EXISTS cloud_review (
     CHECK (context_features_json IS NULL OR json_valid(context_features_json))
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_review_sender_time ON cloud_review(sender_id, updated_at_ns);
+CREATE INDEX IF NOT EXISTS idx_cloud_review_device_task_bearing ON cloud_review(device_id, task_id, bearing_id, updated_at_ns);
 CREATE TABLE IF NOT EXISTS raw_context_request (
     request_id TEXT PRIMARY KEY,
     review_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
+    bearing_id TEXT NOT NULL,
     sender_id TEXT NOT NULL,
     anchor_packet_id TEXT NOT NULL,
     anchor_sequence_number INTEGER NOT NULL CHECK (anchor_sequence_number > 0),
@@ -163,7 +170,9 @@ CREATE INDEX IF NOT EXISTS idx_aggregation_outbox_pending
 ON aggregation_outbox(dispatch_status, updated_at_ns);
 CREATE TABLE IF NOT EXISTS bearing_configuration (
     configuration_id TEXT PRIMARY KEY,
-    sender_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    bearing_id TEXT NOT NULL,
+    sender_id TEXT,
     configuration_version TEXT NOT NULL,
     bearing_model TEXT,
     rolling_element_count INTEGER NOT NULL,
@@ -186,6 +195,8 @@ CREATE TABLE IF NOT EXISTS bearing_configuration (
 );
 CREATE INDEX IF NOT EXISTS idx_bearing_configuration_sender_time
 ON bearing_configuration(sender_id, effective_from_ns);
+CREATE INDEX IF NOT EXISTS idx_bearing_configuration_subject_time
+ON bearing_configuration(device_id, bearing_id, effective_from_ns);
 CREATE TABLE IF NOT EXISTS enhanced_analysis_result (
     analysis_id TEXT PRIMARY KEY,
     review_id TEXT NOT NULL UNIQUE,

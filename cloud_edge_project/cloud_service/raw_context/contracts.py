@@ -136,7 +136,9 @@ def _validate_raw_context_batch_envelope(payload: Any) -> dict[str, Any]:
     for field in (
         "batch_id",
         "request_id",
+        "device_id",
         "task_id",
+        "bearing_id",
         "sender_id",
         "anchor_packet_id",
     ):
@@ -253,15 +255,19 @@ def _validate_raw_context_packet(
             "packet_id contains unsupported characters",
             packet_id,
         )
-    for field in ("task_id", "sender_id"):
-        supplied = packet.get(field)
-        if supplied is not None and supplied != batch[field]:
+    for field in ("device_id", "bearing_id", "sender_id"):
+        supplied = require_non_empty_string(
+            require_field(packet, field, packet_id), field, packet_id
+        )
+        if supplied != batch[field]:
             raise ContractError(
                 "INVALID_CONTEXT_PACKET",
                 "packet identity does not match batch",
                 packet_id,
             )
-        packet[field] = batch[field]
+    require_non_empty_string(
+        require_field(packet, "task_id", packet_id), "task_id", packet_id
+    )
     sequence_number = require_int(
         require_field(packet, "sequence_number", packet_id),
         "sequence_number",

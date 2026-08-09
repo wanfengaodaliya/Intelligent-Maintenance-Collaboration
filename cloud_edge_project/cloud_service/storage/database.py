@@ -35,16 +35,19 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v1_to_sender_schema(connection)
         _migrate_v2_summary_to_document_schema(connection)
         legacy_summary_table = _migrate_v3_summary_to_ingestion_schema(connection)
+        _migrate_v10_to_v11_identity_fields(connection)
         connection.executescript(DDL)
         _migrate_v5_to_v6(connection)
+        _migrate_v10_to_v11_identity_fields(connection)
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         connection.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?)",
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "context aggregation window schema",
+                "device-task-bearing identity fields for cloud review",
             ),
         )
 
@@ -173,6 +176,88 @@ def _copy_legacy_summaries(connection: sqlite3.Connection, legacy_table: str) ->
         f"INSERT INTO edge_packet_summary ({','.join(target_columns)}) "
         f"SELECT {','.join(source_columns)} FROM {legacy_table}"
     )
+
+
+def _migrate_v10_to_v11_identity_fields(connection: sqlite3.Connection) -> None:
+    """Add nullable cloud-review business identity fields to an existing v10 database."""
+
+    additions = {
+        "senders": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+        "edge_packet_summary": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+        "raw_packet_index": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+        "cloud_review": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+        "raw_context_request": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+        "bearing_configuration": (("device_id", "TEXT"), ("bearing_id", "TEXT")),
+    }
+    for table, columns in additions.items():
+        if not _table_exists(connection, table):
+            continue
+        existing = _columns(connection, table)
+        for name, definition in columns:
+            if name not in existing:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                )
+
+    if not _table_exists(connection, "senders"):
+        return
+    for table in (
+        "edge_packet_summary",
+        "raw_packet_index",
+        "cloud_review",
+        "raw_context_request",
+        "bearing_configuration",
+    ):
+        if not _table_exists(connection, table):
+            continue
+        connection.execute(
+            f"UPDATE {table} SET "
+            "device_id=(SELECT device_id FROM senders WHERE senders.sender_id="
+            f"{table}.sender_id), "
+            "bearing_id=(SELECT bearing_id FROM senders WHERE senders.sender_id="
+            f"{table}.sender_id) "
+            "WHERE device_id IS NULL AND bearing_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM senders WHERE senders.sender_id="
+            f"{table}.sender_id AND senders.device_id IS NOT NULL "
+            "AND senders.bearing_id IS NOT NULL)"
+        )
+
+    _create_v11_identity_indexes(connection)
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {item[1] for item in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _create_v11_identity_indexes(connection: sqlite3.Connection) -> None:
+    indexes = (
+        (
+            "idx_edge_summary_device_task_bearing",
+            "edge_packet_summary(device_id,task_id,bearing_id,end_timestamp_ns)",
+        ),
+        (
+            "idx_raw_packet_device_bearing_time",
+            "raw_packet_index(device_id,bearing_id,end_generate_timestamp_ns)",
+        ),
+        (
+            "idx_cloud_review_device_task_bearing",
+            "cloud_review(device_id,task_id,bearing_id,updated_at_ns)",
+        ),
+        (
+            "idx_bearing_configuration_subject_time",
+            "bearing_configuration(device_id,bearing_id,effective_from_ns)",
+        ),
+    )
+    for name, target in indexes:
+        table = target.split("(", 1)[0]
+        if _table_exists(connection, table):
+            connection.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
 
 
 def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:

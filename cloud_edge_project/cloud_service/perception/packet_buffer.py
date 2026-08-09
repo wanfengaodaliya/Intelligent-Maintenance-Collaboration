@@ -38,6 +38,14 @@ class SenderPacketBuffer:
 
         if packets:
             previous = packets[-1]
+            if (
+                previous["device_id"] != normalized["device_id"]
+                or previous["bearing_id"] != normalized["bearing_id"]
+            ):
+                packets.clear()
+                packets.append(normalized)
+                self._continuous_start[sender_id] = 0
+                return self._result("identity_changed", packets, aggregate=False)
             previous_sequence = previous["sequence_number"]
             sequence_number = normalized["sequence_number"]
             if sequence_number == previous_sequence:
@@ -104,6 +112,8 @@ def _normalize_packet(packet: dict[str, Any]) -> dict[str, Any]:
     edge_context = preprocessed["edge_perception_result"]["features"]["operating_context"]
     temperature = packet.get("temperature", edge_context.get("bearing_module_temperature_c"))
     return {
+        "device_id": packet["device_id"],
+        "bearing_id": packet["bearing_id"],
         "sender_id": packet["sender_id"],
         "sequence_number": packet["sequence_number"],
         "start_timestamp_ns": raw_packet["start_timestamp_ns"],

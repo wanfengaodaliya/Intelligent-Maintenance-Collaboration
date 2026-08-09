@@ -73,12 +73,18 @@ class EnhancedAnalysisLoader:
             )
 
         limitations: list[dict[str, str]] = []
-        speed_rpm = self._speed_rpm(review["sender_id"], aggregation)
-        radial_load_n = self._radial_load_n(review["sender_id"], aggregation)
+        speed_rpm = self._speed_rpm(
+            review["device_id"], review["bearing_id"], review["sender_id"], aggregation
+        )
+        radial_load_n = self._radial_load_n(
+            review["device_id"], review["bearing_id"], review["sender_id"], aggregation
+        )
         if speed_rpm is None:
             limitations.append(limitation("speed_unavailable", "operating speed is unavailable"))
         timestamp_ns = review.get("start_timestamp_ns") or review["created_at_ns"]
-        bearing_row = self.bearing_repository.active_for_sender_at(review["sender_id"], timestamp_ns)
+        bearing_row = self.bearing_repository.active_for_bearing_at(
+            review["device_id"], review["bearing_id"], timestamp_ns
+        )
         bearing = None
         if bearing_row is None:
             limitations.append(limitation("bearing_metadata_missing", "bearing geometry metadata is missing"))
@@ -101,7 +107,11 @@ class EnhancedAnalysisLoader:
         )
         context = AnalysisContext(
             review_id=aggregation["review_id"],
+            device_id=review["device_id"],
+            task_id=review["task_id"],
+            bearing_id=review["bearing_id"],
             sender_id=review["sender_id"],
+            anchor_packet_id=review["anchor_packet_id"],
             aggregation_result_id=aggregation["aggregation_id"],
             context_status=aggregation["context_status"],
             preprocessed_window_path=relative_path,
@@ -158,32 +168,32 @@ class EnhancedAnalysisLoader:
         manifest = json.loads(aggregation.get("packet_manifest_json") or "[]")
         return [str(item["packet_id"]) for item in manifest if item.get("packet_id")]
 
-    def _edge_rows(self, sender_id: str, aggregation: dict[str, Any]) -> list[dict[str, Any]]:
+    def _edge_rows(self, device_id: str, bearing_id: str, sender_id: str, aggregation: dict[str, Any]) -> list[dict[str, Any]]:
         packet_ids = self._manifest_packet_ids(aggregation)
         if not packet_ids:
             return []
         placeholders = ",".join("?" for _ in packet_ids)
         with connect(self.database_path) as connection:
             rows = connection.execute(
-                "SELECT * FROM edge_packet_summary WHERE sender_id=? AND packet_id IN ("
+                "SELECT * FROM edge_packet_summary WHERE device_id=? AND bearing_id=? AND sender_id=? AND packet_id IN ("
                 + placeholders
                 + ") AND processing_status='perception_completed'",
-                (sender_id, *packet_ids),
+                (device_id, bearing_id, sender_id, *packet_ids),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def _speed_rpm(self, sender_id: str, aggregation: dict[str, Any]) -> float | None:
+    def _speed_rpm(self, device_id: str, bearing_id: str, sender_id: str, aggregation: dict[str, Any]) -> float | None:
         values = [
             row["shaft_speed_rpm_mean"]
-            for row in self._edge_rows(sender_id, aggregation)
+            for row in self._edge_rows(device_id, bearing_id, sender_id, aggregation)
             if row.get("shaft_speed_rpm_mean") is not None and row["shaft_speed_rpm_mean"] > 0
         ]
         return float(np.median(values)) if values else None
 
-    def _radial_load_n(self, sender_id: str, aggregation: dict[str, Any]) -> float | None:
+    def _radial_load_n(self, device_id: str, bearing_id: str, sender_id: str, aggregation: dict[str, Any]) -> float | None:
         values = [
             row["bearing_radial_load_n_mean"]
-            for row in self._edge_rows(sender_id, aggregation)
+            for row in self._edge_rows(device_id, bearing_id, sender_id, aggregation)
             if row.get("bearing_radial_load_n_mean") is not None
             and row["bearing_radial_load_n_mean"] >= 0
         ]

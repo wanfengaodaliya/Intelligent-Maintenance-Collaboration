@@ -205,6 +205,8 @@ class RawContextReceiver:
         batch: dict[str, Any], request: dict[str, Any]
     ) -> None:
         for field in (
+            "device_id",
+            "bearing_id",
             "sender_id",
             "anchor_packet_id",
             "anchor_sequence_number",

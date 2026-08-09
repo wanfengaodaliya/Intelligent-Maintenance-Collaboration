@@ -16,11 +16,16 @@ from cloud_service.prompt import build_cloud_messages, build_enhanced_analysis_m
 CLOUD_NODE_ID = "cloud_1"
 ALLOWED_LABELS = {"normal", "abnormal"}
 ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
-ALLOWED_ACTIONS = {
-    "none",
+ALLOWED_RECOMMENDED_ACTIONS = {
     "record_only",
-    "send_alert",
-    "stop_machine_check",
+    "flag_for_task_aggregation",
+    "urgent_bearing_attention",
+}
+_LEGACY_ACTION_TO_RECOMMENDATION = {
+    "none": "record_only",
+    "record_only": "record_only",
+    "send_alert": "flag_for_task_aggregation",
+    "stop_machine_check": "urgent_bearing_attention",
 }
 
 
@@ -57,9 +62,11 @@ def _model_result(content: Any) -> dict[str, Any]:
     if risk_level not in ALLOWED_RISK_LEVELS:
         raise ValueError("model risk_level is invalid")
 
-    action = parsed.get("action")
-    if action not in ALLOWED_ACTIONS:
-        raise ValueError("model action is invalid")
+    recommended_action = parsed.get("recommended_action")
+    if recommended_action is None:
+        recommended_action = _LEGACY_ACTION_TO_RECOMMENDATION.get(parsed.get("action"))
+    if recommended_action not in ALLOWED_RECOMMENDED_ACTIONS:
+        raise ValueError("model recommended_action is invalid")
 
     description = parsed.get("description")
     if not isinstance(description, str) or not description.strip():
@@ -69,7 +76,7 @@ def _model_result(content: Any) -> dict[str, Any]:
         "label": label,
         "confidence": round(float(confidence), 4),
         "risk_level": risk_level,
-        "action": action,
+        "recommended_action": recommended_action,
         "description": description.strip(),
     }
 
@@ -122,6 +129,10 @@ def infer_vllm(
 
     elapsed_ms = (perf_counter() - start) * 1000
     return {
+        "analysis_scope": "bearing_packet_review",
+        "device_id": perception_result["device_id"],
+        "task_id": perception_result["task_id"],
+        "bearing_id": perception_result["bearing_id"],
         "packet_id": perception_result["packet_id"],
         "sender_id": perception_result["sender_id"],
         "cloud_node_id": CLOUD_NODE_ID,
@@ -131,7 +142,8 @@ def infer_vllm(
         "risk_level": model_result["risk_level"],
         "cloud_latency_ms": round(elapsed_ms, 2),
         "decision": {
-            "action": model_result["action"],
+            "recommended_action": model_result["recommended_action"],
+            "action": model_result["recommended_action"],
             "description": model_result["description"],
         },
     }
@@ -141,4 +153,15 @@ def summarize_enhanced_analysis(result: dict[str, Any], settings: CloudSettings)
     response = requests.post(settings.vllm_url, headers=_headers(settings), json={"model": settings.vllm_model_name, "messages": build_enhanced_analysis_messages(result), "temperature": 0.1, "max_tokens": 512, "response_format": {"type": "json_object"}}, timeout=settings.vllm_timeout_seconds)
     response.raise_for_status()
     parsed = _model_result(response.json()["choices"][0]["message"]["content"])
-    return {"review_id": result["review_id"], "model_name": settings.vllm_model_name, **parsed}
+    identity = result["input"]
+    return {
+        "review_id": result["review_id"],
+        "analysis_scope": "bearing_packet_review",
+        "device_id": identity["device_id"],
+        "task_id": identity["task_id"],
+        "bearing_id": identity["bearing_id"],
+        "sender_id": identity["sender_id"],
+        "packet_id": identity["anchor_packet_id"],
+        "model_name": settings.vllm_model_name,
+        **parsed,
+    }

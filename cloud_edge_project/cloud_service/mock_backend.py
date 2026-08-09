@@ -19,16 +19,20 @@ def infer_mock(perception_result: dict[str, Any]) -> dict[str, Any]:
     if label == "abnormal":
         confidence = 0.93
         risk_level = "high"
-        action = "send_alert"
+        recommended_action = "urgent_bearing_attention"
         description = "bearing anomaly risk is high; schedule inspection"
     else:
         confidence = 0.91
         risk_level = "low"
-        action = "record_only"
+        recommended_action = "record_only"
         description = "bearing state is normal; keep monitoring"
 
     elapsed_ms = max((perf_counter() - start) * 1000, 12.0)
     return {
+        "analysis_scope": "bearing_packet_review",
+        "device_id": perception_result["device_id"],
+        "task_id": perception_result["task_id"],
+        "bearing_id": perception_result["bearing_id"],
         "packet_id": perception_result["packet_id"],
         "sender_id": perception_result["sender_id"],
         "cloud_node_id": CLOUD_NODE_ID,
@@ -38,7 +42,8 @@ def infer_mock(perception_result: dict[str, Any]) -> dict[str, Any]:
         "risk_level": risk_level,
         "cloud_latency_ms": round(elapsed_ms + 74.0, 2),
         "decision": {
-            "action": action,
+            "recommended_action": recommended_action,
+            "action": recommended_action,
             "description": description,
         },
     }

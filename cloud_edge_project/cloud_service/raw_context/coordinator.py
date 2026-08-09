@@ -38,7 +38,9 @@ class RawContextCoordinator:
         self,
         *,
         review_id: str,
+        device_id: str,
         task_id: str,
+        bearing_id: str,
         sender_id: str,
         anchor_packet_id: str,
         anchor_sequence_number: int,
@@ -47,7 +49,9 @@ class RawContextCoordinator:
         stored = self.repository.create_or_get(
             request_id=self.request_id_factory(),
             review_id=review_id,
+            device_id=device_id,
             task_id=task_id,
+            bearing_id=bearing_id,
             sender_id=sender_id,
             anchor_packet_id=anchor_packet_id,
             anchor_sequence_number=anchor_sequence_number,
@@ -118,6 +122,9 @@ def _request_payload(
 ) -> dict[str, object]:
     return {
         "request_id": stored["request_id"],
+        "device_id": stored["device_id"],
+        "task_id": stored["task_id"],
+        "bearing_id": stored["bearing_id"],
         "sender_id": stored["sender_id"],
         "anchor_packet_id": stored["anchor_packet_id"],
         "anchor_end_generate_timestamp_ns": (

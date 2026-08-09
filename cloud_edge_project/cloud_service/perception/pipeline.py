@@ -30,15 +30,19 @@ def run_perception(request: dict[str, Any]) -> dict[str, Any]:
     raw = preprocessed["cloud_raw_packet"]
     edge = validated["edge_perception_result"]
     aggregation = _BUFFER.add({
+        "device_id": raw["device_id"],
+        "bearing_id": raw["bearing_id"],
         "sender_id": raw["sender_id"],
         "sequence_number": raw["sequence_number"],
         "preprocessed": preprocessed,
         "single_packet_features": features,
     })
     return {
-        "schema_version": "cloud_perception_result/2.0",
+        "schema_version": "cloud_perception_result/3.0",
+        "analysis_scope": "bearing_packet_review",
         "feature_extractor_version": "cloud_high_rate_feature_v1",
-        "task_id": raw["task_id"], "packet_id": raw["packet_id"],
+        "device_id": raw["device_id"], "task_id": raw["task_id"],
+        "bearing_id": raw["bearing_id"], "packet_id": raw["packet_id"],
         "sender_id": raw["sender_id"], "sequence_number": raw["sequence_number"],
         "analysis_window": {
             "start_timestamp_ns": aggregation["start_timestamp_ns"],
@@ -79,9 +83,12 @@ def run_preliminary_perception(
     raw = preprocessed["cloud_raw_packet"]
     edge = validated["edge_perception_result"]
     return {
-        "schema_version": "cloud_perception_result/2.0",
+        "schema_version": "cloud_perception_result/3.0",
+        "analysis_scope": "bearing_packet_review",
         "feature_extractor_version": "cloud_high_rate_feature_v1",
+        "device_id": raw["device_id"],
         "task_id": raw["task_id"],
+        "bearing_id": raw["bearing_id"],
         "packet_id": raw["packet_id"],
         "sender_id": raw["sender_id"],
         "sequence_number": raw["sequence_number"],
@@ -147,8 +154,12 @@ def _invalid_result(request: dict[str, Any], quality: Any) -> dict[str, Any]:
     edge = request.get("edge_perception_result", {}) if isinstance(request, dict) else {}
     raw = request.get("cloud_raw_packet", {}) if isinstance(request, dict) else {}
     return {
-        "schema_version": "cloud_perception_result/2.0", "feature_extractor_version": "cloud_high_rate_feature_v1",
-        "task_id": raw.get("task_id", edge.get("task_id")), "packet_id": raw.get("packet_id", edge.get("packet_id")),
+        "schema_version": "cloud_perception_result/3.0", "analysis_scope": "bearing_packet_review",
+        "feature_extractor_version": "cloud_high_rate_feature_v1",
+        "device_id": raw.get("device_id", edge.get("device_id")),
+        "task_id": raw.get("task_id", edge.get("task_id")),
+        "bearing_id": raw.get("bearing_id", edge.get("bearing_id")),
+        "packet_id": raw.get("packet_id", edge.get("packet_id")),
         "sender_id": raw.get("sender_id", edge.get("sender_id")), "sequence_number": raw.get("sequence_number", edge.get("sequence_number")),
         "analysis_window": None, "enabled_modules": _ENABLED_MODULES,
         "data_quality": {"valid": False, "blocking_issues": quality.blocking_issues, "warning_flags": quality.warning_flags, "context_status": "invalid"},

@@ -75,7 +75,7 @@ class FinalSummaryService:
     def _feature_context(self, review_id: str) -> dict[str, Any]:
         with connect(self.database_path) as connection:
             review = connection.execute(
-                "SELECT sender_id,cloud_recomputed_features_json,cloud_enhanced_features_json,"
+                "SELECT device_id,task_id,bearing_id,sender_id,anchor_packet_id,cloud_recomputed_features_json,cloud_enhanced_features_json,"
                 "advanced_features_json,context_features_json FROM cloud_review WHERE review_id=?",
                 (review_id,),
             ).fetchone()
@@ -91,14 +91,22 @@ class FinalSummaryService:
             if review and packet_ids:
                 placeholders = ",".join("?" for _ in packet_ids)
                 rows = connection.execute(
-                    "SELECT packet_id,summary_json FROM edge_packet_summary WHERE sender_id=? "
+                    "SELECT packet_id,summary_json FROM edge_packet_summary WHERE device_id=? AND bearing_id=? AND sender_id=? "
                     f"AND packet_id IN ({placeholders})",
-                    (review["sender_id"], *packet_ids),
+                    (review["device_id"], review["bearing_id"], review["sender_id"], *packet_ids),
                 ).fetchall()
                 summaries = [json.loads(row["summary_json"]) for row in rows]
         if review is None:
             return {"cloud_review_features": {}, "context_edge_summaries": []}
         return {
+            "identity": {
+                "analysis_scope": "bearing_packet_review",
+                "device_id": review["device_id"],
+                "task_id": review["task_id"],
+                "bearing_id": review["bearing_id"],
+                "sender_id": review["sender_id"],
+                "packet_id": review["anchor_packet_id"],
+            },
             "cloud_review_features": {
                 name: json.loads(review[name]) if review[name] else None
                 for name in (
@@ -134,12 +142,23 @@ def _mock_summary(
         description = "边缘初判异常，结合预处理质量、增强信号证据和历史特征生成的最终诊断总结。"
     else:
         description = "基于预处理质量、增强信号证据和历史特征生成的最终诊断总结。"
+    identity = result.input
+    recommended_action = (
+        "urgent_bearing_attention" if abnormal else "record_only"
+    )
     return {
         "review_id": result.review_id,
+        "analysis_scope": "bearing_packet_review",
+        "device_id": identity["device_id"],
+        "task_id": identity["task_id"],
+        "bearing_id": identity["bearing_id"],
+        "sender_id": identity["sender_id"],
+        "packet_id": identity["anchor_packet_id"],
         "model_name": "cloud_bearing_mock",
         "label": label,
         "confidence": round(confidence, 4),
         "risk_level": "high" if high_risk or abnormal else "low",
-        "action": "send_alert" if abnormal else "record_only",
+        "recommended_action": recommended_action,
+        "action": recommended_action,
         "description": description,
     }

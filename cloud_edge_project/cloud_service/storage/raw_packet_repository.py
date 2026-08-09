@@ -19,6 +19,35 @@ _SAFE_PATH_COMPONENT = re.compile(
 )
 
 
+def _bind_sender(
+    connection,
+    *,
+    sender_id: str,
+    device_id: str,
+    bearing_id: str,
+) -> None:
+    existing = connection.execute(
+        "SELECT device_id,bearing_id FROM senders WHERE sender_id=?",
+        (sender_id,),
+    ).fetchone()
+    if existing and (
+        existing["device_id"] is not None or existing["bearing_id"] is not None
+    ) and (
+        existing["device_id"] != device_id or existing["bearing_id"] != bearing_id
+    ):
+        raise ValueError("SENDER_BINDING_CONFLICT")
+    now = time.time_ns()
+    connection.execute(
+        "INSERT INTO senders("
+        "sender_id,created_at_ns,updated_at_ns,device_id,bearing_id"
+        ") VALUES (?,?,?,?,?) ON CONFLICT(sender_id) DO UPDATE SET "
+        "updated_at_ns=excluded.updated_at_ns,"
+        "device_id=COALESCE(senders.device_id,excluded.device_id),"
+        "bearing_id=COALESCE(senders.bearing_id,excluded.bearing_id)",
+        (sender_id, now, now, device_id, bearing_id),
+    )
+
+
 class RawPacketRepository:
     def __init__(self, database_path: Path, raw_root: Path | None = None):
         self.database_path = Path(database_path)
@@ -27,8 +56,27 @@ class RawPacketRepository:
     def store(self, packet: dict) -> dict:
         payload = canonical_payload(packet)
         digest, sender_id, packet_id = hashlib.sha256(payload).hexdigest(), packet["sender_id"], packet["packet_id"]
+        device_id, bearing_id = packet["device_id"], packet["bearing_id"]
         _require_safe_path_component(sender_id, "sender_id")
         _require_safe_path_component(packet_id, "packet_id")
+        with connect(self.database_path) as connection:
+            _bind_sender(
+                connection,
+                sender_id=sender_id,
+                device_id=device_id,
+                bearing_id=bearing_id,
+            )
+            existing = connection.execute(
+                "SELECT device_id,bearing_id,payload_sha256 FROM raw_packet_index "
+                "WHERE sender_id=? AND packet_id=?",
+                (sender_id, packet_id),
+            ).fetchone()
+            if existing and (
+                existing["device_id"] != device_id
+                or existing["bearing_id"] != bearing_id
+                or existing["payload_sha256"] != digest
+            ):
+                raise ValueError("PACKET_CONTENT_CONFLICT")
         date = datetime.fromtimestamp(packet["end_generate_timestamp_ns"] / 1_000_000_000, timezone.utc).strftime("%Y-%m-%d")
         path = self.raw_root / sender_id / date / f"{packet_id}.json.gz"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +87,7 @@ class RawPacketRepository:
         vibration = packet["data"]["vibration"]
         stored = {"storage_path": str(path.relative_to(self.raw_root)).replace("\\", "/"), "payload_sha256": digest, "compressed_size_bytes": path.stat().st_size}
         with connect(self.database_path) as connection:
-            connection.execute("INSERT INTO raw_packet_index(sender_id,packet_id,task_id,sequence_number,start_timestamp_ns,end_generate_timestamp_ns,sample_rate_hz,sample_count,storage_path,payload_sha256,compressed_size_bytes,validation_status,received_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sender_id,packet_id) DO UPDATE SET storage_path=excluded.storage_path,payload_sha256=excluded.payload_sha256,compressed_size_bytes=excluded.compressed_size_bytes,validation_status=excluded.validation_status,received_at_ns=excluded.received_at_ns", (sender_id, packet_id, packet["task_id"], packet["sequence_number"], packet["end_generate_timestamp_ns"] - 50_000_000, packet["end_generate_timestamp_ns"], vibration["sample_rate_hz"], vibration["sample_count"], stored["storage_path"], digest, stored["compressed_size_bytes"], packet.get("validation_status", "valid"), time.time_ns()))
+            connection.execute("INSERT INTO raw_packet_index(sender_id,packet_id,device_id,task_id,bearing_id,sequence_number,start_timestamp_ns,end_generate_timestamp_ns,sample_rate_hz,sample_count,storage_path,payload_sha256,compressed_size_bytes,validation_status,received_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sender_id,packet_id) DO UPDATE SET storage_path=excluded.storage_path,payload_sha256=excluded.payload_sha256,compressed_size_bytes=excluded.compressed_size_bytes,validation_status=excluded.validation_status,received_at_ns=excluded.received_at_ns", (sender_id, packet_id, device_id, packet["task_id"], bearing_id, packet["sequence_number"], packet["end_generate_timestamp_ns"] - 50_000_000, packet["end_generate_timestamp_ns"], vibration["sample_rate_hz"], vibration["sample_count"], stored["storage_path"], digest, stored["compressed_size_bytes"], packet.get("validation_status", "valid"), time.time_ns()))
         return stored
 
     def ingest_context(
@@ -56,6 +104,8 @@ class RawPacketRepository:
         digest = hashlib.sha256(payload).hexdigest()
         sender_id = packet["sender_id"]
         packet_id = packet["packet_id"]
+        device_id = packet["device_id"]
+        bearing_id = packet["bearing_id"]
         _require_safe_path_component(sender_id, "sender_id")
         _require_safe_path_component(packet_id, "packet_id")
         date = datetime.fromtimestamp(
@@ -78,8 +128,14 @@ class RawPacketRepository:
         try:
             with connect(self.database_path) as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                _bind_sender(
+                    connection,
+                    sender_id=sender_id,
+                    device_id=device_id,
+                    bearing_id=bearing_id,
+                )
                 existing = connection.execute(
-                    "SELECT storage_path FROM raw_packet_index "
+                    "SELECT storage_path,device_id,bearing_id FROM raw_packet_index "
                     "WHERE sender_id=? AND packet_id=?",
                     (sender_id, packet_id),
                 ).fetchone()
@@ -89,7 +145,9 @@ class RawPacketRepository:
                         existing["storage_path"]
                     )
                     if (
-                        existing_packet is None
+                        existing["device_id"] != device_id
+                        or existing["bearing_id"] != bearing_id
+                        or existing_packet is None
                         or _canonical_payload(existing_packet) != payload
                     ):
                         return "conflict", "PACKET_CONTENT_CONFLICT"
@@ -153,16 +211,18 @@ class RawPacketRepository:
                             created_file = True
                         connection.execute(
                             "INSERT INTO raw_packet_index("
-                            "sender_id,packet_id,task_id,sequence_number,"
+                            "sender_id,packet_id,device_id,task_id,bearing_id,sequence_number,"
                             "start_timestamp_ns,end_generate_timestamp_ns,"
                             "sample_rate_hz,sample_count,storage_path,"
                             "payload_sha256,compressed_size_bytes,"
                             "validation_status,received_at_ns"
-                            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (
                                 sender_id,
                                 packet_id,
+                                device_id,
                                 packet["task_id"],
+                                bearing_id,
                                 packet["sequence_number"],
                                 packet["end_generate_timestamp_ns"]
                                 - 50_000_000,

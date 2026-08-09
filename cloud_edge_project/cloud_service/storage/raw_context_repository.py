@@ -41,7 +41,9 @@ class RawContextRequestRepository:
         *,
         request_id: str,
         review_id: str,
+        device_id: str,
         task_id: str,
+        bearing_id: str,
         sender_id: str,
         anchor_packet_id: str,
         anchor_sequence_number: int,
@@ -61,13 +63,13 @@ class RawContextRequestRepository:
                 return dict(existing)
             connection.execute(
                 "INSERT INTO raw_context_request("
-                "request_id,review_id,task_id,sender_id,anchor_packet_id,"
+                "request_id,review_id,device_id,task_id,bearing_id,sender_id,anchor_packet_id,"
                 "anchor_sequence_number,before_packet_count,after_packet_count,"
                 "minimum_context_packet_count,request_status,requested_at_ns,"
                 "deadline_at_ns,created_at_ns,updated_at_ns"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    request_id, review_id, task_id, sender_id, anchor_packet_id,
+                    request_id, review_id, device_id, task_id, bearing_id, sender_id, anchor_packet_id,
                     anchor_sequence_number, before_packet_count, after_packet_count,
                     minimum_context_packet_count, "created",
                     requested_at_ns, deadline_at_ns,
