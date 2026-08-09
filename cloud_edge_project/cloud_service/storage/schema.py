@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -280,4 +280,29 @@ CREATE TABLE IF NOT EXISTS global_analysis_result (
 );
 CREATE INDEX IF NOT EXISTS idx_global_analysis_subject_time
 ON global_analysis_result(scenario_type, subject_id, created_at_ns);
+CREATE TABLE IF NOT EXISTS model_update_task (
+    update_id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL,
+    scenario_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    update_type TEXT NOT NULL CHECK (update_type IN ('rule', 'model')),
+    update_reason TEXT NOT NULL,
+    old_version TEXT NOT NULL,
+    new_version TEXT NOT NULL,
+    update_file TEXT NOT NULL,
+    update_file_sha256 TEXT NOT NULL,
+    target_edge_nodes_json TEXT NOT NULL,
+    test_data_limit INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    validation_result_json TEXT,
+    confirmation_json TEXT,
+    distribution_result_json TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    CHECK (json_valid(target_edge_nodes_json)),
+    CHECK (validation_result_json IS NULL OR json_valid(validation_result_json)),
+    CHECK (confirmation_json IS NULL OR json_valid(confirmation_json)),
+    CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json))
+);
+CREATE INDEX IF NOT EXISTS idx_model_update_analysis ON model_update_task(analysis_id, created_at_ns);
 """

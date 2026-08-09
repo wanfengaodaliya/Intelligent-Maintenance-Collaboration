@@ -11,11 +11,12 @@ from typing import Any
 
 import requests
 from fastapi import Body, FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.common_analyzer import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
+from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
@@ -299,6 +300,76 @@ def get_latest_global_analysis(
             content={"error_code": "GLOBAL_ANALYSIS_NOT_FOUND"},
         )
     return {"success": True, "result": result}
+
+
+def _model_update_service() -> ModelUpdateService:
+    return ModelUpdateService(load_cloud_settings().database_path)
+
+
+def _model_update_error_response(error: ModelUpdateError) -> JSONResponse:
+    status_code = 404 if error.code in {
+        "GLOBAL_ANALYSIS_NOT_FOUND", "UPDATE_NOT_FOUND", "UPDATE_FILE_NOT_FOUND"
+    } else 409 if error.code in {"INVALID_UPDATE_STATE", "UPDATE_FILE_CHANGED"} else 400
+    return JSONResponse(status_code=status_code, content={"error_code": error.code})
+
+
+@app.post("/cloud/model-update", response_model=None)
+def create_model_update(payload: dict) -> dict | JSONResponse:
+    try:
+        return _model_update_service().create(payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/validate", response_model=None)
+def validate_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSONResponse:
+    try:
+        use_demo_data = bool(payload.get("use_demo_data", False)) if isinstance(payload, dict) else False
+        return _model_update_service().validate(update_id, use_demo_data=use_demo_data)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.get("/cloud/model-update/{update_id}", response_model=None)
+def get_model_update(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().get(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/approve", response_model=None)
+def approve_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSONResponse:
+    try:
+        confirmed_by = payload.get("confirmed_by") if isinstance(payload, dict) else None
+        return _model_update_service().approve(update_id, confirmed_by=confirmed_by)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/reject", response_model=None)
+def reject_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSONResponse:
+    try:
+        confirmed_by = payload.get("confirmed_by") if isinstance(payload, dict) else None
+        return _model_update_service().reject(update_id, confirmed_by=confirmed_by)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/distribute", response_model=None)
+def distribute_model_update(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().distribute(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.get("/cloud/model-update/{update_id}/file", response_model=None)
+def download_model_update_file(update_id: str) -> FileResponse | JSONResponse:
+    try:
+        return FileResponse(_model_update_service().download_path(update_id))
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
 
 
 @app.post("/cloud/raw-context-batches", response_model=None)
