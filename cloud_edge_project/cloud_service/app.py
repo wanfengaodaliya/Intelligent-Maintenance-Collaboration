@@ -14,6 +14,8 @@ from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
+from cloud_service.global_analysis.common_analyzer import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
@@ -244,6 +246,59 @@ def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
     if result is None:
         return JSONResponse(status_code=404, content={"error_code": "ARBITRATION_NOT_FOUND"})
     return result
+
+
+@app.post("/cloud/global-analysis", response_model=None)
+def global_analysis(payload: dict) -> dict | JSONResponse:
+    """执行并保存一个场景分析对象的全局分析。"""
+
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_GLOBAL_ANALYSIS_REQUEST"},
+        )
+    try:
+        result = GlobalAnalysisService(load_cloud_settings().database_path).analyze(
+            payload.get("scenario_type"),
+            payload.get("subject_id"),
+            payload.get("task_limit", DEFAULT_TASK_LIMIT),
+        )
+        return {"success": True, "result": result}
+    except UnsupportedScenarioError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "UNSUPPORTED_SCENARIO", "message": str(error)},
+        )
+    except ValueError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_GLOBAL_ANALYSIS_REQUEST", "message": str(error)},
+        )
+    except sqlite3.Error:
+        return JSONResponse(
+            status_code=503,
+            content={"error_code": "SERVICE_UNAVAILABLE"},
+        )
+
+
+@app.get(
+    "/cloud/global-analysis/{scenario_type}/{subject_id}/latest",
+    response_model=None,
+)
+def get_latest_global_analysis(
+    scenario_type: str, subject_id: str
+) -> dict | JSONResponse:
+    """读取一个场景分析对象最近一次已保存的全局分析。"""
+
+    result = GlobalAnalysisService(load_cloud_settings().database_path).repository.get_latest(
+        scenario_type, subject_id
+    )
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error_code": "GLOBAL_ANALYSIS_NOT_FOUND"},
+        )
+    return {"success": True, "result": result}
 
 
 @app.post("/cloud/raw-context-batches", response_model=None)

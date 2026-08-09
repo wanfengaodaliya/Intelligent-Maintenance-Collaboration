@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -260,4 +260,24 @@ CREATE TABLE IF NOT EXISTS device_arbitration_record (
     CHECK (json_valid(request_json)),
     CHECK (result_json IS NULL OR json_valid(result_json))
 );
+CREATE TABLE IF NOT EXISTS global_analysis_result (
+    analysis_id TEXT PRIMARY KEY,
+    scenario_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    task_count INTEGER NOT NULL,
+    health_trend TEXT,
+    normal_rate REAL,
+    warning_rate REAL,
+    abnormal_rate REAL,
+    reviewed_packet_count INTEGER,
+    edge_cloud_agreement_rate REAL,
+    cloud_correction_rate REAL,
+    conflict_rate REAL,
+    arbitration_success_rate REAL,
+    result_json TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    CHECK (json_valid(result_json))
+);
+CREATE INDEX IF NOT EXISTS idx_global_analysis_subject_time
+ON global_analysis_result(scenario_type, subject_id, created_at_ns);
 """

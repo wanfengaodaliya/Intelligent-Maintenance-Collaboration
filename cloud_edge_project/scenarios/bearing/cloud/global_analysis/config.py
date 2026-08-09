@@ -1,0 +1,3 @@
+"""轴承场景全局分析阈值。"""
+
+BEARING_ABNORMAL_RATE_THRESHOLD = 0.30

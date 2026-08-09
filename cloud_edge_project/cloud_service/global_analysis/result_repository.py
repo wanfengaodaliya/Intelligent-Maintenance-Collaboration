@@ -1,0 +1,70 @@
+"""全局分析最终结果的 SQLite 持久化。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from cloud_service.storage.database import connect, initialize_database
+
+
+class GlobalAnalysisResultRepository:
+    """仅保存和读取使用通用身份字段的最终全局分析结果。"""
+
+    def __init__(self, database_path: Path):
+        self.database_path = Path(database_path)
+        initialize_database(self.database_path)
+
+    def save_result(self, result: dict[str, Any]) -> None:
+        """保存一份已计算完成的全局分析结果。"""
+
+        state_trend = result["common_analysis"]["state_trend"]
+        edge_model = result["common_analysis"]["edge_model"]
+        arbitration = result["common_analysis"]["arbitration"]
+        with connect(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO global_analysis_result (
+                    analysis_id, scenario_type, subject_id, task_count,
+                    health_trend, normal_rate, warning_rate, abnormal_rate,
+                    reviewed_packet_count, edge_cloud_agreement_rate,
+                    cloud_correction_rate, conflict_rate, arbitration_success_rate,
+                    result_json, created_at_ns
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result["analysis_id"],
+                    result["scenario_type"],
+                    result["subject_id"],
+                    result["analysis_window"]["actual_task_count"],
+                    state_trend["trend"],
+                    state_trend["normal_rate"],
+                    state_trend["warning_rate"],
+                    state_trend["abnormal_rate"],
+                    edge_model["reviewed_packet_count"],
+                    edge_model["edge_cloud_agreement_rate"],
+                    edge_model["cloud_correction_rate"],
+                    arbitration["conflict_rate"],
+                    arbitration["arbitration_success_rate"],
+                    json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    result["created_at_ns"],
+                ),
+            )
+
+    def get_latest(
+        self, scenario_type: str, subject_id: str
+    ) -> dict[str, Any] | None:
+        """读取指定场景和分析对象最新保存的结果。"""
+
+        with connect(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT result_json FROM global_analysis_result
+                WHERE scenario_type=? AND subject_id=?
+                ORDER BY created_at_ns DESC, analysis_id DESC
+                LIMIT 1
+                """,
+                (scenario_type, subject_id),
+            ).fetchone()
+        return json.loads(row["result_json"]) if row else None
