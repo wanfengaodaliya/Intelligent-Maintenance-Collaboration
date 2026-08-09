@@ -72,9 +72,9 @@ def load_edge_node_configs() -> dict[str, EdgeNodeConfig]:
             ) from exc
     else:
         payload = {
-            "edge_1": {
+            "edge_01": {
                 "control_url": "http://127.0.0.1:8001",
-                "target_topic": "edge/edge_1/input",
+                "target_topic": "edge/edge_01/input",
             },
         }
 
