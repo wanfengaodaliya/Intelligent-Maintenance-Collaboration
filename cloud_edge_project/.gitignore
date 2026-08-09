@@ -2,7 +2,5 @@
 __pycache__/
 *.pyc
 tests/
-!sender_module/tests/
-!sender_module/tests/*.py
 logs/*.jsonl
 logs/*.csv
