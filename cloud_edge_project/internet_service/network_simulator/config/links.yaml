@@ -1,0 +1,251 @@
+toxiproxy:
+  api_base_url: "http://toxiproxy:8474"
+  connect_timeout_seconds: 1
+  read_timeout_seconds: 2
+  retry_count: 3
+  backoff_base_seconds: 0.2
+  startup_wait_seconds: 30
+
+controller:
+  update_interval_seconds: 1
+  initial_state: GOOD
+  refresh_parameters_when_state_unchanged: true
+  clear_toxics_on_exit: true
+  max_parallel_updates: 8
+
+availability:
+  disconnected_is_unavailable: true
+  max_consecutive_apply_failures: 3
+  stale_after_seconds: 3
+
+link_generation:
+  mode: cartesian
+  protocol: mqtt
+  id_template: "{sender_id}__to__{edge_id}__mqtt"
+  proxy_name_template: "{sender_id}__to__{edge_id}__mqtt"
+  listen_host: "0.0.0.0"
+  seed_offset_start: 1
+  latency_stream: upstream
+  bandwidth_stream: upstream
+  disconnect_stream: upstream
+  disconnect_mode: auto
+  report_enabled: true
+
+# Supplemental HTTP links may be listed here. Sender→Edge links are generated
+# from entities.yaml and must not be duplicated in cartesian mode.
+links: []
+
+# Pending supplemental HTTP links
+# --------------------------------
+# These templates are intentionally commented out so the current configuration
+# remains valid while business service names and ports are still unknown.
+# To enable one link:
+#   1. Replace every <TODO_...> value in that link.
+#   2. Use the same numeric port in listen and advertised_port.
+#   3. Uncomment the complete YAML item.
+#   4. Expose the proxy port in docker-compose.yml when a host process needs it.
+# Docker services call toxiproxy:<proxy-port>; host processes call
+# 127.0.0.1:<published-proxy-port>.
+
+# Sender → Scheduler: sender_01
+# - link_id: sender_01__to__scheduler__http
+#   link_type: sender_to_scheduler
+#   sender_id: sender_01
+#   protocol: http
+#   proxy_name: sender_01__to__scheduler__http
+#   listen: "0.0.0.0:<TODO_SENDER_01_TO_SCHEDULER_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SENDER_01_TO_SCHEDULER_PROXY_PORT>
+#   upstream: "<TODO_SCHEDULER_SERVICE>:<TODO_SCHEDULER_HTTP_PORT>"
+#   seed_offset: 101
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Sender → Scheduler: sender_02
+# - link_id: sender_02__to__scheduler__http
+#   link_type: sender_to_scheduler
+#   sender_id: sender_02
+#   protocol: http
+#   proxy_name: sender_02__to__scheduler__http
+#   listen: "0.0.0.0:<TODO_SENDER_02_TO_SCHEDULER_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SENDER_02_TO_SCHEDULER_PROXY_PORT>
+#   upstream: "<TODO_SCHEDULER_SERVICE>:<TODO_SCHEDULER_HTTP_PORT>"
+#   seed_offset: 102
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Scheduler → Sender: sender_01
+# - link_id: scheduler__to__sender_01__http
+#   link_type: scheduler_to_sender
+#   sender_id: sender_01
+#   protocol: http
+#   proxy_name: scheduler__to__sender_01__http
+#   listen: "0.0.0.0:<TODO_SCHEDULER_TO_SENDER_01_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SCHEDULER_TO_SENDER_01_PROXY_PORT>
+#   upstream: "<TODO_SENDER_01_SERVICE>:<TODO_SENDER_01_HTTP_PORT>"
+#   seed_offset: 103
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Scheduler → Sender: sender_02
+# - link_id: scheduler__to__sender_02__http
+#   link_type: scheduler_to_sender
+#   sender_id: sender_02
+#   protocol: http
+#   proxy_name: scheduler__to__sender_02__http
+#   listen: "0.0.0.0:<TODO_SCHEDULER_TO_SENDER_02_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SCHEDULER_TO_SENDER_02_PROXY_PORT>
+#   upstream: "<TODO_SENDER_02_SERVICE>:<TODO_SENDER_02_HTTP_PORT>"
+#   seed_offset: 104
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Edge → Scheduler: edge_01
+# - link_id: edge_01__to__scheduler__http
+#   link_type: edge_to_scheduler
+#   edge_id: edge_01
+#   protocol: http
+#   proxy_name: edge_01__to__scheduler__http
+#   listen: "0.0.0.0:<TODO_EDGE_01_TO_SCHEDULER_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_EDGE_01_TO_SCHEDULER_PROXY_PORT>
+#   upstream: "<TODO_SCHEDULER_SERVICE>:<TODO_SCHEDULER_HTTP_PORT>"
+#   seed_offset: 105
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Edge → Scheduler: edge_02
+# - link_id: edge_02__to__scheduler__http
+#   link_type: edge_to_scheduler
+#   edge_id: edge_02
+#   protocol: http
+#   proxy_name: edge_02__to__scheduler__http
+#   listen: "0.0.0.0:<TODO_EDGE_02_TO_SCHEDULER_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_EDGE_02_TO_SCHEDULER_PROXY_PORT>
+#   upstream: "<TODO_SCHEDULER_SERVICE>:<TODO_SCHEDULER_HTTP_PORT>"
+#   seed_offset: 106
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Scheduler → Edge: edge_01
+# - link_id: scheduler__to__edge_01__http
+#   link_type: scheduler_to_edge
+#   edge_id: edge_01
+#   protocol: http
+#   proxy_name: scheduler__to__edge_01__http
+#   listen: "0.0.0.0:<TODO_SCHEDULER_TO_EDGE_01_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SCHEDULER_TO_EDGE_01_PROXY_PORT>
+#   upstream: "<TODO_EDGE_01_SERVICE>:<TODO_EDGE_01_HTTP_PORT>"
+#   seed_offset: 107
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Scheduler → Edge: edge_02
+# - link_id: scheduler__to__edge_02__http
+#   link_type: scheduler_to_edge
+#   edge_id: edge_02
+#   protocol: http
+#   proxy_name: scheduler__to__edge_02__http
+#   listen: "0.0.0.0:<TODO_SCHEDULER_TO_EDGE_02_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SCHEDULER_TO_EDGE_02_PROXY_PORT>
+#   upstream: "<TODO_EDGE_02_SERVICE>:<TODO_EDGE_02_HTTP_PORT>"
+#   seed_offset: 108
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Edge → Cloud: edge_01
+# - link_id: edge_01__to__cloud__http
+#   link_type: edge_to_cloud
+#   edge_id: edge_01
+#   protocol: http
+#   proxy_name: edge_01__to__cloud__http
+#   listen: "0.0.0.0:<TODO_EDGE_01_TO_CLOUD_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_EDGE_01_TO_CLOUD_PROXY_PORT>
+#   upstream: "<TODO_CLOUD_SERVICE>:<TODO_CLOUD_HTTP_PORT>"
+#   seed_offset: 109
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Edge → Cloud: edge_02
+# - link_id: edge_02__to__cloud__http
+#   link_type: edge_to_cloud
+#   edge_id: edge_02
+#   protocol: http
+#   proxy_name: edge_02__to__cloud__http
+#   listen: "0.0.0.0:<TODO_EDGE_02_TO_CLOUD_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_EDGE_02_TO_CLOUD_PROXY_PORT>
+#   upstream: "<TODO_CLOUD_SERVICE>:<TODO_CLOUD_HTTP_PORT>"
+#   seed_offset: 110
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Scheduler → Cloud
+# - link_id: scheduler__to__cloud__http
+#   link_type: scheduler_to_cloud
+#   protocol: http
+#   proxy_name: scheduler__to__cloud__http
+#   listen: "0.0.0.0:<TODO_SCHEDULER_TO_CLOUD_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_SCHEDULER_TO_CLOUD_PROXY_PORT>
+#   upstream: "<TODO_CLOUD_SERVICE>:<TODO_CLOUD_HTTP_PORT>"
+#   seed_offset: 111
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true
+
+# Network Controller Reporter → Scheduler
+# After enabling this link, point the Reporter scheduler URL at this proxy.
+# - link_id: network__to__scheduler__http
+#   link_type: network_to_scheduler
+#   protocol: http
+#   proxy_name: network__to__scheduler__http
+#   listen: "0.0.0.0:<TODO_NETWORK_TO_SCHEDULER_PROXY_PORT>"
+#   advertised_host: toxiproxy
+#   advertised_port: <TODO_NETWORK_TO_SCHEDULER_PROXY_PORT>
+#   upstream: "<TODO_SCHEDULER_SERVICE>:<TODO_SCHEDULER_HTTP_PORT>"
+#   seed_offset: 112
+#   latency_stream: upstream
+#   bandwidth_stream: upstream
+#   disconnect_stream: upstream
+#   disconnect_mode: auto
+#   report_enabled: true

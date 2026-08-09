@@ -1,0 +1,15 @@
+reporter:
+  enabled: true
+  reporter_id: network-controller-01
+  scheduler_url: "http://scheduler:8000/api/v1/network/reports"
+  report_interval_seconds: 1
+  connect_timeout_seconds: 1
+  read_timeout_seconds: 2
+  retry_count: 3
+  backoff_base_seconds: 0.2
+  queue_capacity: 5
+  queue_overflow_policy: drop_oldest
+  report_only_enabled_links: true
+  auth:
+    mode: none
+    token_env: NETWORK_REPORT_TOKEN

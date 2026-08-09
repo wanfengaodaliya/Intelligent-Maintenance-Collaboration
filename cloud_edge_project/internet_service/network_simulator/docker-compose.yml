@@ -1,0 +1,84 @@
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    restart: unless-stopped
+    ports:
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:8474:8474"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18831:18831"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18832:18832"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18931:18931"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18932:18932"
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2.1.2-alpine
+    restart: unless-stopped
+    ports:
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:1883:1883"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-t", "network-simulator/health", "-m", "ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  scheduler:
+    image: network-simulator:3.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "uvicorn", "scheduler_stub.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    ports:
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  network-controller:
+    image: network-simulator:3.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_healthy
+      scheduler:
+        condition: service_started
+        required: false
+    environment:
+      NETWORK_SIMULATOR_ROOT: /app
+      NETWORK_CONFIG_DIR: /app/config
+      NETWORK_LOG_DIR: /app/logs
+      TOXIPROXY_API_BASE_URL: http://toxiproxy:8474
+      NETWORK_SCHEDULER_URL: http://scheduler:8000/api/v1/network/reports
+      NETWORK_REPORT_TOKEN: "${NETWORK_REPORT_TOKEN:-}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:${NETWORK_API_HOST_PORT:-8090}:8090"
+    volumes:
+      - ./config:/app/config:ro
+      - network-simulator-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=2)); assert data['status'] == 'ok'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
+
+volumes:
+  network-simulator-logs:

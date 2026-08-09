@@ -1,0 +1,30 @@
+score:
+  source: applied
+  precision: 1
+
+  weights:
+    latency: 0.30
+    jitter: 0.15
+    bandwidth: 0.25
+    packet_loss: 0.20
+    state_prior: 0.10
+
+  state_prior:
+    GOOD: 100
+    MEDIUM: 70
+    BAD: 35
+    DISCONNECTED: 0
+
+  normalization:
+    latency_best_ms: 8
+    latency_worst_ms: 350
+    jitter_best_ms: 1
+    jitter_worst_ms: 80
+    bandwidth_best_kbps: 25000
+    bandwidth_worst_kbps: 500
+    packet_loss_best_percent: 0
+    packet_loss_worst_percent: 5
+
+  failure_policy:
+    unavailable_after_consecutive_failures: 3
+    max_score_when_apply_failed: 20
