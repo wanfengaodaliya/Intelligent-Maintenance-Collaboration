@@ -5,4 +5,3 @@ from cloud_service.service import infer_cloud
 
 
 __all__ = ["CLOUD_NODE_ID", "infer_cloud"]
-

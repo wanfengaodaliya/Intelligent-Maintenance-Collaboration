@@ -15,6 +15,9 @@ class CloudSettings:
     vllm_api_key: str
     vllm_timeout_seconds: float
     database_path: Path = Path("data/cloud_review.db")
+    scheduler_base_url: str = "http://127.0.0.1:8003"
+    status_interval_seconds: float = 1.0
+    status_timeout_seconds: float = 1.0
 
 
 def load_cloud_settings() -> CloudSettings:
@@ -30,4 +33,7 @@ def load_cloud_settings() -> CloudSettings:
         vllm_api_key=os.getenv("VLLM_API_KEY", "").strip(),
         vllm_timeout_seconds=float(os.getenv("VLLM_TIMEOUT_SECONDS", "120")),
         database_path=Path(os.getenv("CLOUD_REVIEW_DB_PATH", "data/cloud_review.db")),
+        scheduler_base_url=os.getenv("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:8003").rstrip("/"),
+        status_interval_seconds=float(os.getenv("CLOUD_STATUS_INTERVAL_SECONDS", "1")),
+        status_timeout_seconds=float(os.getenv("CLOUD_STATUS_TIMEOUT_SECONDS", "1")),
     )

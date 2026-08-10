@@ -441,4 +441,3 @@ def _validate_inference(inference: dict[str, Any]) -> None:
     confidence = _finite_number(inference, "confidence", "INVALID_EDGE_INFERENCE")
     if not 0 <= confidence <= 1:
         raise ContractError("INVALID_EDGE_INFERENCE", "confidence must be between 0 and 1")
-

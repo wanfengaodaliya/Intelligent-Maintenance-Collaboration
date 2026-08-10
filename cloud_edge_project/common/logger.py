@@ -67,4 +67,3 @@ def compute_metrics(traces: list[dict[str, Any]]) -> dict[str, Any]:
         "fallback_edge_ratio": round(fallback / total, 4),
         "abnormal_ratio": round(abnormal / total, 4),
     }
-

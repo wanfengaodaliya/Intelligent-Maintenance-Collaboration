@@ -33,6 +33,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "cloud_queue_length": 3,
         },
     },
+    "packet_routing": {"confidence_threshold": 0.80},
+    "cloud_node": {
+        "max_queue_length": 5,
+        "status_ttl_seconds": 5,
+    },
+    "cloud_network": {
+        "min_uplink_mbps": 2.0,
+        "max_rtt_p95_ms": 100.0,
+        "max_loss_rate": 0.10,
+    },
+    "deferred_cloud_review": {
+        "retention_hours": 24,
+        "dispatcher_interval_seconds": 1.0,
+        "cleanup_interval_seconds": 60.0,
+    },
 }
 
 
@@ -95,4 +110,3 @@ def service_url(service: str, config: dict[str, Any] | None = None) -> str:
     loaded = config or load_config()
     service_config = loaded["services"][service]
     return f"http://{service_config['host']}:{service_config['port']}"
-

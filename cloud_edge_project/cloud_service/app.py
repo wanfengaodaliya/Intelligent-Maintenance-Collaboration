@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from cloud_service.raw_context.receiver import RawContextReceiver
 from cloud_service.raw_context.transport import HttpRawContextTransport
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
+from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.storage.raw_context_repository import (
     RawContextRequestRepository,
 )
@@ -45,6 +47,33 @@ from core.arbitration_contracts import ArbitrationValidationError
 
 
 config = load_config()
+_last_cloud_task_activity_ns = 0
+
+
+def _cloud_queue_length() -> int:
+    # This service has no application-level waiting queue; active HTTP work is not queued here.
+    return 0
+
+
+def _cloud_report_health() -> tuple[str, str]:
+    result = health()
+    if isinstance(result, JSONResponse):
+        return "OFFLINE", "FAILED"
+    return ("ONLINE", "LOADED") if result.get("status") == "ok" else ("DEGRADED", "FAILED")
+
+
+def _cloud_status_reporter() -> CloudNodeStatusReporter:
+    settings = load_cloud_settings()
+    return CloudNodeStatusReporter(
+        scheduler_base_url=settings.scheduler_base_url,
+        cloud_node_id=CLOUD_NODE_ID,
+        settings_provider=load_cloud_settings,
+        queue_length_provider=_cloud_queue_length,
+        health_provider=_cloud_report_health,
+        last_activity_provider=lambda: _last_cloud_task_activity_ns,
+        timeout_seconds=settings.status_timeout_seconds,
+        interval_seconds=settings.status_interval_seconds,
+    )
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
@@ -89,12 +118,16 @@ async def _lifespan(_: FastAPI):
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
     expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    status_task = asyncio.create_task(_cloud_status_reporter().run_forever())
+    background_tasks = (expiry_task, status_task)
     try:
         yield
     finally:
-        expiry_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await expiry_task
+        for task in background_tasks:
+            task.cancel()
+        for task in background_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
@@ -174,6 +207,8 @@ def health() -> dict[str, object] | JSONResponse:
 
 @app.post("/cloud/infer", response_model=None)
 def cloud_infer(payload: dict) -> dict | JSONResponse:
+    global _last_cloud_task_activity_ns
+    _last_cloud_task_activity_ns = time.time_ns()
     try:
         settings = load_cloud_settings()
         handler = get_scenario_handler(
