@@ -35,7 +35,6 @@ from .contracts import (
     PACKET_NOT_RECEIVED_STATUS,
     PACKET_PROCESSING,
     PACKET_PROCESSING_FAILED,
-    PACKET_SUCCEEDED,
     PACKET_VALIDATION_REJECTED,
     STAGE_DOWNSAMPLING,
     STAGE_VALIDATION,
@@ -44,7 +43,6 @@ from .contracts import (
     TASK_CONFLICT,
     TASK_NOT_ACCEPTING_INPUT,
     TASK_NOT_FOUND,
-    TASK_REVOKED,
     TASK_RUNNING,
     TASK_SEQUENCE_CONFLICT,
     TASK_WAITING_FOR_INPUT,
@@ -86,8 +84,7 @@ class EdgeTaskIngress:
         self._validation_cache = validation_cache
         self._clock_ns = clock_ns
         self._on_error = on_error or (lambda _: None)
-        self._tasks: dict[tuple[str, str, str], _TaskState] = {}
-        self._dispatch_index: dict[str, _TaskState] = {}
+        self._tasks: dict[str, _TaskState] = {}
         self._tasks_mutex = threading.Lock()
 
     def register_task(self, dispatch: Mapping[str, Any]) -> TaskAck:
@@ -95,47 +92,18 @@ class EdgeTaskIngress:
         received_at_ns = self._read_clock()
         normalized, reason = self._normalize_dispatch(dispatch)
         task_id = _task_id_from(dispatch)
-        dispatch_id = _dispatch_id_from(dispatch)
         if reason is not None:
-            return self._rejected_ack(
-                task_id, reason, received_at_ns, dispatch_id
-            )
+            return self._rejected_ack(task_id, reason, received_at_ns)
         assert normalized is not None
 
         task_id = normalized["task_id"]
-        dispatch_id = normalized["dispatch_id"]
         signature = normalized["signature"]
-        task_keys = tuple(
-            (normalized["device_id"], item["sender_id"], task_id)
-            for item in normalized["assigned_bearings"]
-        )
         with self._tasks_mutex:
-            if dispatch_id is not None:
-                existing_dispatch = self._dispatch_index.get(dispatch_id)
-                if existing_dispatch is not None:
-                    if existing_dispatch.signature == signature:
-                        return existing_dispatch.accepted_ack
-                    return self._rejected_ack(
-                        task_id, TASK_CONFLICT, received_at_ns, dispatch_id
-                    )
-            existing_states = {
-                id(state): state
-                for key in task_keys
-                if (state := self._tasks.get(key)) is not None
-            }
-            if existing_states:
-                if (
-                    len(existing_states) == 1
-                    and next(iter(existing_states.values())).signature == signature
-                ):
-                    return next(iter(existing_states.values())).accepted_ack
-                if not all(
-                    state.record.task_status == TASK_REVOKED
-                    for state in existing_states.values()
-                ):
-                    return self._rejected_ack(
-                        task_id, TASK_CONFLICT, received_at_ns, dispatch_id
-                    )
+            existing = self._tasks.get(task_id)
+            if existing is not None:
+                if existing.signature == signature:
+                    return existing.accepted_ack
+                return self._rejected_ack(task_id, TASK_CONFLICT, received_at_ns)
 
             acknowledged_at_ns = self._read_clock()
             bearings = {
@@ -159,7 +127,6 @@ class EdgeTaskIngress:
                 received_at_ns=received_at_ns,
                 acknowledged_at_ns=acknowledged_at_ns,
                 bearing_task_records=bearings,
-                dispatch_id=dispatch_id,
             )
             ack = TaskAck(
                 task_id=task_id,
@@ -168,19 +135,14 @@ class EdgeTaskIngress:
                 reason_code=None,
                 received_at_ns=received_at_ns,
                 acknowledged_at_ns=acknowledged_at_ns,
-                dispatch_id=dispatch_id,
             )
-            state = _TaskState(
+            self._tasks[task_id] = _TaskState(
                 record=record,
                 signature=signature,
                 accepted_ack=ack,
                 packet_id_index={},
                 mutex=threading.Lock(),
             )
-            for key in task_keys:
-                self._tasks[key] = state
-            if dispatch_id is not None:
-                self._dispatch_index[dispatch_id] = state
             return ack
 
     def receive_packet(self, raw_packet: Mapping[str, Any]) -> PacketIngressResult:
@@ -193,9 +155,7 @@ class EdgeTaskIngress:
             )
 
         with self._tasks_mutex:
-            state = self._tasks.get(
-                (identity["device_id"], identity["sender_id"], identity["task_id"])
-            )
+            state = self._tasks.get(identity["task_id"])
         if state is None:
             return self._packet_rejected(TASK_NOT_FOUND, received_at_ns, raw_packet)
 
@@ -304,43 +264,19 @@ class EdgeTaskIngress:
             validated_packet=validated_packet,
         )
 
-    def task_snapshot(
-        self,
-        task_id: str,
-        *,
-        device_id: Optional[str] = None,
-        sender_id: Optional[str] = None,
-    ) -> Optional[TaskRecord]:
+    def task_snapshot(self, task_id: str) -> Optional[TaskRecord]:
         """返回不共享内部可变状态的任务快照。"""
         with self._tasks_mutex:
-            if device_id is not None and sender_id is not None:
-                state = self._tasks.get((device_id, sender_id, task_id))
-            else:
-                matches = {
-                    id(state): state
-                    for key, state in self._tasks.items()
-                    if key[2] == task_id
-                }
-                state = next(iter(matches.values())) if len(matches) == 1 else None
+            state = self._tasks.get(task_id)
         if state is None:
             return None
         with state.mutex:
             return copy.deepcopy(state.record)
 
     def packet_snapshot(
-        self,
-        task_id: str,
-        bearing_id: str,
-        sequence_number: int,
-        *,
-        device_id: Optional[str] = None,
-        sender_id: Optional[str] = None,
+        self, task_id: str, bearing_id: str, sequence_number: int
     ) -> Optional[PacketRecord]:
-        task = self.task_snapshot(
-            task_id,
-            device_id=device_id,
-            sender_id=sender_id,
-        )
+        task = self.task_snapshot(task_id)
         if task is None:
             return None
         bearing = task.bearing_task_records.get(bearing_id)
@@ -348,80 +284,16 @@ class EdgeTaskIngress:
             return None
         return bearing.packet_records.get(sequence_number)
 
-    def revoke_dispatch(
-        self, dispatch_id: str, *, reason_code: str, revoked_at_ns: Optional[int] = None
-    ) -> bool:
-        """幂等撤销一次派发；撤销后不再接受新包。"""
-        if not _nonempty_string(dispatch_id) or not _nonempty_string(reason_code):
-            raise ValueError("dispatch_id 和 reason_code 必须是非空字符串")
-        with self._tasks_mutex:
-            state = self._dispatch_index.get(dispatch_id)
-        if state is None:
-            return False
-        revoked = self._read_clock() if revoked_at_ns is None else revoked_at_ns
-        if not _positive_integer(revoked):
-            raise ValueError("revoked_at_ns 必须是正整数")
-        with state.mutex:
-            if state.record.task_status == TASK_REVOKED:
-                return True
-            state.record.task_status = TASK_REVOKED
-            state.record.revoked_at_ns = int(revoked)
-            state.record.revoke_reason_code = reason_code
-        return True
-
-    def record_packet_completion(
-        self,
-        *,
-        device_id: str,
-        sender_id: str,
-        task_id: str,
-        bearing_id: str,
-        sequence_number: int,
-        output: Optional[Mapping[str, Any]],
-        error_code: Optional[str],
-        finished_at_ns: Optional[int] = None,
-    ) -> bool:
-        """把模型或降级路线的终态原子回填到对应包记录。"""
-        key = (device_id, sender_id, task_id)
-        with self._tasks_mutex:
-            state = self._tasks.get(key)
-        if state is None:
-            return False
-        finished = self._read_clock() if finished_at_ns is None else finished_at_ns
-        if not _positive_integer(finished):
-            raise ValueError("finished_at_ns 必须是正整数")
-        with state.mutex:
-            bearing = state.record.bearing_task_records.get(bearing_id)
-            packet = bearing.packet_records.get(sequence_number) if bearing else None
-            if bearing is None or packet is None:
-                return False
-            if packet.finished_at_ns is not None:
-                return True
-            packet.finished_at_ns = int(finished)
-            packet.current_stage = None
-            packet.error_code = error_code
-            packet.edge_output = copy.deepcopy(dict(output)) if output is not None else None
-            packet.packet_status = PACKET_SUCCEEDED if error_code is None else PACKET_PROCESSING_FAILED
-            bearing.terminal_packet_count += 1
-            if error_code is None:
-                bearing.final_edge_count += 1
-            else:
-                bearing.processing_failed_count += 1
-        return True
-
     def _normalize_dispatch(
         self, dispatch: Mapping[str, Any]
     ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         if not isinstance(dispatch, Mapping):
             return None, INVALID_TASK
         task_id = dispatch.get("task_id")
-        dispatch_id = dispatch.get("dispatch_id")
         target = dispatch.get("target_edge_node_id")
         task_type = dispatch.get("task_type")
         dispatched_at_ns = dispatch.get("dispatched_at_ns")
         if not _nonempty_string(task_id):
-            return None, INVALID_TASK
-        if dispatch_id is not None and not _nonempty_string(dispatch_id):
             return None, INVALID_TASK
         if not _nonempty_string(target):
             return None, INVALID_TASK
@@ -483,7 +355,6 @@ class EdgeTaskIngress:
         normalized_assigned.sort(key=lambda value: value["bearing_id"])
         expected_ids = tuple(sorted(expected))
         signature = (
-            dispatch_id,
             task_id,
             target,
             task_type,
@@ -496,7 +367,6 @@ class EdgeTaskIngress:
             dispatched_at_ns,
         )
         return {
-            "dispatch_id": dispatch_id,
             "task_id": task_id,
             "target_edge_node_id": target,
             "task_type": task_type,
@@ -564,7 +434,6 @@ class EdgeTaskIngress:
         task_id: Optional[str],
         reason: str,
         received_at_ns: int,
-        dispatch_id: Optional[str] = None,
     ) -> TaskAck:
         ack = TaskAck(
             task_id=task_id,
@@ -573,13 +442,8 @@ class EdgeTaskIngress:
             reason_code=reason,
             received_at_ns=received_at_ns,
             acknowledged_at_ns=self._read_clock(),
-            dispatch_id=dispatch_id,
         )
-        self._emit_error(
-            reason,
-            {"task_id": task_id, "dispatch_id": dispatch_id},
-            "task_dispatch",
-        )
+        self._emit_error(reason, {"task_id": task_id}, "task_dispatch")
         return ack
 
     def _packet_rejected(
@@ -611,7 +475,6 @@ class EdgeTaskIngress:
         event = {
             key: source.get(key)
             for key in (
-                "dispatch_id",
                 "task_id",
                 "device_id",
                 "bearing_id",
@@ -647,13 +510,6 @@ def _task_id_from(dispatch: object) -> Optional[str]:
     if not isinstance(dispatch, Mapping):
         return None
     value = dispatch.get("task_id")
-    return value if _nonempty_string(value) else None
-
-
-def _dispatch_id_from(dispatch: object) -> Optional[str]:
-    if not isinstance(dispatch, Mapping):
-        return None
-    value = dispatch.get("dispatch_id")
     return value if _nonempty_string(value) else None
 
 

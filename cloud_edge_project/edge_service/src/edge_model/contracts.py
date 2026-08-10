@@ -101,8 +101,7 @@ class PacketInferenceTask:
 
 @dataclass(frozen=True)
 class PacketExecutionCompleted:
-    """供边缘运行编排使用的每包唯一终态事件。"""
-
+    """边缘运行编排使用的每包唯一终态事件。"""
     request_id: str
     device_id: str
     bearing_id: str

@@ -32,10 +32,8 @@ INGRESS_REJECTED = "REJECTED"
 
 TASK_WAITING_FOR_INPUT = "WAITING_FOR_INPUT"
 TASK_RUNNING = "RUNNING"
-TASK_REVOKED = "REVOKED"
 
 PACKET_PROCESSING = "PROCESSING"
-PACKET_SUCCEEDED = "SUCCEEDED"
 PACKET_VALIDATION_REJECTED = "VALIDATION_REJECTED"
 PACKET_PROCESSING_FAILED = "PROCESSING_FAILED"
 PACKET_NOT_RECEIVED_STATUS = "NOT_RECEIVED"
@@ -56,10 +54,9 @@ class TaskAck:
     reason_code: Optional[str]
     received_at_ns: int
     acknowledged_at_ns: int
-    dispatch_id: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
-        result = {
+        return {
             "task_id": self.task_id,
             "edge_node_id": self.edge_node_id,
             "ack_status": self.ack_status,
@@ -67,9 +64,6 @@ class TaskAck:
             "received_at_ns": self.received_at_ns,
             "acknowledged_at_ns": self.acknowledged_at_ns,
         }
-        if self.dispatch_id is not None:
-            result["dispatch_id"] = self.dispatch_id
-        return result
 
 
 @dataclass
@@ -127,9 +121,6 @@ class TaskRecord:
     received_at_ns: int
     acknowledged_at_ns: int
     bearing_task_records: dict[str, BearingTaskRecord]
-    dispatch_id: Optional[str] = None
-    revoked_at_ns: Optional[int] = None
-    revoke_reason_code: Optional[str] = None
     started_at_ns: Optional[int] = None
     finished_at_ns: Optional[int] = None
     completed_bearing_count: int = 0

@@ -75,10 +75,6 @@ class EdgeModelPipeline:
     def max_observed_queued(self) -> int:
         return self.queue.max_observed_queued
 
-    @property
-    def queue_length(self) -> int:
-        return self.queue.waiting_count
-
     def ingest(self, sender_id: str, perception: dict) -> str:
         """立即为当前 PerceptionResult 创建一个独立包级推理任务。"""
 

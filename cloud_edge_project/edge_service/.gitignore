@@ -1,9 +1,0 @@
-# 运行产物（结果/日志/生成的 manifest，含个人模型路径，不提交）
-var/
-
-# Python
-__pycache__/
-*.py[cod]
-.venv*/
-
-.claude/
