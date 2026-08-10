@@ -72,9 +72,9 @@ def load_edge_node_configs() -> dict[str, EdgeNodeConfig]:
             ) from exc
     else:
         payload = {
-            "edge_01": {
+            "edge_1": {
                 "control_url": "http://127.0.0.1:8001",
-                "target_topic": "edge/edge_01/input",
+                "target_topic": "edge/edge_1/input",
             },
         }
 
@@ -100,6 +100,7 @@ class NodeRegistry:
         *,
         status_timeout_ns: int = STATUS_REPORT_TIMEOUT_NS,
         link_timeout_ns: int = LINK_SNAPSHOT_TIMEOUT_NS,
+        cloud_registry: Any | None = None,
     ) -> None:
         selected = dict(configs or load_edge_node_configs())
         self._nodes = {
@@ -109,6 +110,7 @@ class NodeRegistry:
         self._links: dict[tuple[str, str], LinkSnapshot] = {}
         self.status_timeout_ns = status_timeout_ns
         self.link_timeout_ns = link_timeout_ns
+        self.cloud_registry = cloud_registry
         self._lock = threading.RLock()
         self._monitor_stop = threading.Event()
         self._monitor_thread: threading.Thread | None = None
@@ -202,6 +204,17 @@ class NodeRegistry:
         received_at_ns: int | None = None,
         received_monotonic_ns: int | None = None,
     ) -> dict[str, Any]:
+        if all(field in payload for field in ("link_id", "source_id", "target_id")):
+            if self.cloud_registry is None:
+                raise RegistryError(
+                    "CLOUD_LINK_REGISTRY_UNAVAILABLE",
+                    "cloud link registry is not configured",
+                )
+            return self.cloud_registry.update_link(
+                payload,
+                received_at_ns=received_at_ns,
+                received_monotonic_ns=received_monotonic_ns,
+            )
         snapshot = _validate_link_snapshot(
             payload,
             time.time_ns() if received_at_ns is None else received_at_ns,

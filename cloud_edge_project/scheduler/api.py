@@ -4,18 +4,34 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import asynccontextmanager
 import json
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from common.config import load_config
+
+
 try:
     from .assignment_scheduler import AssignmentError, AssignmentScheduler
+    from .cloud_registry import CloudNodeRegistry
+    from .deferred_cloud_repository import DeferredCloudError, DeferredCloudRepository
+    from .deferred_dispatcher import DeferredCloudDispatcher
     from .node_registry import NodeRegistry, RegistryError
+    from .packet_router import PacketRouteError, PacketRouter, PacketRoutingConfig
+    from .packet_service import PacketRoutingService
+    from .routing_config import load_packet_routing_config
     from .task_repository import TaskRepository, TaskRepositoryError
 except ImportError:  # Allows running this file directly: python api.py
     from assignment_scheduler import AssignmentError, AssignmentScheduler
+    from cloud_registry import CloudNodeRegistry
+    from deferred_cloud_repository import DeferredCloudError, DeferredCloudRepository
+    from deferred_dispatcher import DeferredCloudDispatcher
     from node_registry import NodeRegistry, RegistryError
+    from packet_router import PacketRouteError, PacketRouter, PacketRoutingConfig
+    from packet_service import PacketRoutingService
+    from routing_config import load_packet_routing_config
     from task_repository import TaskRepository, TaskRepositoryError
 
 try:
@@ -27,16 +43,68 @@ except ImportError:
     JSONResponse = None
 
 
-node_registry = NodeRegistry()
+runtime_config = load_config()
+cloud_status_ttl_ns = int(
+    float(runtime_config.get("cloud_node", {}).get("status_ttl_seconds", 5))
+    * 1_000_000_000
+)
+dispatcher_interval_seconds = float(
+    runtime_config.get("deferred_cloud_review", {}).get("dispatcher_interval_seconds", 1.0)
+)
+cloud_registry = CloudNodeRegistry(status_ttl_ns=cloud_status_ttl_ns)
+node_registry = NodeRegistry(cloud_registry=cloud_registry)
 task_repository = TaskRepository()
+deferred_repository = DeferredCloudRepository(task_repository.database_path)
 scheduler = AssignmentScheduler(node_registry, task_repository)
+packet_router = PacketRouter(
+    assignment_lookup=task_repository.get,
+    cloud_registry=cloud_registry,
+    config=load_packet_routing_config(),
+)
+packet_service = PacketRoutingService(packet_router, deferred_repository)
+
+
+def _edge_control_url(edge_node_id: str) -> str:
+    state = node_registry._nodes.get(edge_node_id)
+    if state is None:
+        raise RegistryError("UNREGISTERED_EDGE_NODE", f"unregistered edge node: {edge_node_id}")
+    return state.config.control_url
+
+
+deferred_dispatcher = DeferredCloudDispatcher(
+    deferred_repository,
+    edge_url_lookup=_edge_control_url,
+    eligibility_check=packet_router.cloud_delivery_eligibility,
+)
 node_registry.start_monitor()
 atexit.register(node_registry.stop_monitor)
+atexit.register(deferred_dispatcher.stop)
+
+
+@asynccontextmanager
+async def _lifespan(_: Any):
+    deferred_dispatcher.start(dispatcher_interval_seconds)
+    try:
+        yield
+    finally:
+        deferred_dispatcher.stop()
 
 
 # 接收发送器的任务级调度请求，返回边缘节点 MQTT Topic
 def decide(request: dict[str, Any]) -> dict[str, Any]:
     return scheduler.decide(request).to_dict()
+
+
+def route_packet(request: dict[str, Any]) -> dict[str, Any]:
+    return packet_service.route(request)
+
+
+def update_cloud_node_status(request: dict[str, Any]) -> dict[str, Any]:
+    return cloud_registry.update_status(request)
+
+
+def save_cloud_upload_result(request: dict[str, Any]) -> dict[str, Any]:
+    return packet_service.save_upload_result(request)
 
 
 # 接收边缘节点的实时状态报告
@@ -68,7 +136,7 @@ def health() -> dict[str, Any]:
 
 
 def _error_payload(error: Exception) -> tuple[int, dict[str, Any]]:
-    if isinstance(error, (AssignmentError, TaskRepositoryError)):
+    if isinstance(error, (AssignmentError, TaskRepositoryError, PacketRouteError, DeferredCloudError)):
         return error.status_code, {
             "error_code": error.code,
             "message": error.message,
@@ -124,7 +192,31 @@ if APIRouter is not None:
             status_code, payload = _error_payload(error)
             return JSONResponse(status_code=status_code, content=payload)
 
-    app = FastAPI(title="Edge Node Assignment Scheduler")
+    @router.post("/packet-route", response_model=None)
+    def packet_route_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        try:
+            return route_packet(request)
+        except Exception as error:
+            status_code, payload = _error_payload(error)
+            return JSONResponse(status_code=status_code, content=payload)
+
+    @router.post("/cloud-nodes/status", response_model=None)
+    def cloud_node_status_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        try:
+            return update_cloud_node_status(request)
+        except Exception as error:
+            status_code, payload = _error_payload(error)
+            return JSONResponse(status_code=status_code, content=payload)
+
+    @router.post("/cloud-upload-results", response_model=None)
+    def cloud_upload_result_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        try:
+            return save_cloud_upload_result(request)
+        except Exception as error:
+            status_code, payload = _error_payload(error)
+            return JSONResponse(status_code=status_code, content=payload)
+
+    app = FastAPI(title="Edge Node Assignment Scheduler", lifespan=_lifespan)
     app.include_router(router)
 
     @app.get("/health")
@@ -148,6 +240,9 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             "/scheduler/edge-nodes/status": update_edge_node_status,
             "/scheduler/link-snapshots": update_link_snapshot,
             "/scheduler/tasks/result": save_task_result,
+            "/scheduler/packet-route": route_packet,
+            "/scheduler/cloud-nodes/status": update_cloud_node_status,
+            "/scheduler/cloud-upload-results": save_cloud_upload_result,
         }
         handler = handlers.get(self.path)
         if handler is None:
@@ -178,9 +273,14 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
 
 
 def run(host: str = "127.0.0.1", port: int = 8003) -> None:
+    deferred_dispatcher.start(dispatcher_interval_seconds)
     server = ThreadingHTTPServer((host, port), SchedulerRequestHandler)
     print(f"scheduler service running at http://{host}:{port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        deferred_dispatcher.stop()
 
 
 if __name__ == "__main__":
