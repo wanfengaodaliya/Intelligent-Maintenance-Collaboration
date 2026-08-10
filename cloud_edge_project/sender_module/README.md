@@ -100,7 +100,7 @@ Test-NetConnection 127.0.0.1 -Port 1883
 
 ## 4. 启动
 
-本地测试可分别打开三个终端。
+本地联调可分别打开三个终端。
 
 终端一启动模拟调度器：
 
@@ -110,11 +110,13 @@ python tools/mock_scheduler.py
 
 注意：当前检出版本中仓库原有的 `scheduler/` 仍使用旧请求和响应结构，不能直接处理本 README 的新接口。联调时先使用上面的 `tools/mock_scheduler.py`；正式接入前，调度器负责同学需要将 `/scheduler/decide` 更新为第 5 节约定的结构。
 
-终端二启动测试订阅器：
+终端二临时观察 Broker 上的边缘输入消息：
 
 ```powershell
-python tools/test_subscriber.py
+& "C:\Program Files\mosquitto\mosquitto_sub.exe" -h 127.0.0.1 -p 1883 -t "edge/+/input" -q 1 -v
 ```
+
+这条命令只用于确认消息已经发布到 Broker，不代表边缘节点已完成推理。正式模块联调时，应使用边缘模块实际提供的 MQTT 消费入口替代该观察命令，并以边缘处理结果或确认消息判断处理完成。
 
 终端三启动三个发送器：
 
@@ -159,7 +161,7 @@ Content-Type: application/json
   "sender_id": "sender_01",
   "task_id": "sd_01_tk_0001",
   "bearing_id": "bearing_01",
-  "target_topic": "edge/edge_2/input"
+  "target_topic": "edge/edge_02/input"
 }
 ```
 
@@ -278,10 +280,13 @@ sender_03 -> MQTT代理 127.0.0.1:11883 -> Mosquitto 127.0.0.1:1883
 - 日志模块：接收任务日志和每包日志；当前先由 `LocalLogSink` 写本地 JSONL。
 - 真实传感器：将 `load_mat_record()` 替换为实时采集适配器，后续调度、MQTT和日志流程无需改变。
 
-## 10. 自动化测试
+## 10. 联调检查
 
-```powershell
-python -m unittest discover -s tests -v
-```
+当前阶段以真实模块磨合为主。联调时依次确认：
 
-测试覆盖配置校验、任务和数据包编号、MAT 切窗、调度响应校验、三个发送器并行运行、MQTT QoS 1、重试、PUBACK超时、缓存丢弃和本地日志。若本机 Mosquitto 正在运行，还会额外执行三台真实 Paho 客户端发布 240 包的集成测试。
+- 调度器为轴承返回 `edge/edge_01/input` 或 `edge/edge_02/input`。
+- Broker 上能够观察到三个发送器发布的数据包。
+- 发送器任务日志中的 `confirmed` 或 `completed` 只表示 QoS 1 PUBACK 已返回。
+- 边缘处理是否完成，必须以边缘模块返回的处理结果或确认消息为准。
+
+上面的 `tools/mock_scheduler.py` 和 `mosquitto_sub.exe` 只用于正式调度器或边缘 MQTT 消费入口尚未就绪时的局部排查，不能代替完整模块联调。

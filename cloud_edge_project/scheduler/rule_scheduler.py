@@ -245,7 +245,7 @@ class PreDDPGScheduler:
         return self._decision(
             task,
             route=route,
-            target_node=str(task.get("source_node") or "edge_1"),
+            target_node=str(task.get("source_node") or "edge_01"),
             reason=reason,
             estimated_total_latency_ms=estimated_total_latency_ms,
             upload_required=False,

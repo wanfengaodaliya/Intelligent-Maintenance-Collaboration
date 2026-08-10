@@ -95,7 +95,7 @@ POST http://127.0.0.1:8003/scheduler/decide
 {
   "task": {
     "task_id": "task_0001",
-    "source_node": "edge_1",
+    "source_node": "edge_01",
     "deadline_ms": 200,
     "priority": 0.8,
     "data_size_kb": 128

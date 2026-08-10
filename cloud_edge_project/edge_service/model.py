@@ -9,7 +9,7 @@ from typing import Any
 from common.schemas import validate_edge_result, validate_sensor_packet
 
 
-EDGE_NODE_ID = "edge_1"
+EDGE_NODE_ID = "edge_01"
 MODEL_NAME = "edge_bearing_mock"
 
 

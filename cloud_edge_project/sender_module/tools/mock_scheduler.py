@@ -19,7 +19,7 @@ class SchedulerHandler(BaseHTTPRequestHandler):
                 "sender_id": request["sender_id"],
                 "task_id": request["task_id"],
                 "bearing_id": request["bearing_id"],
-                "target_topic": f"edge/edge_{(bearing_number - 1) % 2 + 1}/input",
+                "target_topic": f"edge/edge_{(bearing_number - 1) % 2 + 1:02d}/input",
             }
             encoded = json.dumps(response).encode("utf-8")
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
