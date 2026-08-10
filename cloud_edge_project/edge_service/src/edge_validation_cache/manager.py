@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from collections import deque
 from dataclasses import dataclass
 from numbers import Real
@@ -116,6 +117,8 @@ class EdgeValidationCache:
         self._stop_event = threading.Event()
         self._cleanup_thread: Optional[threading.Thread] = None
         self._retention_ns = int(config.raw_cache_retention_seconds * 1_000_000_000)
+        self._pinned_refs: dict[RawPacketRef, int] = {}
+        self._pins_mutex = threading.Lock()
 
     def process(
         self,
@@ -185,6 +188,104 @@ class EdgeValidationCache:
             self._cleanup_state_locked(state, now_ns)
             packet = state.raw_packets.get(raw_packet_ref)
             return _clone_packet(packet, readonly=True) if packet is not None else None
+
+    @staticmethod
+    def raw_data_uri(raw_packet_ref: RawPacketRef) -> str:
+        if not _valid_raw_packet_ref(raw_packet_ref):
+            raise ValueError("raw_packet_ref 非法")
+        sender_id, task_id, sequence_number = raw_packet_ref
+        return "edge-cache://%s/%s/%d" % (
+            quote(sender_id, safe=""),
+            quote(task_id, safe=""),
+            sequence_number,
+        )
+
+    @staticmethod
+    def raw_ref_from_uri(uri: str) -> RawPacketRef:
+        parsed = urlparse(uri)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parsed.scheme != "edge-cache" or not parsed.netloc or len(parts) != 2:
+            raise ValueError("raw_data_ref 必须是 edge-cache://sender/task/sequence")
+        try:
+            result: RawPacketRef = (
+                unquote(parsed.netloc),
+                unquote(parts[0]),
+                int(parts[1]),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("raw_data_ref 非法") from exc
+        if not _valid_raw_packet_ref(result):
+            raise ValueError("raw_data_ref 非法")
+        return result
+
+    def read_uri(self, uri: str) -> Optional[dict[str, Any]]:
+        return self.read(self.raw_ref_from_uri(uri))
+
+    def pin(self, raw_packet_ref: RawPacketRef) -> bool:
+        """锁定仍待云端处理的数据，避免按保留期清理。"""
+        if self.read(raw_packet_ref) is None:
+            return False
+        with self._pins_mutex:
+            self._pinned_refs[raw_packet_ref] = self._pinned_refs.get(raw_packet_ref, 0) + 1
+        return True
+
+    def unpin(self, raw_packet_ref: RawPacketRef) -> bool:
+        with self._pins_mutex:
+            count = self._pinned_refs.get(raw_packet_ref)
+            if count is None:
+                return False
+            if count <= 1:
+                self._pinned_refs.pop(raw_packet_ref, None)
+            else:
+                self._pinned_refs[raw_packet_ref] = count - 1
+        return True
+
+    def pin_uri(self, uri: str) -> bool:
+        return self.pin(self.raw_ref_from_uri(uri))
+
+    def unpin_uri(self, uri: str) -> bool:
+        return self.unpin(self.raw_ref_from_uri(uri))
+
+    @staticmethod
+    def context_uri(
+        *,
+        device_id: str,
+        bearing_id: str,
+        sender_id: str,
+        anchor_packet_id: str,
+        anchor_end_generate_timestamp_ns: int,
+    ) -> str:
+        values = (device_id, bearing_id, sender_id, anchor_packet_id)
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError("context_ref 身份字段必须是非空字符串")
+        if not _positive_integer(anchor_end_generate_timestamp_ns):
+            raise ValueError("anchor_end_generate_timestamp_ns 必须是正整数")
+        return "edge-context://%s/%s/%s/%s?end_ns=%d" % (
+            *(quote(value, safe="") for value in values),
+            anchor_end_generate_timestamp_ns,
+        )
+
+    def read_context_uri(self, uri: str, *, requested_at_ns: Optional[int] = None) -> dict[str, Any]:
+        parsed = urlparse(uri)
+        parts = [part for part in parsed.path.split("/") if part]
+        query = parse_qs(parsed.query)
+        if parsed.scheme != "edge-context" or not parsed.netloc or len(parts) != 3:
+            raise ValueError("context_ref 非法")
+        try:
+            end_ns = int(query["end_ns"][0])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValueError("context_ref 缺少有效 end_ns") from exc
+        request = {
+            "request_id": "context-upload-%d" % self._read_clock(),
+            "device_id": unquote(parsed.netloc),
+            "bearing_id": unquote(parts[0]),
+            "sender_id": unquote(parts[1]),
+            "anchor_packet_id": unquote(parts[2]),
+            "anchor_end_generate_timestamp_ns": end_ns,
+            "requested_at_ns": requested_at_ns or self._read_clock(),
+            "before_packet_count": self.config.context_before_packet_count,
+        }
+        return self.query_context(request)
 
     def context_snapshot(self, sender_id: str) -> tuple[ContextSlotSnapshot, ...]:
         """返回上下文槽位的不可变快照，供编排状态和测试核对。"""
@@ -404,14 +505,18 @@ class EdgeValidationCache:
 
     def _cleanup_state_locked(self, state: _SenderCacheState, now_ns: int) -> int:
         removed = 0
-        while state.slots:
-            slot = state.slots[0]
-            if now_ns - slot.received_at_ns < self._retention_ns:
-                break
-            state.slots.popleft()
-            if slot.raw_packet_ref is not None:
-                state.raw_packets.pop(slot.raw_packet_ref, None)
-            removed += 1
+        retained: deque[_ContextSlot] = deque()
+        with self._pins_mutex:
+            pinned = set(self._pinned_refs)
+        for slot in state.slots:
+            expired = now_ns - slot.received_at_ns >= self._retention_ns
+            if expired and slot.raw_packet_ref not in pinned:
+                if slot.raw_packet_ref is not None:
+                    state.raw_packets.pop(slot.raw_packet_ref, None)
+                removed += 1
+            else:
+                retained.append(slot)
+        state.slots = retained
         return removed
 
     @staticmethod

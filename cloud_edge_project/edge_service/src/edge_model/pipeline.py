@@ -16,6 +16,7 @@ from .contracts import (
     EXECUTION_LOCAL_MODEL,
     REASON_CODE_FALLBACK_FAILED,
     EdgeResult,
+    PacketExecutionCompleted,
     PacketInferenceTask,
     PacketResult,
     RunRecord,
@@ -29,13 +30,17 @@ class EdgeModelPipeline:
                  fallback: CodeFallbackRunner,
                  on_run_record: Callable[[RunRecord], None],
                  on_packet_result: Callable[[PacketResult], None],
-                 clock=time.monotonic):
+                 clock=time.monotonic,
+                 on_packet_completed: Optional[Callable[[PacketExecutionCompleted], None]] = None,
+                 clock_ns=time.time_ns):
         self.cfg = cfg
         self.model_client = model_client
         self.fallback = fallback
         self.on_run_record = on_run_record
         self.on_packet_result = on_packet_result
+        self.on_packet_completed = on_packet_completed or (lambda _: None)
         self._clock = clock
+        self._clock_ns = clock_ns
 
         self.queue = ModelTaskQueue(cfg.queue.max_waiting_requests,
                                     cfg.queue.full_policy, clock=clock)
@@ -69,6 +74,10 @@ class EdgeModelPipeline:
     @property
     def max_observed_queued(self) -> int:
         return self.queue.max_observed_queued
+
+    @property
+    def queue_length(self) -> int:
+        return self.queue.waiting_count
 
     def ingest(self, sender_id: str, perception: dict) -> str:
         """立即为当前 PerceptionResult 创建一个独立包级推理任务。"""
@@ -107,6 +116,7 @@ class EdgeModelPipeline:
             sender_id=sender_id,
             sequence_number=sequence_number,
             perception=copy.deepcopy(perception),
+            started_at_ns=self._clock_ns(),
         )
 
     def _run_fallback(self, task: PacketInferenceTask, reason: Optional[str],
@@ -132,6 +142,20 @@ class EdgeModelPipeline:
                 output_valid=False,
                 breaker_state=breaker_state,
                 note="model_route_reason=%s; fallback_error=%r" % (reason, exc),
+            ))
+            self.on_packet_completed(PacketExecutionCompleted(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                status="FAILED",
+                error_code=REASON_CODE_FALLBACK_FAILED,
+                started_at_ns=task.started_at_ns or self._clock_ns(),
+                finished_at_ns=self._clock_ns(),
+                edge=None,
             ))
 
     def _on_model(self, task: PacketInferenceTask, edge: EdgeResult,
@@ -183,5 +207,19 @@ class EdgeModelPipeline:
             packet_id=task.packet_id,
             sender_id=task.sender_id,
             sequence_number=task.sequence_number,
+            edge=edge,
+        ))
+        self.on_packet_completed(PacketExecutionCompleted(
+            request_id=task.request_id,
+            device_id=task.device_id,
+            bearing_id=task.bearing_id,
+            task_id=task.task_id,
+            packet_id=task.packet_id,
+            sender_id=task.sender_id,
+            sequence_number=task.sequence_number,
+            status="SUCCEEDED",
+            error_code=None,
+            started_at_ns=task.started_at_ns or self._clock_ns(),
+            finished_at_ns=self._clock_ns(),
             edge=edge,
         ))

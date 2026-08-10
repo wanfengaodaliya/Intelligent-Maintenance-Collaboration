@@ -96,6 +96,25 @@ class PacketInferenceTask:
     sequence_number: int
     perception: Dict[str, Any]
     submit_ts: Optional[float] = None
+    started_at_ns: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class PacketExecutionCompleted:
+    """供边缘运行编排使用的每包唯一终态事件。"""
+
+    request_id: str
+    device_id: str
+    bearing_id: str
+    task_id: str
+    packet_id: str
+    sender_id: str
+    sequence_number: int
+    status: str
+    error_code: Optional[str]
+    started_at_ns: int
+    finished_at_ns: int
+    edge: Optional[EdgeResult]
 
 
 @dataclass
