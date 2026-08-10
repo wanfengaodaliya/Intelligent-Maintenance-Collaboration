@@ -65,4 +65,3 @@ class NetworkStateMapper:
         if value is None:
             raise ValueError(f"connected state {state.value} has no {name} range")
         return value
-

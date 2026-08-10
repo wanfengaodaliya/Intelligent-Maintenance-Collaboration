@@ -4,4 +4,3 @@ from .calculator import LinkReliabilityCalculator
 from .plugin import ScorePlugin
 
 __all__ = ["LinkReliabilityCalculator", "ScorePlugin"]
-

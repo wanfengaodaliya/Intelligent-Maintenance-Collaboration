@@ -89,4 +89,3 @@ class MarkovPlugin(BasePlugin):
             raise KeyError(f"unknown link_id: {link_id}") from exc
         snapshot = self._context.runtime_store.get_link(link_id)
         return engine.generate(snapshot.current_state, snapshot.desired_parameters)
-

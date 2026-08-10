@@ -68,4 +68,3 @@ class MarkovNetworkModel:
                 raise ValueError(
                     f"transition matrix row {row_index} probabilities must sum to 1"
                 )
-
