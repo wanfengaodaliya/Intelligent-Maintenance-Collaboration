@@ -77,21 +77,10 @@ def _load_bearing_tasks(connection, device_id: str, task_ids: list[str], placeho
 def _load_edge_cloud_pairs(connection, device_id: str, task_ids: list[str], placeholders: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         f"""
-        SELECT edge.edge_result AS edge_label,
-               json_extract(summary.summary_json, '$.label') AS cloud_label,
-               edge.edge_model_version
-        FROM edge_packet_summary edge
-        JOIN cloud_review review
-          ON review.sender_id=edge.sender_id
-         AND review.anchor_packet_id=edge.packet_id
-         AND review.device_id=edge.device_id
-         AND review.task_id=edge.task_id
-         AND review.bearing_id=edge.bearing_id
-        JOIN final_diagnosis_summary summary
-          ON summary.review_id=review.review_id
-         AND summary.status='succeeded'
-        WHERE review.device_id=? AND review.task_id IN ({placeholders})
-        ORDER BY review.updated_at_ns ASC
+        SELECT edge_state AS edge_label, cloud_state AS cloud_label, model_version AS edge_model_version
+        FROM bearing_task_result
+        WHERE device_id=? AND task_id IN ({placeholders}) AND cloud_reviewed=1
+        ORDER BY completed_at_ns ASC
         """,
         (device_id, *task_ids),
     ).fetchall()

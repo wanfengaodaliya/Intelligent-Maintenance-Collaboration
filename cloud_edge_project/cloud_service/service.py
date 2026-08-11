@@ -1,18 +1,17 @@
-"""Validate cloud requests and dispatch them to the configured backend."""
+"""Independent, structured cloud packet review."""
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from cloud_service.config import CloudSettings, load_cloud_settings
-from cloud_service.errors import CloudServiceError
-from cloud_service.mock_backend import infer_mock
-from cloud_service.perception.pipeline import (
-    run_perception,
-    run_preliminary_perception,
+from cloud_service.packet_diagnosis import (
+    DiagnosisModel,
+    PacketDiagnosis,
+    RuleBasedDiagnosisModel,
 )
-from cloud_service.raw_context.coordinator import RawContextCoordinator
-from cloud_service.raw_context.transport import RawContextTransport
+from cloud_service.perception.pipeline import run_single_packet_perception
 from cloud_service.storage.persistence import CloudReviewPersistence
 
 
@@ -20,73 +19,61 @@ def infer_cloud(
     request: dict[str, Any],
     settings: CloudSettings | None = None,
     *,
-    context_transport: RawContextTransport | None = None,
+    diagnosis_model: DiagnosisModel | None = None,
 ) -> dict[str, Any]:
+    """Review one high-rate packet without requesting or aggregating context."""
+
     selected = settings or load_cloud_settings()
-    if context_transport is not None:
-        return _begin_context_review(
-            request,
-            selected,
-            context_transport,
-        )
-    perception_result = run_perception(request)
-    if not perception_result["data_quality"]["valid"]:
-        return {"success": True, "perception_result": perception_result, "review_result": None, "review_id": None}
-    review_id = CloudReviewPersistence(selected.database_path).persist(request, perception_result)
-    if selected.backend == "mock":
-        review_result = infer_mock(perception_result)
-    elif selected.backend == "vllm":
-        from cloud_service.vllm_backend import infer_vllm
-
-        review_result = infer_vllm(perception_result, selected)
-    else:
-        raise CloudServiceError(
-            "MODEL_INFER_FAILED",
-            f"unsupported cloud backend: {selected.backend}",
-            500,
-        )
-    return {
-        "success": True,
-        "perception_result": perception_result,
-        "review_result": review_result,
-        "review_id": review_id,
-    }
-
-
-def _begin_context_review(
-    request: dict[str, Any],
-    settings: CloudSettings,
-    transport: RawContextTransport,
-) -> dict[str, Any]:
-    perception_result = run_preliminary_perception(request)
+    perception_result = run_single_packet_perception(request)
     if not perception_result["data_quality"]["valid"]:
         return {
             "success": True,
             "perception_result": perception_result,
-            "review_result": None,
+            "cloud_packet_result": None,
             "review_id": None,
-            "raw_context_request": None,
         }
-    raw = request["cloud_raw_packet"]
-    review_id = CloudReviewPersistence(
-        settings.database_path
-    ).persist_preliminary(request, perception_result)
-    context_request = RawContextCoordinator(
-        settings.database_path,
-        transport=transport,
-    ).create_and_dispatch(
-        review_id=review_id,
-        device_id=raw["device_id"],
-        task_id=raw["task_id"],
-        bearing_id=raw["bearing_id"],
-        sender_id=raw["sender_id"],
-        anchor_packet_id=raw["packet_id"],
-        anchor_sequence_number=raw["sequence_number"],
+
+    review_id = CloudReviewPersistence(selected.database_path).persist_packet(
+        request, perception_result
+    )
+    model = diagnosis_model or RuleBasedDiagnosisModel()
+    diagnosis = model.predict(perception_result["cloud_recomputed_features"])
+    packet_result = _cloud_packet_result(
+        review_id, request, diagnosis, model.model_version
     )
     return {
         "success": True,
         "perception_result": perception_result,
-        "review_result": None,
+        "cloud_packet_result": packet_result,
+        "review_result": packet_result,
         "review_id": review_id,
-        "raw_context_request": context_request,
+    }
+
+
+def _cloud_packet_result(
+    review_id: str,
+    request: dict[str, Any],
+    diagnosis: PacketDiagnosis,
+    model_version: str,
+) -> dict[str, Any]:
+    edge = request["edge_perception_result"]
+    inference = edge.get("edge_inference") or {}
+    edge_label = inference.get("edge_result") or inference.get("label")
+    if edge_label == "fault":
+        edge_label = "abnormal"
+    return {
+        "review_id": review_id,
+        "device_id": edge["device_id"],
+        "task_id": edge["task_id"],
+        "bearing_id": edge["bearing_id"],
+        "packet_id": edge["packet_id"],
+        "edge_label": edge_label,
+        "edge_confidence": inference.get("confidence"),
+        "edge_model_version": edge.get("edge_model_version"),
+        "cloud_label": diagnosis.label,
+        "cloud_confidence": diagnosis.confidence,
+        "cloud_model_version": model_version,
+        "risk_level": diagnosis.risk_level,
+        "recommended_action": diagnosis.recommended_action,
+        "created_at_ns": time.time_ns(),
     }

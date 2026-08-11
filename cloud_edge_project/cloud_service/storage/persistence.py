@@ -34,6 +34,16 @@ class CloudReviewPersistence:
             self.reviews.mark_insufficient_context(review_id)
         return review_id
 
+    def persist_packet(self, request: dict[str, Any], perception_result: dict[str, Any]) -> str:
+        """Persist one complete packet review without creating any context work."""
+
+        review_id = self.persist_preliminary(request, perception_result)
+        self.reviews.complete_packet_review(
+            review_id,
+            cloud_recomputed_features=perception_result["cloud_recomputed_features"],
+        )
+        return review_id
+
     def persist_preliminary(
         self,
         request: dict[str, Any],
