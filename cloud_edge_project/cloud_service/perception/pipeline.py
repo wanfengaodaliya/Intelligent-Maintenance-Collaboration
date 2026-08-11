@@ -69,10 +69,10 @@ def run_perception(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_preliminary_perception(
+def run_single_packet_perception(
     request: dict[str, Any],
 ) -> dict[str, Any]:
-    """Finish trigger-packet features without entering packet aggregation."""
+    """Process exactly one packet without aggregation or context requests."""
 
     quality = validate_cloud_review_quality(request)
     if not quality.valid:
@@ -107,7 +107,7 @@ def run_preliminary_perception(
             "valid": quality.valid,
             "blocking_issues": quality.blocking_issues,
             "warning_flags": quality.warning_flags,
-            "context_status": "pending_context",
+            "context_status": "not_requested",
         },
         "operating_context": edge["features"]["operating_context"],
         "edge_reference_features": {
@@ -117,7 +117,7 @@ def run_preliminary_perception(
         },
         "cloud_recomputed_features": _documented_features(features),
         "cloud_enhanced_features": {
-            "context_status": "pending_context",
+            "context_status": "not_requested",
             "trend_summaries": None,
             "current_harmonics": None,
         },

@@ -2,5 +2,9 @@
 __pycache__/
 *.pyc
 tests/
+!cloud_service/tests/
+!cloud_service/tests/**
+cloud_service/tests/__pycache__/
+cloud_service/tests/*.pyc
 logs/*.jsonl
 logs/*.csv

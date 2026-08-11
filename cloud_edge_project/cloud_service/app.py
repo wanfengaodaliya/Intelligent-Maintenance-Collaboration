@@ -17,6 +17,13 @@ from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.common_analyzer import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
+from cloud_service.bearing_review.service import (
+    BearingReviewService,
+    BearingReviewConflictError,
+    BearingReviewValidationError,
+)
+from cloud_service.bearing_review.receiver import BearingRawContextReceiver
+from cloud_service.task_results import TaskResultService
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
@@ -199,10 +206,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
             payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.infer(
-            payload,
-            context_transport=_raw_context_transport(),
-        )
+        return handler.infer(payload)
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -297,6 +301,42 @@ def get_device_review(review_id: str) -> JSONResponse:
         return _workflow_job_response(_workflow_review_service().get(review_id))
     except WorkflowReviewError as error:
         return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-review", response_model=None)
+def create_bearing_review(payload: dict) -> dict | JSONResponse:
+    try:
+        return BearingReviewService(
+            load_cloud_settings().database_path,
+            transport=_raw_context_transport(),
+        ).create(payload)
+    except BearingReviewValidationError as error:
+        return JSONResponse(status_code=400, content={"error_code": error.code})
+    except BearingReviewConflictError as error:
+        return JSONResponse(status_code=409, content={"error_code": error.code})
+
+
+@app.get("/cloud/bearing-review/{bearing_review_id}", response_model=None)
+def get_bearing_review(bearing_review_id: str) -> dict | JSONResponse:
+    result = BearingReviewService(
+        load_cloud_settings().database_path,
+        transport=_raw_context_transport(),
+    ).get(bearing_review_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error_code": "BEARING_REVIEW_NOT_FOUND"})
+    return result
+
+
+@app.post("/cloud/bearing-task-results", response_model=None)
+def bearing_task_results(payload: dict) -> dict | JSONResponse:
+    try: return TaskResultService(load_cloud_settings().database_path).ingest_bearing(payload)
+    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.post("/cloud/device-task-results", response_model=None)
+def device_task_results(payload: dict) -> dict | JSONResponse:
+    try: return TaskResultService(load_cloud_settings().database_path).ingest_device(payload)
+    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
 
 
 @app.post("/cloud/device-arbitration", response_model=None)
@@ -467,6 +507,10 @@ def raw_context_batches(
     """Receive one edge raw-context batch and acknowledge each packet."""
 
     try:
+        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review":
+            return BearingRawContextReceiver(
+                load_cloud_settings().database_path
+            ).receive_batch(payload)
         return RawContextReceiver(
             load_cloud_settings().database_path
         ).receive_batch(payload)
@@ -475,6 +519,10 @@ def raw_context_batches(
             status_code=400,
             content={"error_code": error.code, "message": error.message},
         )
+    except BearingReviewValidationError as error:
+        return JSONResponse(status_code=400, content={"error_code": error.code})
+    except BearingReviewConflictError as error:
+        return JSONResponse(status_code=409, content={"error_code": error.code})
     except sqlite3.Error:
         return JSONResponse(
             status_code=503,

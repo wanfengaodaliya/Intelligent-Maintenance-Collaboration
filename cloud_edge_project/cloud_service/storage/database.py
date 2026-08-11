@@ -54,6 +54,15 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
+                14,
+                time.time_ns(),
+                "bearing review manifest and exact raw-context request storage",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
                 12,
                 time.time_ns(),
                 "global analysis result storage",
@@ -74,7 +83,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "edge-cloud workflow review jobs",
+                "integrated packet, bearing-window, and device review storage",
             ),
         )
 
