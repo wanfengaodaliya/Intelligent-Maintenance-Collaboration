@@ -1,24 +1,47 @@
-"""Cloud-only service for update task lifecycle, validation and preparation."""
+"""Application service for the human-controlled cloud model-update lifecycle."""
 
 from __future__ import annotations
 
-import hashlib
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from cloud_service.model_update.contracts import CREATABLE_UPDATE_TYPES, VALIDATION_STATES
-from cloud_service.model_update.decision import decide_update
-from cloud_service.model_update.distributor import prepare_distribution
-from cloud_service.model_update.repository import ModelUpdateRepository
-from cloud_service.model_update.validator import validate_samples
-from scenarios.bearing.cloud.model_update.candidate_runner import (
-    CandidateInputIncompatible,
-    InvalidCandidate,
-    load_candidate,
+from cloud_service.model_update.approval import ApprovalError, approve_candidate
+from cloud_service.model_update.candidate_registry import CandidateRegistry
+from cloud_service.model_update.contracts import (
+    CONFIRMATION_STATES,
+    DATA_PREPARATION_STATES,
+    DEFAULT_CONFIG,
+    DISTRIBUTION_HANDOFF_STATES,
+    ModelUpdateConfig,
+    TRAINING_RESULT_STATES,
+    VALIDATION_STATES,
 )
-from scenarios.bearing.cloud.model_update.data_loader import load_validation_samples
+from cloud_service.model_update.dataset_builder import DatasetBuilder
+from cloud_service.model_update.dataset_repository import (
+    DatasetManifestRepository,
+    LabelConfirmationRepository,
+    PacketSourceRepository,
+)
+from cloud_service.model_update.decision import decide_update
+from cloud_service.model_update.distribution_client import build_distribution_request
+from cloud_service.model_update.label_confirmation import (
+    CloudReferenceProvider,
+    LabelConfirmationProvider,
+    LabelConfirmationResolver,
+    SnapshotLabelProvider,
+)
+from cloud_service.model_update.post_validator import (
+    select_post_validation_metrics,
+    validate_post_deployment,
+)
+from cloud_service.model_update.repository import ModelUpdateRepository
+from cloud_service.model_update.validator import validate_candidate
+from scenarios.bearing.cloud.model_update.dataset_label_provider import DatasetLabelProvider
+from scenarios.bearing.cloud.model_update.human_review_provider import HumanReviewProvider
+from scenarios.bearing.cloud.model_update.training_data_source import BearingTrainingDataSource
 
 
 class ModelUpdateError(RuntimeError):
@@ -33,51 +56,74 @@ class ModelUpdateService:
         database_path: Path,
         *,
         data_root: Path | None = None,
-        download_base_url: str = "http://127.0.0.1:8004",
-    ):
+        packet_source_database_path: Path | None = None,
+        label_mapping: dict[str, Any] | None = None,
+        config: ModelUpdateConfig = DEFAULT_CONFIG,
+        training_data_source: Any | None = None,
+        label_provider: LabelConfirmationProvider | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
+        self.data_root = (
+            data_root
+            or Path(__file__).resolve().parents[2] / "data" / "model_updates"
+        ).resolve()
+        self.config = config
         self.repository = ModelUpdateRepository(self.database_path)
-        self.data_root = (data_root or Path(__file__).resolve().parents[2] / "data" / "model_updates").resolve()
-        self.download_base_url = download_base_url
+        self.dataset_repository = DatasetManifestRepository(self.database_path)
+        self.label_repository = LabelConfirmationRepository(self.database_path)
+        self.source_repository = PacketSourceRepository(
+            packet_source_database_path or self.database_path
+        )
+        self.training_data_source = training_data_source or BearingTrainingDataSource(
+            self.database_path, self.source_repository
+        )
+        self.label_provider = label_provider or LabelConfirmationResolver(
+            [
+                DatasetLabelProvider(self.source_repository, label_mapping or {}),
+                HumanReviewProvider(self.label_repository),
+                CloudReferenceProvider(),
+            ]
+        )
+        self.dataset_builder = DatasetBuilder(config)
+        self.candidate_registry = CandidateRegistry(self.data_root)
 
     def create(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ModelUpdateError("INVALID_UPDATE_REQUEST")
         analysis_id = _required_string(request, "analysis_id")
+        problem_id = _required_string(request, "problem_id")
+        baseline_version = _required_string(request, "baseline_version")
         analysis = self.repository.get_analysis(analysis_id)
         if analysis is None:
             raise ModelUpdateError("GLOBAL_ANALYSIS_NOT_FOUND")
-        decision = decide_update(analysis)
+        result = analysis["result"]
+        candidates = result.get("problem_candidates")
+        problem = next(
+            (
+                candidate for candidate in candidates
+                if isinstance(candidate, dict) and candidate.get("problem_id") == problem_id
+            ),
+            None,
+        ) if isinstance(candidates, list) else None
+        if problem is None:
+            raise ModelUpdateError("PROBLEM_CANDIDATE_NOT_FOUND")
+        decision = decide_update(problem, self.config)
         if decision == "observe":
-            return {"decision": decision, "update": None}
-        update_type = _required_string(request, "update_type")
-        if update_type not in CREATABLE_UPDATE_TYPES:
-            raise ModelUpdateError("INVALID_UPDATE_REQUEST")
-        candidate_path = self._registered_candidate_path(_required_string(request, "update_file"))
-        try:
-            load_candidate(candidate_path)
-        except InvalidCandidate as error:
-            raise ModelUpdateError("INVALID_UPDATE_FILE", str(error)) from error
-        targets = request.get("target_edge_nodes", [])
-        if not isinstance(targets, list) or not all(isinstance(node, str) and node for node in targets):
-            raise ModelUpdateError("INVALID_UPDATE_REQUEST")
-        limit = request.get("test_data_limit", 100)
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise ModelUpdateError("INVALID_UPDATE_REQUEST")
+            return {"decision": "observe", "update": None}
+        existing = self.repository.find_by_analysis_problem(analysis_id, problem_id)
+        if existing is not None:
+            return {"decision": "create_update", "update": existing}
         now = time.time_ns()
         task = {
             "update_id": f"update_{uuid4().hex}",
             "analysis_id": analysis_id,
+            "problem_id": problem_id,
             "scenario_type": analysis["scenario_type"],
             "subject_id": analysis["subject_id"],
-            "update_type": update_type,
-            "update_reason": request.get("update_reason", "global_analysis_recommendation"),
-            "old_version": _required_string(request, "old_version"),
-            "new_version": _required_string(request, "new_version"),
-            "update_file": str(candidate_path),
-            "update_file_sha256": _sha256(candidate_path),
-            "target_edge_nodes": targets,
-            "test_data_limit": limit,
+            "problem_type": problem["problem_type"],
+            "problem_context_json": problem.get("problem_context", {}),
+            "evidence_snapshot_json": problem.get("evidence", {}),
+            "baseline_version": baseline_version,
             "status": "created",
             "created_at_ns": now,
             "updated_at_ns": now,
@@ -87,77 +133,245 @@ class ModelUpdateService:
     def get(self, update_id: str) -> dict[str, Any]:
         return self._task(update_id)
 
-    def validate(self, update_id: str, *, use_demo_data: bool = False) -> dict[str, Any]:
+    def prepare_data(
+        self, update_id: str, *, feature_pipeline_version: str = "edge_feature_v1"
+    ) -> dict[str, Any]:
+        task = self._task(update_id)
+        existing = self.dataset_repository.get_by_update(update_id)
+        if existing is not None:
+            if task["status"] in DATA_PREPARATION_STATES | {"waiting_training"}:
+                return self.repository.update(
+                    update_id,
+                    training_dataset_id=existing["dataset_id"],
+                    status="waiting_training",
+                    updated_at_ns=time.time_ns(),
+                )
+            return task
+        self._require_state(task, DATA_PREPARATION_STATES)
+        self.repository.update(
+            update_id, status="data_preparing", updated_at_ns=time.time_ns()
+        )
+        try:
+            samples = self.training_data_source.load(task)
+            snapshot_provider = SnapshotLabelProvider(self.label_provider)
+            manifest = self.dataset_builder.build(
+                update=task,
+                samples=samples,
+                label_provider=snapshot_provider,
+                feature_pipeline_version=feature_pipeline_version,
+            )
+            for sample in samples:
+                confirmation = snapshot_provider.confirm(sample)
+                if confirmation is not None:
+                    self.label_repository.save(confirmation)
+            self.dataset_repository.save(manifest)
+        except (KeyError, ValueError, OSError, sqlite3.Error) as error:
+            self.repository.update(
+                update_id, status="data_prepare_failed", updated_at_ns=time.time_ns()
+            )
+            raise ModelUpdateError(str(error)) from error
+        return self.repository.update(
+            update_id,
+            training_dataset_id=manifest["dataset_id"],
+            status="waiting_training",
+            updated_at_ns=time.time_ns(),
+        )
+
+    def start_training(self, update_id: str) -> dict[str, Any]:
+        """Record the operator's explicit handoff to an offline trainer."""
+
+        task = self._task(update_id)
+        self._require_state(task, {"waiting_training"})
+        self._manifest(update_id)
+        return self.repository.update(
+            update_id, status="training", updated_at_ns=time.time_ns()
+        )
+
+    def register_training_result(
+        self, update_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        task = self._task(update_id)
+        self._require_state(task, TRAINING_RESULT_STATES)
+        manifest = self._manifest(update_id)
+        try:
+            candidate = self.candidate_registry.register(manifest, payload)
+        except ValueError as error:
+            self.repository.update(
+                update_id, status="training_failed", updated_at_ns=time.time_ns()
+            )
+            raise ModelUpdateError(str(error)) from error
+        return self.repository.update(
+            update_id,
+            candidate_version=candidate["candidate_version"],
+            candidate_artifact_json=candidate,
+            status="trained",
+            updated_at_ns=time.time_ns(),
+        )
+
+    def validate(
+        self, update_id: str, test_results: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         task = self._task(update_id)
         self._require_state(task, VALIDATION_STATES)
         try:
-            candidate_path = self._unchanged_candidate(task)
-            candidate = load_candidate(candidate_path)
-            samples = load_validation_samples(
-                self.database_path,
-                task,
-                use_demo_data=use_demo_data,
-                demo_path=self.data_root / "demo" / "validation_samples.json",
+            validation = validate_candidate(
+                task, self._manifest(update_id), test_results, self.config
             )
-            result = validate_samples(candidate, task, samples)
-        except ModelUpdateError:
-            raise
-        except CandidateInputIncompatible as error:
-            return self._validation_failed(task, "MODEL_INPUT_INCOMPATIBLE", str(error))
-        except (InvalidCandidate, OSError, ValueError) as error:
-            return self._validation_failed(task, "CANDIDATE_RUN_FAILED", str(error))
-        status = "waiting_validation_data" if result["test_count"] == 0 else "waiting_confirmation"
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
+        status = (
+            "waiting_confirmation"
+            if validation["validation_passed"]
+            else "validation_failed"
+        )
         return self.repository.update(
             update_id,
+            validation_result_json=validation,
             status=status,
-            validation_result_json=result,
             updated_at_ns=time.time_ns(),
         )
 
-    def approve(self, update_id: str, *, confirmed_by: str | None = None) -> dict[str, Any]:
+    def approve(self, update_id: str, *, confirmed_by: str | None) -> dict[str, Any]:
         task = self._task(update_id)
-        self._require_state(task, {"waiting_confirmation"})
+        self._require_state(task, CONFIRMATION_STATES)
+        try:
+            approved_model = approve_candidate(task, confirmed_by or "")
+        except ApprovalError as error:
+            raise ModelUpdateError(str(error)) from error
         return self.repository.update(
             update_id,
+            confirmation_result_json=approved_model,
             status="approved",
-            confirmation_json={"action": "approved", "confirmed_by": confirmed_by, "confirmed_at_ns": time.time_ns()},
             updated_at_ns=time.time_ns(),
         )
 
-    def reject(self, update_id: str, *, confirmed_by: str | None = None) -> dict[str, Any]:
+    def reject(self, update_id: str, *, confirmed_by: str | None) -> dict[str, Any]:
         task = self._task(update_id)
-        self._require_state(task, {"waiting_confirmation"})
+        self._require_state(task, CONFIRMATION_STATES)
+        if not isinstance(confirmed_by, str) or not confirmed_by.strip():
+            raise ModelUpdateError("CONFIRMER_REQUIRED")
+        result = {
+            "action": "rejected",
+            "confirmed_by": confirmed_by.strip(),
+            "confirmed_at_ns": time.time_ns(),
+        }
         return self.repository.update(
             update_id,
+            confirmation_result_json=result,
             status="rejected",
-            confirmation_json={"action": "rejected", "confirmed_by": confirmed_by, "confirmed_at_ns": time.time_ns()},
             updated_at_ns=time.time_ns(),
         )
 
-    def distribute(self, update_id: str) -> dict[str, Any]:
+    def handoff_distribution(self, update_id: str) -> dict[str, Any]:
         task = self._task(update_id)
-        if task["status"] == "distribution_prepared":
-            return task
-        self._require_state(task, {"approved"})
-        self._unchanged_candidate(task)
-        result = prepare_distribution(task, self.download_base_url)
+        self._require_state(task, DISTRIBUTION_HANDOFF_STATES)
+        try:
+            request = build_distribution_request(task["confirmation_result"])
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
         return self.repository.update(
             update_id,
-            status="distribution_prepared",
-            distribution_result_json=result,
+            distribution_result_json=request,
+            status="handoff_to_distribution",
             updated_at_ns=time.time_ns(),
         )
 
-    def download_path(self, update_id: str) -> Path:
-        return self._unchanged_candidate(self._task(update_id))
-
-    def _validation_failed(self, task: dict[str, Any], code: str, message: str) -> dict[str, Any]:
+    def record_distribution_result(
+        self, update_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        task = self._task(update_id)
+        self._require_state(
+            task, {"handoff_to_distribution", "distribution_in_progress"}
+        )
+        external_status = payload.get("status") if isinstance(payload, dict) else None
+        status_map = {
+            "in_progress": "distribution_in_progress",
+            "succeeded": "distribution_succeeded",
+            "failed": "distribution_failed",
+        }
+        if external_status not in status_map:
+            raise ModelUpdateError("INVALID_DISTRIBUTION_RESULT")
+        recorded_at_ns = time.time_ns()
+        stored_result = dict(payload)
+        stored_result["recorded_at_ns"] = recorded_at_ns
         return self.repository.update(
-            task["update_id"],
-            status="validation_failed",
-            validation_result_json={"error_code": code, "message": message},
+            update_id,
+            distribution_result_json=stored_result,
+            status=status_map[external_status],
+            updated_at_ns=recorded_at_ns,
+        )
+
+    def post_validate(self, update_id: str, analysis_id: str) -> dict[str, Any]:
+        task = self._task(update_id)
+        self._require_state(task, {"distribution_succeeded", "verifying"})
+        analysis = self.repository.get_analysis(analysis_id)
+        if analysis is None:
+            raise ModelUpdateError("GLOBAL_ANALYSIS_NOT_FOUND")
+        if analysis_id == task["analysis_id"]:
+            raise ModelUpdateError("POST_ANALYSIS_MUST_BE_NEW")
+        if analysis["subject_id"] != task["subject_id"]:
+            raise ModelUpdateError("POST_ANALYSIS_SUBJECT_MISMATCH")
+        distribution = task.get("distribution_result")
+        distributed_at_ns = (
+            distribution.get("recorded_at_ns")
+            if isinstance(distribution, dict)
+            else None
+        )
+        if (
+            not isinstance(distributed_at_ns, int)
+            or analysis["created_at_ns"] <= distributed_at_ns
+        ):
+            raise ModelUpdateError("POST_ANALYSIS_NOT_AFTER_DISTRIBUTION")
+        try:
+            metrics = select_post_validation_metrics(
+                analysis["result"],
+                problem_context=task.get("problem_context") or {},
+                minimum_sample_count=self.config.min_update_evidence_count,
+            )
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
+        self.repository.update(
+            update_id, status="verifying", updated_at_ns=time.time_ns()
+        )
+        try:
+            result = validate_post_deployment(task, metrics, self.config)
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
+        result["analysis_id"] = analysis_id
+        return self.repository.update(
+            update_id,
+            post_validation_result_json=result,
+            status=result["outcome"],
             updated_at_ns=time.time_ns(),
         )
+
+    def request_rollback(
+        self, update_id: str, *, requested_by: str
+    ) -> dict[str, Any]:
+        task = self._task(update_id)
+        self._require_state(task, {"ineffective", "partial_improvement", "succeeded"})
+        if not isinstance(requested_by, str) or not requested_by.strip():
+            raise ModelUpdateError("ROLLBACK_REQUESTER_REQUIRED")
+        result = dict(task.get("post_validation_result") or {})
+        result.update(
+            {
+                "rollback_requested_by": requested_by.strip(),
+                "rollback_requested_at_ns": time.time_ns(),
+            }
+        )
+        return self.repository.update(
+            update_id,
+            rollback_requested=1,
+            rollback_target_version=task["baseline_version"],
+            post_validation_result_json=result,
+            updated_at_ns=time.time_ns(),
+        )
+
+    def _manifest(self, update_id: str) -> dict[str, Any]:
+        manifest = self.dataset_repository.get_by_update(update_id)
+        if manifest is None:
+            raise ModelUpdateError("DATASET_MANIFEST_NOT_FOUND")
+        return manifest
 
     def _task(self, update_id: str) -> dict[str, Any]:
         task = self.repository.get(update_id)
@@ -165,24 +379,10 @@ class ModelUpdateService:
             raise ModelUpdateError("UPDATE_NOT_FOUND")
         return task
 
-    def _require_state(self, task: dict[str, Any], allowed: set[str]) -> None:
+    @staticmethod
+    def _require_state(task: dict[str, Any], allowed: set[str]) -> None:
         if task["status"] not in allowed:
             raise ModelUpdateError("INVALID_UPDATE_STATE")
-
-    def _registered_candidate_path(self, value: str) -> Path:
-        supplied = Path(value)
-        path = supplied.resolve() if supplied.is_absolute() else (self.data_root / supplied).resolve()
-        if self.data_root not in path.parents or not path.is_file():
-            raise ModelUpdateError("UPDATE_FILE_NOT_FOUND")
-        return path
-
-    def _unchanged_candidate(self, task: dict[str, Any]) -> Path:
-        path = Path(task["update_file"])
-        if not path.is_file():
-            raise ModelUpdateError("UPDATE_FILE_NOT_FOUND")
-        if _sha256(path) != task["update_file_sha256"]:
-            raise ModelUpdateError("UPDATE_FILE_CHANGED")
-        return path
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -190,7 +390,3 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ModelUpdateError("INVALID_UPDATE_REQUEST")
     return value.strip()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()

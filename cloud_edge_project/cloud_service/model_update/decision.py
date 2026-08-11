@@ -1,17 +1,29 @@
-"""Decision gate based on already-computed global-analysis metrics."""
+"""Decision gate over a problem already identified by global analysis."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from cloud_service.model_update.contracts import ModelUpdateConfig
 
-def decide_update(global_analysis: dict[str, Any]) -> str:
-    """Return the only supported first-phase update decision."""
 
-    reviewed_count = global_analysis.get("reviewed_packet_count")
-    correction_rate = global_analysis.get("cloud_correction_rate")
-    if not isinstance(reviewed_count, int) or reviewed_count < 20:
+def decide_update(
+    problem_candidate: dict[str, Any], config: ModelUpdateConfig
+) -> str:
+    """Return ``create_update`` only for a persistent supported weakness."""
+
+    if not isinstance(problem_candidate, dict):
         return "observe"
-    if not isinstance(correction_rate, (int, float)) or correction_rate < 0.15:
+    if problem_candidate.get("problem_layer") != "packet_diagnosis":
+        return "observe"
+    if problem_candidate.get("suggested_action") != "model_update":
+        return "observe"
+    if problem_candidate.get("persistence") != "persistent":
+        return "observe"
+    evidence = problem_candidate.get("evidence")
+    sample_count = evidence.get("sample_count") if isinstance(evidence, dict) else None
+    if isinstance(sample_count, bool) or not isinstance(sample_count, int):
+        return "observe"
+    if sample_count < config.min_update_evidence_count:
         return "observe"
     return "create_update"

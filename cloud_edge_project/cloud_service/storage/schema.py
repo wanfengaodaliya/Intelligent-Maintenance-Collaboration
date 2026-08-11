@@ -1,6 +1,42 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
+
+MODEL_UPDATE_TASK_DDL = """
+CREATE TABLE IF NOT EXISTS model_update_task (
+    update_id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL,
+    problem_id TEXT NOT NULL,
+    scenario_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    problem_type TEXT NOT NULL,
+    problem_context_json TEXT NOT NULL,
+    evidence_snapshot_json TEXT NOT NULL,
+    baseline_version TEXT NOT NULL,
+    candidate_version TEXT,
+    training_dataset_id TEXT,
+    candidate_artifact_json TEXT,
+    status TEXT NOT NULL,
+    validation_result_json TEXT,
+    confirmation_result_json TEXT,
+    distribution_result_json TEXT,
+    post_validation_result_json TEXT,
+    rollback_requested INTEGER NOT NULL DEFAULT 0 CHECK (rollback_requested IN (0, 1)),
+    rollback_target_version TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    UNIQUE (analysis_id, problem_id),
+    CHECK (json_valid(problem_context_json)),
+    CHECK (json_valid(evidence_snapshot_json)),
+    CHECK (candidate_artifact_json IS NULL OR json_valid(candidate_artifact_json)),
+    CHECK (validation_result_json IS NULL OR json_valid(validation_result_json)),
+    CHECK (confirmation_result_json IS NULL OR json_valid(confirmation_result_json)),
+    CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json)),
+    CHECK (post_validation_result_json IS NULL OR json_valid(post_validation_result_json))
+);
+CREATE INDEX IF NOT EXISTS idx_model_update_analysis
+ON model_update_task(analysis_id, created_at_ns);
+"""
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -280,31 +316,37 @@ CREATE TABLE IF NOT EXISTS global_analysis_result (
 );
 CREATE INDEX IF NOT EXISTS idx_global_analysis_subject_time
 ON global_analysis_result(scenario_type, subject_id, created_at_ns);
-CREATE TABLE IF NOT EXISTS model_update_task (
-    update_id TEXT PRIMARY KEY,
-    analysis_id TEXT NOT NULL,
-    scenario_type TEXT NOT NULL,
-    subject_id TEXT NOT NULL,
-    update_type TEXT NOT NULL CHECK (update_type IN ('rule', 'model')),
-    update_reason TEXT NOT NULL,
-    old_version TEXT NOT NULL,
-    new_version TEXT NOT NULL,
-    update_file TEXT NOT NULL,
-    update_file_sha256 TEXT NOT NULL,
-    target_edge_nodes_json TEXT NOT NULL,
-    test_data_limit INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    validation_result_json TEXT,
-    confirmation_json TEXT,
-    distribution_result_json TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    CHECK (json_valid(target_edge_nodes_json)),
-    CHECK (validation_result_json IS NULL OR json_valid(validation_result_json)),
-    CHECK (confirmation_json IS NULL OR json_valid(confirmation_json)),
-    CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json))
+""" + MODEL_UPDATE_TASK_DDL + """
+CREATE TABLE IF NOT EXISTS packet_source_mapping (
+    packet_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    bearing_id TEXT NOT NULL,
+    dataset_name TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    source_file TEXT NOT NULL,
+    source_bearing_code TEXT NOT NULL,
+    start_index INTEGER NOT NULL CHECK (start_index >= 0),
+    end_index INTEGER NOT NULL CHECK (end_index > start_index),
+    window_index INTEGER NOT NULL CHECK (window_index >= 0),
+    created_at_ns INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_model_update_analysis ON model_update_task(analysis_id, created_at_ns);
+CREATE INDEX IF NOT EXISTS idx_packet_source_task ON packet_source_mapping(task_id, source_file);
+CREATE TABLE IF NOT EXISTS label_confirmation (
+    packet_id TEXT PRIMARY KEY,
+    confirmed_label TEXT NOT NULL,
+    label_source TEXT NOT NULL CHECK (label_source IN ('dataset_ground_truth', 'human_confirmed', 'cloud_reference')),
+    confirmed_at_ns INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS model_update_dataset_manifest (
+    dataset_id TEXT PRIMARY KEY,
+    update_id TEXT NOT NULL UNIQUE,
+    baseline_version TEXT NOT NULL,
+    feature_pipeline_version TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    FOREIGN KEY (update_id) REFERENCES model_update_task(update_id),
+    CHECK (json_valid(manifest_json))
+);
 CREATE TABLE IF NOT EXISTS workflow_review_job (
     review_id TEXT PRIMARY KEY,
     review_type TEXT NOT NULL CHECK (review_type IN ('PACKET', 'BEARING_WINDOW', 'DEVICE')),

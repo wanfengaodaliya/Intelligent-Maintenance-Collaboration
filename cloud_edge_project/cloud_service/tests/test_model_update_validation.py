@@ -1,0 +1,208 @@
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from cloud_service.model_update.approval import ApprovalError, approve_candidate
+from cloud_service.model_update.candidate_registry import CandidateRegistry
+from cloud_service.model_update.contracts import ModelUpdateConfig
+from cloud_service.model_update.validator import validate_candidate
+
+
+def _update():
+    return {
+        "update_id": "update_001",
+        "baseline_version": "edge_v1",
+        "candidate_version": "edge_v2",
+        "problem_type": "risk_underestimation",
+        "problem_context": {"operating_condition": "high_load"},
+        "candidate_artifact": {
+            "artifact_path": "candidate.bin",
+            "artifact_sha256": "abc",
+            "model_type": "generic",
+            "feature_pipeline_version": "edge_feature_v1",
+            "input_feature_schema": {"vibration.rms": "number"},
+            "training_dataset_id": "dataset_001",
+        },
+    }
+
+
+def _manifest():
+    return {
+        "dataset_id": "dataset_001",
+        "feature_pipeline_version": "edge_feature_v1",
+        "input_feature_schema": {"vibration.rms": "number"},
+        "test_sample_ids": ["sample_1", "sample_2", "sample_3"],
+        "focus_sample_ids": ["sample_1", "sample_2", "sample_3"],
+        "sample_labels": {
+            "sample_1": {"confirmed_label": "abnormal", "label_source": "dataset_ground_truth"},
+            "sample_2": {"confirmed_label": "abnormal", "label_source": "dataset_ground_truth"},
+            "sample_3": {"confirmed_label": "normal", "label_source": "dataset_ground_truth"},
+        },
+    }
+
+
+def _result(sample_id: str, truth: str, baseline: str, candidate: str):
+    return {
+        "sample_id": sample_id,
+        "confirmed_label": truth,
+        "label_source": "dataset_ground_truth",
+        "baseline_prediction": baseline,
+        "candidate_prediction": candidate,
+        "problem_context": {"operating_condition": "high_load"},
+    }
+
+
+def test_worse_candidate_fails_hard_gate_and_cannot_be_approved():
+    results = [
+        _result("sample_1", "abnormal", "abnormal", "warning"),
+        _result("sample_2", "abnormal", "warning", "normal"),
+        _result("sample_3", "normal", "normal", "normal"),
+    ]
+
+    validation = validate_candidate(
+        _update(), _manifest(), results, ModelUpdateConfig()
+    )
+
+    assert validation["validation_passed"] is False
+    assert validation["target_metric"] == "risk_underestimation_rate"
+    with pytest.raises(ApprovalError, match="VALIDATION_NOT_PASSED"):
+        approve_candidate({**_update(), "validation_result": validation}, "operator")
+
+
+def test_candidate_that_fixes_target_without_overall_regression_can_be_approved():
+    results = [
+        _result("sample_1", "abnormal", "warning", "abnormal"),
+        _result("sample_2", "abnormal", "normal", "abnormal"),
+        _result("sample_3", "normal", "normal", "normal"),
+    ]
+
+    validation = validate_candidate(
+        _update(), _manifest(), results, ModelUpdateConfig()
+    )
+    approved = approve_candidate(
+        {**_update(), "validation_result": validation}, "operator"
+    )
+
+    assert validation["validation_passed"] is True
+    assert approved["update_id"] == "update_001"
+    assert approved["artifact_sha256"] == "abc"
+    assert approved["approved_by"] == "operator"
+
+
+def test_validation_requires_the_exact_frozen_test_sample_ids():
+    results = [
+        _result("sample_1", "abnormal", "warning", "abnormal"),
+        _result("sample_2", "abnormal", "warning", "abnormal"),
+    ]
+
+    with pytest.raises(ValueError, match="FROZEN_TEST_SET_MISMATCH"):
+        validate_candidate(_update(), _manifest(), results, ModelUpdateConfig())
+
+
+def test_candidate_registry_records_sha_and_feature_contract(tmp_path: Path):
+    artifact = tmp_path / "candidate.bin"
+    artifact.write_bytes(b"candidate-model")
+    expected_sha = hashlib.sha256(b"candidate-model").hexdigest()
+
+    registered = CandidateRegistry(tmp_path).register(
+        _manifest(),
+        {
+            "candidate_version": "edge_v2",
+            "artifact_path": "candidate.bin",
+            "artifact_sha256": expected_sha,
+            "model_type": "generic",
+            "feature_pipeline_version": "edge_feature_v1",
+            "input_feature_schema": {"vibration.rms": "number"},
+            "training_dataset_id": "dataset_001",
+            "training_config": {"seed": 7},
+            "training_metrics": {"validation_f1": 0.9},
+        },
+    )
+
+    assert registered["artifact_sha256"] == expected_sha
+    assert registered["training_dataset_id"] == "dataset_001"
+    assert registered["feature_pipeline_version"] == "edge_feature_v1"
+
+
+def test_candidate_registry_rejects_features_outside_frozen_edge_contract(
+    tmp_path: Path,
+):
+    artifact = tmp_path / "candidate.bin"
+    artifact.write_bytes(b"candidate-model")
+
+    with pytest.raises(ValueError, match="CANDIDATE_INPUT_SCHEMA_INCOMPATIBLE"):
+        CandidateRegistry(tmp_path).register(
+            _manifest(),
+            {
+                "candidate_version": "edge_v2",
+                "artifact_path": "candidate.bin",
+                "artifact_sha256": hashlib.sha256(b"candidate-model").hexdigest(),
+                "model_type": "generic",
+                "feature_pipeline_version": "edge_feature_v1",
+                "input_feature_schema": {"cloud.envelope_peak": "number"},
+                "training_dataset_id": "dataset_001",
+            },
+        )
+
+
+def test_detailed_fault_labels_use_explicit_risk_levels_for_target_metric():
+    results = [
+        {
+            "sample_id": sample_id,
+            "confirmed_label": "outer_ring_damage",
+            "confirmed_risk_level": "abnormal",
+            "label_source": "dataset_ground_truth",
+            "baseline_prediction": "healthy",
+            "baseline_risk_level": "normal",
+            "candidate_prediction": "outer_ring_damage",
+            "candidate_risk_level": "abnormal",
+            "problem_context": {"operating_condition": "high_load"},
+        }
+        for sample_id in _manifest()["test_sample_ids"]
+    ]
+
+    manifest = _manifest()
+    manifest["sample_labels"] = {
+        sample_id: {
+            "confirmed_label": "outer_ring_damage",
+            "confirmed_risk_level": "abnormal",
+            "label_source": "dataset_ground_truth",
+        }
+        for sample_id in manifest["test_sample_ids"]
+    }
+    validation = validate_candidate(_update(), manifest, results, ModelUpdateConfig())
+
+    assert validation["validation_passed"] is True
+    assert validation["candidate_metrics"]["accuracy"] == 1.0
+    assert validation["candidate_metrics"]["risk_underestimation_rate"] == 0.0
+
+
+def test_validation_rejects_labels_that_do_not_match_frozen_manifest():
+    results = [
+        _result("sample_1", "normal", "normal", "normal"),
+        _result("sample_2", "abnormal", "warning", "abnormal"),
+        _result("sample_3", "normal", "normal", "normal"),
+    ]
+
+    with pytest.raises(ValueError, match="FROZEN_LABEL_MISMATCH"):
+        validate_candidate(_update(), _manifest(), results, ModelUpdateConfig())
+
+
+def test_target_metric_uses_manifest_focus_ids_not_caller_context():
+    manifest = _manifest()
+    manifest["focus_sample_ids"] = ["sample_2"]
+    results = [
+        _result("sample_1", "abnormal", "normal", "abnormal"),
+        _result("sample_2", "abnormal", "abnormal", "warning"),
+        _result("sample_3", "normal", "normal", "normal"),
+    ]
+    results[1]["problem_context"] = {"operating_condition": "low_load"}
+
+    validation = validate_candidate(
+        _update(), manifest, results, ModelUpdateConfig()
+    )
+
+    assert validation["validation_passed"] is False
+    assert validation["baseline_target_value"] == 0.0
+    assert validation["candidate_target_value"] == 1.0
