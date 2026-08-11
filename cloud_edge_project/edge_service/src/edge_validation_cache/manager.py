@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from collections import deque
 from dataclasses import dataclass
 from numbers import Real
@@ -261,47 +261,6 @@ class EdgeValidationCache:
 
     def unpin_uri(self, uri: str) -> bool:
         return self.unpin(self.raw_ref_from_uri(uri))
-
-    @staticmethod
-    def context_uri(
-        *,
-        device_id: str,
-        bearing_id: str,
-        sender_id: str,
-        anchor_packet_id: str,
-        anchor_end_generate_timestamp_ns: int,
-    ) -> str:
-        values = (device_id, bearing_id, sender_id, anchor_packet_id)
-        if any(not isinstance(value, str) or not value.strip() for value in values):
-            raise ValueError("context_ref 身份字段必须是非空字符串")
-        if not _positive_integer(anchor_end_generate_timestamp_ns):
-            raise ValueError("anchor_end_generate_timestamp_ns 必须是正整数")
-        return "edge-context://%s/%s/%s/%s?end_ns=%d" % (
-            *(quote(value, safe="") for value in values),
-            anchor_end_generate_timestamp_ns,
-        )
-
-    def read_context_uri(self, uri: str, *, requested_at_ns: Optional[int] = None) -> dict[str, Any]:
-        parsed = urlparse(uri)
-        parts = [part for part in parsed.path.split("/") if part]
-        query = parse_qs(parsed.query)
-        if parsed.scheme != "edge-context" or not parsed.netloc or len(parts) != 3:
-            raise ValueError("context_ref 非法")
-        try:
-            end_ns = int(query["end_ns"][0])
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ValueError("context_ref 缺少有效 end_ns") from exc
-        request = {
-            "request_id": "context-upload-%d" % self._read_clock(),
-            "device_id": unquote(parsed.netloc),
-            "bearing_id": unquote(parts[0]),
-            "sender_id": unquote(parts[1]),
-            "anchor_packet_id": unquote(parts[2]),
-            "anchor_end_generate_timestamp_ns": end_ns,
-            "requested_at_ns": requested_at_ns or self._read_clock(),
-            "before_packet_count": self.config.context_before_packet_count,
-        }
-        return self.query_context(request)
 
     def context_snapshot(self, sender_id: str) -> tuple[ContextSlotSnapshot, ...]:
         """返回上下文槽位的不可变快照，供编排状态和测试核对。"""
