@@ -9,7 +9,6 @@ from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from edge_aggregation import BearingAggregationWorkflow, HttpCloudReviewGateway
 
-from .cloud import CloudPacketUploader
 from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
 from .http import (
@@ -49,21 +48,13 @@ def build_edge_runtime(
             timeout_seconds=config.scheduler.request_timeout_seconds,
         ),
         status_path=config.scheduler.status_path,
-        analysis_path=config.scheduler.analysis_path,
-        transfer_status_path=config.scheduler.transfer_status_path,
     )
     mqtt_ingress = MqttIngress(config.mqtt, lambda _: None)
-    summary_publisher = MqttJsonPublisher(
-        mqtt_ingress.client,
-        topic=config.mqtt.summary_topic,
-        qos=config.mqtt.qos,
-    )
     device_result_publisher = MqttJsonPublisher(
         mqtt_ingress.client,
         topic=config.mqtt.device_result_topic,
         qos=config.mqtt.qos,
     )
-    cloud_uploader = CloudPacketUploader(cache, config.cloud_node_urls)
     aggregation_workflow = None
     if config.cloud_node_urls:
         cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
@@ -78,17 +69,11 @@ def build_edge_runtime(
         perception=perception,
         pipeline=pipeline,
         scheduler=scheduler,
-        summary_publisher=summary_publisher,
-        cloud_uploader=cloud_uploader,
         aggregation_workflow=aggregation_workflow,
         device_result_publisher=device_result_publisher,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
-    control_application = EdgeControlApplication(
-        ingress,
-        on_route_decision=coordinator.handle_route_decision,
-        on_cloud_instruction=coordinator.handle_cloud_instruction,
-    )
+    control_application = EdgeControlApplication(ingress)
     heartbeat = HeartbeatLoop(
         config.scheduler.heartbeat_interval_seconds,
         coordinator.report_node_status,

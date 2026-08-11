@@ -10,7 +10,6 @@ from typing import Any, Callable, Mapping, Optional
 
 from edge_task_ingress import EdgeTaskIngress
 
-from .contracts import CloudPacketReviewInstruction, PacketRouteDecision
 from .json_utils import json_bytes
 
 
@@ -76,35 +75,17 @@ class SchedulerReporter:
         client: JsonHttpClient,
         *,
         status_path: str,
-        analysis_path: str,
-        transfer_status_path: str,
     ):
         self.client = client
         self.status_path = status_path
-        self.analysis_path = analysis_path
-        self.transfer_status_path = transfer_status_path
 
     def report_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self.client.post(self.status_path, payload)
 
-    def report_analysis(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self.client.post(self.analysis_path, payload)
-
-    def report_transfer_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self.client.post(self.transfer_status_path, payload)
-
 
 class EdgeControlApplication:
-    def __init__(
-        self,
-        ingress: EdgeTaskIngress,
-        *,
-        on_route_decision: Callable[[PacketRouteDecision], None],
-        on_cloud_instruction: Callable[[CloudPacketReviewInstruction], None],
-    ):
+    def __init__(self, ingress: EdgeTaskIngress):
         self.ingress = ingress
-        self.on_route_decision = on_route_decision
-        self.on_cloud_instruction = on_cloud_instruction
 
     def handle(self, path: str, payload: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         if path == "/edge/tasks":
@@ -127,24 +108,6 @@ class EdgeControlApplication:
             if not found:
                 return 404, _error("DISPATCH_NOT_FOUND", "dispatch_id is unknown")
             return 200, {"dispatch_id": dispatch_id, "revoked": True}
-        if path == "/edge/packet-route-decisions":
-            try:
-                decision = PacketRouteDecision.from_mapping(payload)
-                self.on_route_decision(decision)
-            except (TypeError, ValueError) as exc:
-                return 409, _error("INVALID_ROUTE_DECISION", str(exc))
-            except RuntimeError as exc:
-                return 503, _error("ROUTE_EXECUTION_UNAVAILABLE", str(exc))
-            return 200, {"decision_id": decision.decision_id, "accepted": True}
-        if path == "/edge/cloud-review-instructions":
-            try:
-                instruction = CloudPacketReviewInstruction.from_mapping(payload)
-                self.on_cloud_instruction(instruction)
-            except (TypeError, ValueError) as exc:
-                return 409, _error("INVALID_CLOUD_INSTRUCTION", str(exc))
-            except RuntimeError as exc:
-                return 503, _error("CLOUD_TRANSFER_UNAVAILABLE", str(exc))
-            return 200, {"cloud_task_id": instruction.cloud_task_id, "accepted": True}
         return 404, _error("NOT_FOUND", "unknown edge control endpoint")
 
 
