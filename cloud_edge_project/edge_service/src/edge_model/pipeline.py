@@ -58,6 +58,9 @@ class EdgeModelPipeline:
         errors = self.cfg.validate()
         if errors:
             raise ValueError("边缘模型配置校验失败: " + "; ".join(errors))
+        if self.cfg.diagnostic_backend == "mock":
+            self.started = True
+            return
         url = (self.cfg.model_client.base_url or "").strip()
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError("模型服务地址非法: %r" % url)
@@ -65,7 +68,8 @@ class EdgeModelPipeline:
         self.started = True
 
     def stop(self, join_s: float = 5.0):
-        self.worker.stop(join_s=join_s)
+        if self.cfg.diagnostic_backend == "http":
+            self.worker.stop(join_s=join_s)
         self.started = False
 
     def wait_idle(self, timeout_s: float = 5.0) -> bool:
@@ -85,6 +89,10 @@ class EdgeModelPipeline:
         if not self.started:
             raise RuntimeError("边缘模型管线未启动")
         task = self._make_task(sender_id, perception)
+        if self.cfg.diagnostic_backend == "mock":
+            task.submit_ts = self._clock()
+            self._run_fallback(task, None)
+            return task.request_id
         result = self.queue.submit(task)
         for fallback_task, reason in result.fallback_tasks:
             self._run_fallback(fallback_task, reason)
@@ -156,6 +164,7 @@ class EdgeModelPipeline:
                 started_at_ns=task.started_at_ns or self._clock_ns(),
                 finished_at_ns=self._clock_ns(),
                 edge=None,
+                data_quality_score=0.0,
             ))
 
     def _on_model(self, task: PacketInferenceTask, edge: EdgeResult,
@@ -222,4 +231,16 @@ class EdgeModelPipeline:
             started_at_ns=task.started_at_ns or self._clock_ns(),
             finished_at_ns=self._clock_ns(),
             edge=edge,
+            data_quality_score=_quality_score(task.perception),
         ))
+
+
+def _quality_score(perception: dict) -> float:
+    quality = perception.get("perception_quality") or {}
+    flags = quality.get("flags")
+    if quality.get("status") == "good" and flags == []:
+        return 1.0
+    if not isinstance(flags, list):
+        return 0.0
+    penalty = sum(0.2 if flag == "DEVICE_NOT_RUNNING" else 0.1 for flag in flags)
+    return round(max(0.0, 1.0 - penalty), 3)

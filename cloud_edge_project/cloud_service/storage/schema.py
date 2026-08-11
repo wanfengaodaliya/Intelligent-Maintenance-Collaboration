@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -305,4 +305,21 @@ CREATE TABLE IF NOT EXISTS model_update_task (
     CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json))
 );
 CREATE INDEX IF NOT EXISTS idx_model_update_analysis ON model_update_task(analysis_id, created_at_ns);
+CREATE TABLE IF NOT EXISTS workflow_review_job (
+    review_id TEXT PRIMARY KEY,
+    review_type TEXT NOT NULL CHECK (review_type IN ('PACKET', 'BEARING_WINDOW', 'DEVICE')),
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'WAITING_RAW', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+    request_sha256 TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    raw_batch_json TEXT,
+    result_json TEXT,
+    error_code TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    CHECK (json_valid(request_json)),
+    CHECK (raw_batch_json IS NULL OR json_valid(raw_batch_json)),
+    CHECK (result_json IS NULL OR json_valid(result_json))
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_review_status
+ON workflow_review_job(status, updated_at_ns);
 """

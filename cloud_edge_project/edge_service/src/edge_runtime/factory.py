@@ -7,6 +7,7 @@ from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception
 from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
+from edge_aggregation import BearingAggregationWorkflow, HttpCloudReviewGateway
 
 from .cloud import CloudPacketUploader
 from .config import EdgeRuntimeConfig
@@ -57,7 +58,19 @@ def build_edge_runtime(
         topic=config.mqtt.summary_topic,
         qos=config.mqtt.qos,
     )
+    device_result_publisher = MqttJsonPublisher(
+        mqtt_ingress.client,
+        topic=config.mqtt.device_result_topic,
+        qos=config.mqtt.qos,
+    )
     cloud_uploader = CloudPacketUploader(cache, config.cloud_node_urls)
+    aggregation_workflow = None
+    if config.cloud_node_urls:
+        cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
+        aggregation_workflow = BearingAggregationWorkflow(
+            cache=cache,
+            cloud=HttpCloudReviewGateway(cloud_base_url),
+        )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,
         ingress=ingress,
@@ -67,6 +80,8 @@ def build_edge_runtime(
         scheduler=scheduler,
         summary_publisher=summary_publisher,
         cloud_uploader=cloud_uploader,
+        aggregation_workflow=aggregation_workflow,
+        device_result_publisher=device_result_publisher,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     control_application = EdgeControlApplication(

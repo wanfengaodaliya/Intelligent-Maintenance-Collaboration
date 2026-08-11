@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import Body, FastAPI
+from fastapi import BackgroundTasks, Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
@@ -29,6 +29,7 @@ from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
     RawContextRequestRepository,
 )
+from cloud_service.workflow_review import WorkflowReviewError, WorkflowReviewService
 from common.config import load_config
 from common.schemas import (
     ContractError,
@@ -64,6 +65,10 @@ async def _expire_raw_context_requests() -> None:
                 settings.database_path
             ).expire_due()
             await asyncio.to_thread(
+                WorkflowReviewService(settings.database_path).process_pending,
+                20,
+            )
+            await asyncio.to_thread(
                 ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
                 config_version="cloud-preprocess-v1",
                 limit=20,
@@ -98,6 +103,20 @@ async def _lifespan(_: FastAPI):
 
 
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
+
+
+def _workflow_review_service() -> WorkflowReviewService:
+    return WorkflowReviewService(load_cloud_settings().database_path)
+
+
+def _workflow_error_response(error: WorkflowReviewError) -> JSONResponse:
+    status = 404 if error.code == "REVIEW_NOT_FOUND" else 409 if error.code.endswith("CONFLICT") else 400
+    return JSONResponse(status_code=status, content={"error_code": error.code, "message": str(error)})
+
+
+def _workflow_job_response(job: dict[str, Any], status_code: int = 200) -> JSONResponse:
+    public = {key: value for key, value in job.items() if key not in {"request", "raw_packets"}}
+    return JSONResponse(status_code=status_code, content=public)
 
 
 def _edge_summary_repository() -> EdgeFeatureRepository:
@@ -209,6 +228,75 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
         packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/packet-reviews", response_model=None)
+def create_packet_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    try:
+        service = _workflow_review_service()
+        job = service.submit("PACKET", payload)
+        background_tasks.add_task(service.process, job["review_id"])
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/packet-reviews/{review_id}", response_model=None)
+def get_packet_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-window-reviews", response_model=None)
+def create_bearing_window_review(payload: dict) -> JSONResponse:
+    try:
+        return _workflow_job_response(
+            _workflow_review_service().submit("BEARING_WINDOW", payload), 202
+        )
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-window-reviews/{review_id}/raw-batch", response_model=None)
+def upload_bearing_window_raw(
+    review_id: str, payload: dict, background_tasks: BackgroundTasks
+) -> JSONResponse:
+    try:
+        service = _workflow_review_service()
+        job = service.upload_window_raw(review_id, payload)
+        background_tasks.add_task(service.process, review_id)
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/bearing-window-reviews/{review_id}", response_model=None)
+def get_bearing_window_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/device-reviews", response_model=None)
+def create_device_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    try:
+        service = _workflow_review_service()
+        job = service.submit("DEVICE", payload)
+        background_tasks.add_task(service.process, job["review_id"])
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/device-reviews/{review_id}", response_model=None)
+def get_device_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
 
 
 @app.post("/cloud/device-arbitration", response_model=None)

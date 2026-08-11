@@ -13,6 +13,8 @@ from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception, PerceptionInvocationContext
 from edge_task_ingress import INGRESS_ACCEPTED, EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
+from core.bearing_workflow_contracts import FINAL_EDGE, FinalPacketResult
+from edge_aggregation.workflow import BearingAggregationWorkflow
 
 from .cloud import CloudPacketUploader
 from .contracts import (
@@ -66,6 +68,8 @@ class EdgeRuntimeCoordinator:
         scheduler: SchedulerReporter,
         summary_publisher: JsonPublisher,
         cloud_uploader: CloudPacketUploader,
+        aggregation_workflow: Optional[BearingAggregationWorkflow] = None,
+        device_result_publisher: Optional[JsonPublisher] = None,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -76,10 +80,15 @@ class EdgeRuntimeCoordinator:
         self.scheduler = scheduler
         self.summary_publisher = summary_publisher
         self.cloud_uploader = cloud_uploader
+        self.aggregation_workflow = aggregation_workflow
+        self.device_result_publisher = device_result_publisher
         self._clock_ns = clock_ns
         self._states: dict[tuple[str, str, str, str, str], _PacketState] = {}
         self._pending_analysis_reports: dict[
             tuple[str, str, str, str, str], dict[str, Any]
+        ] = {}
+        self._pending_aggregation: dict[
+            tuple[str, str, str, str, str], FinalPacketResult
         ] = {}
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
@@ -161,6 +170,51 @@ class EdgeRuntimeCoordinator:
         except Exception:
             with self._mutex:
                 self._pending_analysis_reports[packet_key] = payload
+        self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
+
+    def _aggregate_completion(
+        self,
+        completion: PacketExecutionCompleted,
+        expected_bearing_ids: tuple[str, ...],
+        raw_uri: Optional[str],
+    ) -> None:
+        workflow = self.aggregation_workflow
+        if workflow is None or completion.edge is None or raw_uri is None:
+            return
+        workflow.register_task(completion.device_id, completion.task_id, expected_bearing_ids)
+        edge = completion.edge
+        packet = FinalPacketResult(
+            result_id=_result_id(completion, 1),
+            device_id=completion.device_id,
+            task_id=completion.task_id,
+            bearing_id=completion.bearing_id,
+            sender_id=completion.sender_id,
+            packet_id=completion.packet_id,
+            sequence_number=completion.sequence_number,
+            action_grade=action_level_for(edge.edge_result, edge.edge_risk_level),
+            confidence=edge.confidence,
+            data_quality_score=completion.data_quality_score,
+            risk_level=edge.edge_risk_level,
+            decision_source=FINAL_EDGE,
+            raw_data_ref=raw_uri,
+        )
+        try:
+            self._accept_aggregation_packet(packet)
+        except Exception:
+            with self._mutex:
+                self._pending_aggregation[_key_from_completion(completion)] = packet
+
+    def _accept_aggregation_packet(self, packet: FinalPacketResult) -> None:
+        workflow = self.aggregation_workflow
+        if workflow is None:
+            return
+        device_result = workflow.accept_packet(packet)
+        if (
+            device_result is not None
+            and device_result.status in {"READY", "FINAL"}
+            and self.device_result_publisher is not None
+        ):
+            self.device_result_publisher.publish(device_result.as_dict())
 
     def handle_route_decision(self, decision: PacketRouteDecision) -> None:
         if decision.target_edge_node_id != self.edge_node_id:
@@ -312,7 +366,23 @@ class EdgeRuntimeCoordinator:
 
     def report_node_status(self) -> None:
         self._flush_analysis_reports()
+        self._flush_aggregation()
         self.scheduler.report_status(self.node_status())
+
+    def _flush_aggregation(self) -> None:
+        with self._mutex:
+            pending = sorted(
+                self._pending_aggregation.items(),
+                key=lambda item: item[1].sequence_number,
+            )
+        for key, packet in pending:
+            try:
+                self._accept_aggregation_packet(packet)
+            except Exception:
+                continue
+            with self._mutex:
+                if self._pending_aggregation.get(key) == packet:
+                    self._pending_aggregation.pop(key, None)
 
     def _flush_analysis_reports(self) -> None:
         with self._mutex:

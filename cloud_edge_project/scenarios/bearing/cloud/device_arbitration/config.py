@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.bearing_actions import ACTION_TO_GRADE, ACTION_TO_STATE
+
 
 @dataclass(frozen=True)
 class BearingArbitrationConfig:
@@ -15,18 +17,4 @@ class BearingArbitrationConfig:
 
 DEFAULT_CONFIG = BearingArbitrationConfig()
 
-ACTION_TO_STATE = {
-    "continue_operation": "normal",
-    "enhanced_monitoring": "normal",
-    "scheduled_inspection": "warning",
-    "urgent_intervention": "warning",
-    "shutdown": "abnormal",
-}
-
-ACTION_SEVERITY = {
-    "continue_operation": 0,
-    "enhanced_monitoring": 1,
-    "scheduled_inspection": 2,
-    "urgent_intervention": 3,
-    "shutdown": 4,
-}
+ACTION_SEVERITY = ACTION_TO_GRADE

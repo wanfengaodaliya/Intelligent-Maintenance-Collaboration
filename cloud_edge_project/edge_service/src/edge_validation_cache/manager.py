@@ -240,6 +240,22 @@ class EdgeValidationCache:
                 self._pinned_refs[raw_packet_ref] = count - 1
         return True
 
+    def pin_many(self, raw_packet_refs: tuple[RawPacketRef, ...]) -> bool:
+        """Pin a complete fixed window, rolling back when any reference is absent."""
+        pinned: list[RawPacketRef] = []
+        for raw_packet_ref in raw_packet_refs:
+            if self.pin(raw_packet_ref):
+                pinned.append(raw_packet_ref)
+                continue
+            for existing in pinned:
+                self.unpin(existing)
+            return False
+        return True
+
+    def unpin_many(self, raw_packet_refs: tuple[RawPacketRef, ...]) -> None:
+        for raw_packet_ref in raw_packet_refs:
+            self.unpin(raw_packet_ref)
+
     def pin_uri(self, uri: str) -> bool:
         return self.pin(self.raw_ref_from_uri(uri))
 
