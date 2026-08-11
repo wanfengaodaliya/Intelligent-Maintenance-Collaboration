@@ -75,6 +75,23 @@ def test_bearing_review_rejects_different_manifest_for_same_identity(tmp_path: P
         service.create(changed)
 
 
+def test_bearing_review_allows_four_windows_for_same_task_bearing(tmp_path: Path):
+    service = BearingReviewService(
+        tmp_path / "cloud.db", transport=CapturingTransport()
+    )
+    first = service.create(_request())
+    second_request = _request()
+    second_request["source_packet_manifest"] = [
+        {"packet_id": f"packet_{number:02d}", "sequence_number": number}
+        for number in range(21, 41)
+    ]
+    second = service.create(second_request)
+
+    assert first["window_index"] == 1
+    assert second["window_index"] == 2
+    assert first["bearing_review_id"] != second["bearing_review_id"]
+
+
 def test_bearing_review_rejects_context_packet_outside_manifest(tmp_path: Path):
     transport = CapturingTransport()
     database_path = tmp_path / "cloud.db"

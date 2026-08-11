@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
@@ -305,11 +305,29 @@ CREATE TABLE IF NOT EXISTS model_update_task (
     CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json))
 );
 CREATE INDEX IF NOT EXISTS idx_model_update_analysis ON model_update_task(analysis_id, created_at_ns);
+CREATE TABLE IF NOT EXISTS workflow_review_job (
+    review_id TEXT PRIMARY KEY,
+    review_type TEXT NOT NULL CHECK (review_type IN ('PACKET', 'BEARING_WINDOW', 'DEVICE')),
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'WAITING_RAW', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+    request_sha256 TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    raw_batch_json TEXT,
+    result_json TEXT,
+    error_code TEXT,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    CHECK (json_valid(request_json)),
+    CHECK (raw_batch_json IS NULL OR json_valid(raw_batch_json)),
+    CHECK (result_json IS NULL OR json_valid(result_json))
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_review_status
+ON workflow_review_job(status, updated_at_ns);
 CREATE TABLE IF NOT EXISTS bearing_review (
     bearing_review_id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
     bearing_id TEXT NOT NULL,
+    window_index INTEGER NOT NULL CHECK (window_index BETWEEN 1 AND 4),
     sender_id TEXT NOT NULL,
     edge_state TEXT NOT NULL,
     edge_confidence REAL NOT NULL CHECK (edge_confidence >= 0 AND edge_confidence <= 1),
@@ -322,7 +340,7 @@ CREATE TABLE IF NOT EXISTS bearing_review (
     result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
     created_at_ns INTEGER NOT NULL,
     updated_at_ns INTEGER NOT NULL,
-    UNIQUE (device_id, task_id, bearing_id)
+    UNIQUE (device_id, task_id, bearing_id, window_index)
 );
 CREATE TABLE IF NOT EXISTS bearing_raw_context_request (
     request_id TEXT PRIMARY KEY,

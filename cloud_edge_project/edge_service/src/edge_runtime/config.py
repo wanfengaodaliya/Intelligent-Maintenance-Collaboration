@@ -17,6 +17,7 @@ class MqttConfig:
     qos: int = 1
     input_topic: str = "edge/edge_01/input"
     summary_topic: str = "summary/packet-results"
+    device_result_topic: str = "summary/device-results"
     client_id: str = "edge_01-runtime"
     ingress_queue_capacity: int = 160
 
@@ -63,6 +64,8 @@ class EdgeRuntimeConfig:
             errors.append("MQTT host 和 client_id 不能为空")
         if not self.mqtt.summary_topic.strip():
             errors.append("mqtt.summary_topic 不能为空")
+        if not self.mqtt.device_result_topic.strip():
+            errors.append("mqtt.device_result_topic 不能为空")
         if not self.scheduler.base_url.startswith(("http://", "https://")):
             errors.append("scheduler.base_url 必须使用 HTTP 或 HTTPS")
         if self.scheduler.heartbeat_interval_seconds != 1.0:

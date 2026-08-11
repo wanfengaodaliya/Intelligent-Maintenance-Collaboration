@@ -72,9 +72,18 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
-                SCHEMA_VERSION,
+                13,
                 time.time_ns(),
                 "model update task storage",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "integrated packet, bearing-window, and device review storage",
             ),
         )
 

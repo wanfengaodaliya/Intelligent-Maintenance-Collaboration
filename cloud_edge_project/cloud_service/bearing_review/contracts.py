@@ -61,6 +61,13 @@ def validate_bearing_review_request(payload: Any) -> dict[str, Any]:
         sequences.add(sequence_number)
         normalized.append({"packet_id": packet_id, "sequence_number": sequence_number})
     normalized.sort(key=lambda item: item["sequence_number"])
+    sequence_start = normalized[0]["sequence_number"]
+    expected_sequences = list(range(sequence_start, sequence_start + EXPECTED_PACKET_COUNT))
+    if sequence_start not in {1, 21, 41, 61} or [
+        item["sequence_number"] for item in normalized
+    ] != expected_sequences:
+        raise BearingReviewValidationError("INVALID_SOURCE_PACKET_MANIFEST")
+    result["window_index"] = (sequence_start - 1) // EXPECTED_PACKET_COUNT + 1
     result["edge_state"] = edge["bearing_state"]
     result["edge_confidence"] = float(confidence)
     result["source_packet_manifest"] = normalized

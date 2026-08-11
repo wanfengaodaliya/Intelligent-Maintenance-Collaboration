@@ -115,6 +115,7 @@ class PacketExecutionCompleted:
     started_at_ns: int
     finished_at_ns: int
     edge: Optional[EdgeResult]
+    data_quality_score: float = 1.0
 
 
 @dataclass

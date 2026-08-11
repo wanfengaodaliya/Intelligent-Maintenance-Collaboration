@@ -51,6 +51,7 @@ def _raw_context_request(stored: dict[str, Any]) -> dict[str, Any]:
         "device_id": stored["device_id"],
         "task_id": stored["task_id"],
         "bearing_id": stored["bearing_id"],
+        "window_index": stored["window_index"],
         "sender_id": stored["sender_id"],
         "expected_packet_count": EXPECTED_PACKET_COUNT,
         "requested_packets": json.loads(stored["packet_manifest_json"]),
@@ -60,6 +61,7 @@ def _raw_context_request(stored: dict[str, Any]) -> dict[str, Any]:
 def _response(stored: dict[str, Any], progress: tuple[int, int] | None = None) -> dict[str, Any]:
     result = {
         "bearing_review_id": stored["bearing_review_id"],
+        "window_index": stored["window_index"],
         "status": stored["status"],
         "raw_context_request_id": stored["raw_context_request_id"],
     }

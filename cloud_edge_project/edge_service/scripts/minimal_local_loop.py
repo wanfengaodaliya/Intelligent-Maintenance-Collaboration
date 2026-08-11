@@ -25,7 +25,7 @@ for _path in (_SRC, _REPO):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from edge_model.code_fallback import TestRuleRunner  # noqa: E402
+from edge_diagnosis import MockDiagnosticModel  # noqa: E402
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.contracts import (  # noqa: E402
     EXECUTION_CODE_FALLBACK,
@@ -183,6 +183,7 @@ def _packet(sequence: int, signals: dict[str, np.ndarray]) -> dict:
 
 def _model_pipeline(mode: str, records: list, packet_results: list):
     cfg = EdgeModelConfig()
+    cfg.diagnostic_backend = "http" if mode == "real" else "mock"
     cfg.fallback.allow_test_rule = True
     if mode == "fallback":
         cfg.model_client = ModelClientConfig(
@@ -201,7 +202,7 @@ def _model_pipeline(mode: str, records: list, packet_results: list):
     pipeline = EdgeModelPipeline(
         cfg,
         client,
-        TestRuleRunner(cfg.fallback.rule_version),
+        MockDiagnosticModel(cfg.fallback.rule_version),
         on_run_record=records.append,
         on_packet_result=packet_results.append,
     )
@@ -303,7 +304,7 @@ def run_minimal_loop(mode: str) -> dict:
         )
     else:
         _require(
-            all(version.startswith("edge_rule_test") for version in versions),
+            all(version.startswith("bearing_diagnosis_mock") for version in versions),
             "代码替代结果未明确使用测试规则版本",
         )
 

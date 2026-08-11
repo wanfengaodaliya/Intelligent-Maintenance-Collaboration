@@ -1,4 +1,4 @@
-"""SQLite persistence for one idempotent bearing review per task-bearing."""
+"""SQLite persistence for one idempotent review per task-bearing window."""
 
 from __future__ import annotations
 
@@ -28,8 +28,13 @@ class BearingReviewRepository:
         with connect(self.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT * FROM bearing_review WHERE device_id=? AND task_id=? AND bearing_id=?",
-                (request["device_id"], request["task_id"], request["bearing_id"]),
+                "SELECT * FROM bearing_review WHERE device_id=? AND task_id=? AND bearing_id=? AND window_index=?",
+                (
+                    request["device_id"],
+                    request["task_id"],
+                    request["bearing_id"],
+                    request["window_index"],
+                ),
             ).fetchone()
             if existing:
                 stored = dict(existing)
@@ -39,8 +44,8 @@ class BearingReviewRepository:
             bearing_review_id = str(uuid.uuid4())
             raw_context_request_id = str(uuid.uuid4())
             connection.execute(
-                "INSERT INTO bearing_review(bearing_review_id,device_id,task_id,bearing_id,sender_id,edge_state,edge_confidence,packet_count,packet_manifest_sha256,packet_manifest_json,status,raw_context_request_id,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (bearing_review_id, request["device_id"], request["task_id"], request["bearing_id"], request["sender_id"], request["edge_state"], request["edge_confidence"], EXPECTED_PACKET_COUNT, request["packet_manifest_sha256"], _json(request["source_packet_manifest"]), "WAITING_FOR_CONTEXT", raw_context_request_id, now, now),
+                "INSERT INTO bearing_review(bearing_review_id,device_id,task_id,bearing_id,window_index,sender_id,edge_state,edge_confidence,packet_count,packet_manifest_sha256,packet_manifest_json,status,raw_context_request_id,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (bearing_review_id, request["device_id"], request["task_id"], request["bearing_id"], request["window_index"], request["sender_id"], request["edge_state"], request["edge_confidence"], EXPECTED_PACKET_COUNT, request["packet_manifest_sha256"], _json(request["source_packet_manifest"]), "WAITING_FOR_CONTEXT", raw_context_request_id, now, now),
             )
             connection.execute(
                 "INSERT INTO bearing_raw_context_request(request_id,bearing_review_id,device_id,task_id,bearing_id,sender_id,expected_packet_count,requested_packets_json,request_status,created_at_ns,updated_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?)",

@@ -27,11 +27,23 @@ class JsonHttpClient:
         self.timeout_seconds = timeout_seconds
 
     def post(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._request(path, method="POST", payload=payload)
+
+    def get(self, path: str) -> dict[str, Any]:
+        return self._request(path, method="GET")
+
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str,
+        payload: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
         request = urllib.request.Request(
             self.base_url + path,
-            data=json_bytes(dict(payload)),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            data=json_bytes(dict(payload)) if payload is not None else None,
+            headers={"Content-Type": "application/json"} if payload is not None else {},
+            method=method,
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:

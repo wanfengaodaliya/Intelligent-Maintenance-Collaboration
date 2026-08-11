@@ -31,6 +31,7 @@ class BearingReviewProcessor:
             "device_id": review["device_id"],
             "task_id": review["task_id"],
             "bearing_id": review["bearing_id"],
+            "window_index": review["window_index"],
             "edge_state": review["edge_state"],
             "edge_confidence": review["edge_confidence"],
             "cloud_state": diagnosis["state"],
