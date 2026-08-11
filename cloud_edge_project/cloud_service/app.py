@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
-from cloud_service.global_analysis.common_analyzer import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
 from cloud_service.bearing_review.service import (
