@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from common.config import load_config
 from common.schemas import ContractError, error_response
-from edge_service.model import EDGE_NODE_ID, infer_edge
+from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
 
 EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
@@ -108,6 +108,8 @@ def health() -> dict[str, object]:
 @app.post("/edge/infer", response_model=None)
 def edge_infer(payload: dict) -> dict | JSONResponse:
     try:
+        if "task_id" in payload:
+            return infer_edge_v01(payload)
         return infer_edge(payload)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))

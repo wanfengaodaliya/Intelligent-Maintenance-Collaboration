@@ -42,6 +42,10 @@ from common.config import load_config
 from common.schemas import (
     ContractError,
     error_response,
+    require_confidence,
+    require_field,
+    require_mapping,
+    require_non_empty_string,
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
@@ -111,6 +115,45 @@ async def _lifespan(_: FastAPI):
 
 
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
+
+
+def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
+    """Produce the documented V0.1 CloudResult from an edge result."""
+
+    request = require_mapping(payload, "CloudRequest")
+    task_id = require_non_empty_string(require_field(request, "task_id"), "task_id")
+    for field in ("scenario", "task_type", "source_node"):
+        require_non_empty_string(require_field(request, field, task_id), field, task_id)
+    require_mapping(require_field(request, "data", task_id), "data", task_id)
+    edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
+    label = require_field(edge_result, "label", task_id)
+    if label not in {"normal", "abnormal"}:
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", task_id)
+    edge_confidence = require_confidence(
+        require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id
+    )
+    risk_level = require_field(edge_result, "risk_level", task_id)
+    if risk_level not in {"low", "medium", "high"}:
+        raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", task_id)
+
+    if label == "abnormal":
+        confidence = max(edge_confidence, 0.93)
+        decision = {"action": "send_alert", "description": "设备存在高风险异常，建议停机检查"}
+        final_risk = "high"
+    else:
+        confidence = max(edge_confidence, 0.9)
+        decision = {"action": "ignore", "description": "未发现高风险异常，建议持续监测"}
+        final_risk = "low"
+    return {
+        "task_id": task_id,
+        "node_id": "cloud_1",
+        "model_name": "cloud_full_model",
+        "label": label,
+        "confidence": round(confidence, 2),
+        "risk_level": final_risk,
+        "cloud_latency_ms": 1.0,
+        "decision": decision,
+    }
 
 
 def _workflow_review_service() -> WorkflowReviewService:
@@ -202,6 +245,8 @@ def health() -> dict[str, object] | JSONResponse:
 @app.post("/cloud/infer", response_model=None)
 def cloud_infer(payload: dict) -> dict | JSONResponse:
     try:
+        if "task_id" in payload:
+            return infer_cloud_v01(payload)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
             payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),

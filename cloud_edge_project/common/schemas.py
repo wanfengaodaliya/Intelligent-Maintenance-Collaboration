@@ -18,6 +18,7 @@ SAMPLE_RATE_HZ = 16000
 SAMPLE_COUNT = 800
 DURATION_MS = 50
 ROUTES = {"edge", "cloud", "fallback_edge"}
+V01_ROUTES = {"edge", "fog", "cloud", "fallback_edge", "edge_cloud"}
 LABELS = {"normal", "abnormal"}
 RISK_LEVELS = {"low", "medium", "high"}
 PROCESSING_STATUSES = {"perception_completed", "perception_rejected"}
@@ -84,6 +85,50 @@ def require_confidence(value: Any, field: str, packet_id: str | None = None) -> 
     if not 0 <= confidence <= 1:
         raise ContractError("INVALID_PACKET", f"{field} must be between 0 and 1", packet_id)
     return confidence
+
+
+def validate_task_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the V0.1 TaskRequest contract."""
+
+    task = require_mapping(payload, "TaskRequest")
+    task_id = require_non_empty_string(require_field(task, "task_id"), "task_id")
+    for field in ("scenario", "source_node", "task_type", "timestamp"):
+        require_non_empty_string(require_field(task, field, task_id), field, task_id)
+    if require_int(require_field(task, "deadline_ms", task_id), "deadline_ms", task_id) <= 0:
+        raise ContractError("INVALID_PACKET", "deadline_ms must be greater than 0", task_id)
+    require_confidence(require_field(task, "priority", task_id), "priority", task_id)
+    if require_number(require_field(task, "data_size_kb", task_id), "data_size_kb", task_id) <= 0:
+        raise ContractError("INVALID_PACKET", "data_size_kb must be greater than 0", task_id)
+    require_mapping(require_field(task, "data", task_id), "data", task_id)
+    return task
+
+
+def validate_task_log(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the V0.1 TaskLog contract."""
+
+    log = require_mapping(payload, "TaskLog")
+    task_id = require_non_empty_string(require_field(log, "task_id"), "task_id")
+    for field in ("scenario", "source_node", "timestamp"):
+        require_non_empty_string(require_field(log, field, task_id), field, task_id)
+    if require_field(log, "route", task_id) not in V01_ROUTES:
+        raise ContractError("INVALID_PACKET", "route is not a documented V0.1 route", task_id)
+    for field in ("edge_latency_ms", "network_latency_ms", "total_latency_ms"):
+        if require_number(require_field(log, field, task_id), field, task_id) <= 0:
+            raise ContractError("INVALID_PACKET", f"{field} must be greater than 0", task_id)
+    cloud_latency = require_field(log, "cloud_latency_ms", task_id)
+    if cloud_latency is not None and require_number(cloud_latency, "cloud_latency_ms", task_id) <= 0:
+        raise ContractError("INVALID_PACKET", "cloud_latency_ms must be greater than 0", task_id)
+    require_confidence(require_field(log, "edge_confidence", task_id), "edge_confidence", task_id)
+    cloud_confidence = require_field(log, "cloud_confidence", task_id)
+    if cloud_confidence is not None:
+        require_confidence(cloud_confidence, "cloud_confidence", task_id)
+    for field in ("success", "has_conflict"):
+        if not isinstance(require_field(log, field, task_id), bool):
+            raise ContractError("INVALID_PACKET", f"{field} must be boolean", task_id)
+    conflict_resolved = require_field(log, "conflict_resolved", task_id)
+    if conflict_resolved is not None and not isinstance(conflict_resolved, bool):
+        raise ContractError("INVALID_PACKET", "conflict_resolved must be boolean or null", task_id)
+    return log
 
 
 def validate_sensor_packet(payload: dict[str, Any]) -> dict[str, Any]:
