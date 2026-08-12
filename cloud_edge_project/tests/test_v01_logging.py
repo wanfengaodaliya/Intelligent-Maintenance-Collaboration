@@ -110,6 +110,16 @@ def test_metrics_include_v01_and_legacy_records_together():
     assert metrics["success_rate"] == 1.0
 
 
+def test_edge_cloud_counts_as_a_cloud_call_but_not_edge_only_processing():
+    metrics = compute_metrics([
+        {**TASK_LOG, "task_id": "task_edge_cloud", "route": "edge_cloud"},
+        {**TASK_LOG, "task_id": "task_edge", "route": "edge"},
+    ])
+
+    assert metrics["cloud_call_ratio"] == 0.5
+    assert metrics["edge_only_ratio"] == 0.5
+
+
 def test_conflict_rates_use_all_tasks_and_only_conflicting_tasks_as_denominators():
     traces = [
         {**TASK_LOG, "task_id": "task_1", "has_conflict": True, "conflict_resolved": True},

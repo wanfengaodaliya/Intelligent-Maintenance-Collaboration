@@ -52,7 +52,7 @@ def compute_metrics(traces: list[dict[str, Any]]) -> dict[str, Any]:
     latencies = sorted(float(trace.get("total_latency_ms", 0)) for trace in traces)
     avg_latency = sum(latencies) / total if total else 0.0
     p95_latency = latencies[math.ceil(0.95 * total) - 1] if total else 0.0
-    cloud = sum(1 for trace in traces if trace.get("route") == "cloud")
+    cloud = sum(1 for trace in traces if trace.get("route") in {"cloud", "edge_cloud"})
     edge = sum(1 for trace in traces if trace.get("route") == "edge")
     fallback = [trace for trace in traces if trace.get("route") == "fallback_edge"]
     abnormal = sum(1 for trace in traces if trace.get("final_label") == "abnormal")
