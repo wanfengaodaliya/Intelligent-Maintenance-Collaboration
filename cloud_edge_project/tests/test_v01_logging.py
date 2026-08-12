@@ -23,6 +23,8 @@ TASK_LOG = {
     "total_latency_ms": 154,
     "edge_confidence": 0.72,
     "cloud_confidence": 0.93,
+    "final_label": "abnormal",
+    "final_confidence": 0.93,
     "success": True,
     "has_conflict": False,
     "conflict_resolved": None,
@@ -144,7 +146,7 @@ def test_weak_network_availability_uses_only_fallback_edge_tasks_as_denominator(
     assert compute_metrics([{**TASK_LOG, "route": "cloud"}])["weak_network_availability"] == 0.0
 
 
-def test_dashboard_tasks_projects_v01_and_legacy_records_without_inventing_v01_results(monkeypatch):
+def test_dashboard_tasks_projects_v01_final_results_and_legacy_records(monkeypatch):
     config = config_for()
     append_task_trace(TASK_LOG, config)
     append_task_trace(LEGACY_TRACE, config)
@@ -159,8 +161,8 @@ def test_dashboard_tasks_projects_v01_and_legacy_records_without_inventing_v01_r
         "scenario": "industrial",
         "source_node": "edge_1",
         "route": "cloud",
-        "label": None,
-        "confidence": None,
+        "label": "abnormal",
+        "confidence": 0.93,
         "total_latency_ms": 154,
         "success": True,
         "timestamp": "2026-06-20 10:00:05",

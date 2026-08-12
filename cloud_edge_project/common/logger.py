@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from common.config import PROJECT_ROOT, load_config
-from common.schemas import validate_task_log, validate_task_trace
+from common.schemas import require_mapping, validate_task_log, validate_task_trace
 
 
 def log_path(config: dict[str, Any] | None = None) -> Path:
@@ -17,6 +17,7 @@ def log_path(config: dict[str, Any] | None = None) -> Path:
 
 
 def append_task_trace(trace: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    trace = require_mapping(trace, "TaskLog")
     if "packet_id" in trace:
         validated = validate_task_trace(trace)
         identifier = "packet_id"
@@ -25,8 +26,9 @@ def append_task_trace(trace: dict[str, Any], config: dict[str, Any] | None = Non
         identifier = "task_id"
     path = log_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(validated, ensure_ascii=False, allow_nan=False)
     with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(validated, ensure_ascii=False) + "\n")
+        file.write(serialized + "\n")
     return {
         identifier: validated[identifier],
         "saved": True,

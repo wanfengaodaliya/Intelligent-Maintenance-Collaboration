@@ -123,9 +123,14 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
 
     request = require_mapping(payload, "CloudRequest")
     task_id = require_non_empty_string(require_field(request, "task_id"), "task_id")
-    for field in ("scenario", "task_type", "source_node"):
+    scenario = require_field(request, "scenario", task_id)
+    if scenario not in {"industrial", "energy"}:
+        raise ContractError("INVALID_PACKET", "scenario must be industrial or energy", task_id)
+    for field in ("task_type", "source_node"):
         require_non_empty_string(require_field(request, field, task_id), field, task_id)
-    require_mapping(require_field(request, "data", task_id), "data", task_id)
+    data = require_mapping(require_field(request, "data", task_id), "data", task_id)
+    if not data:
+        raise ContractError("INVALID_PACKET", "data must be a non-empty object", task_id)
     edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
     label = require_field(edge_result, "label", task_id)
     if label not in {"normal", "abnormal"}:
@@ -244,16 +249,17 @@ def health() -> dict[str, object] | JSONResponse:
 
 
 @app.post("/cloud/infer", response_model=None)
-def cloud_infer(payload: dict) -> dict | JSONResponse:
+def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
-        if is_v01_cloud_request(payload):
-            return infer_cloud_v01(payload)
+        request = require_mapping(payload, "CloudRequest")
+        if is_v01_cloud_request(request):
+            return infer_cloud_v01(request)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.infer(payload)
+        return handler.infer(request)
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -265,7 +271,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except CloudServiceError as error:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         contract_error = ContractError(
             error.code,
             error.message,
@@ -276,7 +282,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
             content=error_response(contract_error),
         )
     except Exception as exc:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
 

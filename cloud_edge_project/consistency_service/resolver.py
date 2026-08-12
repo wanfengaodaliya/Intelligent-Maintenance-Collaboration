@@ -31,7 +31,22 @@ def resolve_decisions(request: Any) -> dict[str, Any]:
     grouped = _group_by_target_device(decisions)
 
     conflict_type, candidates = _conflict_candidates(grouped, constraints)
-    selected = max(candidates, key=lambda decision: (decision["priority"], decision["confidence"]))
+    safe_candidates = [
+        decision
+        for decision in candidates
+        if decision["power_kw"] <= constraints[f"{decision['target_device']}_max_power_kw"]
+    ]
+    if not safe_candidates:
+        return {
+            "decision_id": validated["decision_id"],
+            "has_conflict": conflict_type is not None,
+            "conflict_type": conflict_type,
+            "final_action": None,
+            "selected_source_node": None,
+            "reason": "no individually safe decision satisfies the target power limit",
+            "resolved": False,
+        }
+    selected = max(safe_candidates, key=lambda decision: (decision["priority"], decision["confidence"]))
 
     return {
         "decision_id": validated["decision_id"],
@@ -39,7 +54,7 @@ def resolve_decisions(request: Any) -> dict[str, Any]:
         "conflict_type": conflict_type,
         "final_action": selected["action"],
         "selected_source_node": selected["source_node"],
-        "reason": _selection_reason(candidates, selected),
+        "reason": _selection_reason(safe_candidates, selected),
         "resolved": True,
     }
 

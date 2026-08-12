@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from typing import Any
+
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from common.config import load_config
@@ -26,13 +28,14 @@ def health() -> dict[str, object]:
 
 
 @app.post("/logs/task_trace", response_model=None)
-def logs_task_trace(payload: dict) -> dict | JSONResponse:
+def logs_task_trace(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         return append_task_trace(payload, config)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except Exception as exc:
-        error = ContractError("LOG_SAVE_FAILED", str(exc), payload.get("task_id", payload.get("packet_id")))
+        identifier = payload.get("task_id", payload.get("packet_id")) if isinstance(payload, dict) else None
+        error = ContractError("LOG_SAVE_FAILED", str(exc), identifier)
         return JSONResponse(status_code=500, content=error_response(error))
 
 
@@ -55,8 +58,8 @@ def _project_task(trace: dict[str, object]) -> dict[str, object]:
             "scenario": trace["scenario"],
             "source_node": trace["source_node"],
             "route": trace["route"],
-            "label": None,
-            "confidence": None,
+            "label": trace.get("final_label"),
+            "confidence": trace.get("final_confidence"),
             "total_latency_ms": trace["total_latency_ms"],
             "success": trace["success"],
             "timestamp": trace["timestamp"],

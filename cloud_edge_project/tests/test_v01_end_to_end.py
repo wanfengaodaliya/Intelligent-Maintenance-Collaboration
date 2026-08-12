@@ -1,12 +1,17 @@
 import sys
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cloud_service.app import infer_cloud_v01
-from edge_service.model import infer_edge_v01
-from scheduler.api import decide
+from cloud_service import app as cloud_app
+from common import logger
+from edge_service import app as edge_app
+from log_service import app as log_app
+from scheduler import api as scheduler_api
+from scheduler.rule_scheduler import decide_schedule
 
 
 TASK = {
@@ -22,53 +27,126 @@ TASK = {
         "device_id": "machine_01",
         "temperature": 78.5,
         "vibration": 0.63,
-        "current": 13.2,
-        "load": 0.76,
+        "current": 1.0,
+        "load": 0.4,
     },
 }
 
 
-def run_main_flow(task):
-    edge = infer_edge_v01(task)
-    schedule = decide(
-        {
-            "task": task,
+def test_real_http_chain_persists_final_result_and_dashboard_metrics(monkeypatch, tmp_path):
+    log_config = {"log": {"path": "logs/v01-e2e.jsonl"}}
+    monkeypatch.setattr(logger, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(log_app, "config", log_config)
+
+    edge = TestClient(edge_app.app).post("/edge/infer", json=TASK).json()
+    schedule = TestClient(scheduler_api.app).post(
+        "/scheduler/decide",
+        json={
+            "task": {
+                key: TASK[key]
+                for key in (
+                    "task_id",
+                    "scenario",
+                    "task_type",
+                    "deadline_ms",
+                    "priority",
+                    "data_size_kb",
+                )
+            },
             "edge_result": edge,
-            "network_state": {"latency_ms": 30, "bandwidth_mbps": 20, "packet_loss": 0.01, "cloud_available": True},
-            "node_state": {"edge_cpu_usage": 0.55, "edge_memory_usage": 0.62, "cloud_queue_length": 3, "fog_available": True},
+            "network_state": {
+                "latency_ms": 30,
+                "bandwidth_mbps": 20,
+                "packet_loss": 0.01,
+                "cloud_available": True,
+            },
+            "node_state": {
+                "edge_cpu_usage": 0.55,
+                "edge_memory_usage": 0.62,
+                "cloud_queue_length": 3,
+                "fog_available": True,
+            },
+        },
+    ).json()
+    assert schedule["route"] == "cloud"
+
+    cloud = TestClient(cloud_app.app).post(
+        "/cloud/infer",
+        json={
+            "task_id": TASK["task_id"],
+            "scenario": TASK["scenario"],
+            "task_type": TASK["task_type"],
+            "source_node": TASK["source_node"],
+            "data": TASK["data"],
+            "edge_result": edge,
+        },
+    ).json()
+    trace = {
+        "task_id": TASK["task_id"],
+        "scenario": TASK["scenario"],
+        "source_node": TASK["source_node"],
+        "route": schedule["route"],
+        "edge_latency_ms": edge["edge_latency_ms"],
+        "network_latency_ms": 30,
+        "cloud_latency_ms": cloud["cloud_latency_ms"],
+        "total_latency_ms": edge["edge_latency_ms"] + 30 + cloud["cloud_latency_ms"],
+        "edge_confidence": edge["confidence"],
+        "cloud_confidence": cloud["confidence"],
+        "final_label": cloud["label"],
+        "final_confidence": cloud["confidence"],
+        "success": True,
+        "has_conflict": False,
+        "conflict_resolved": None,
+        "timestamp": "2026-06-20 10:00:05",
+    }
+    log_client = TestClient(log_app.app)
+    saved = log_client.post("/logs/task_trace", json=trace)
+    metrics = log_client.get("/dashboard/metrics").json()
+    row = log_client.get("/dashboard/tasks").json()["tasks"][0]
+
+    assert saved.status_code == 200
+    assert {
+        edge["task_id"],
+        schedule["task_id"],
+        cloud["task_id"],
+        saved.json()["task_id"],
+        row["task_id"],
+    } == {TASK["task_id"]}
+    assert (row["label"], row["confidence"]) == (cloud["label"], cloud["confidence"])
+    assert metrics["total_packets"] == 1
+    assert metrics["cloud_call_ratio"] == 1.0
+    assert metrics["success_rate"] == 1.0
+
+
+def test_legacy_direct_scheduler_keeps_high_packet_loss_fallback_and_internal_fields():
+    result = decide_schedule(
+        {
+            "task": {
+                "task_id": "legacy_task_0001",
+                "source_node": "edge_1",
+                "deadline_ms": 200,
+                "priority": 0.8,
+                "data_size_kb": 128,
+            },
+            "edge_result": {
+                "confidence": 0.72,
+                "need_cloud": True,
+                "edge_latency_ms": 38,
+            },
+            "network_state": {
+                "latency_ms": 30,
+                "bandwidth_mbps": 20,
+                "packet_loss": 0.5,
+                "cloud_available": True,
+            },
+            "node_state": {
+                "edge_cpu_usage": 0.55,
+                "edge_memory_usage": 0.62,
+                "cloud_queue_length": 3,
+            },
         }
     )
-    cloud = None
-    if schedule["route"] == "cloud":
-        cloud = infer_cloud_v01(
-            {
-                "task_id": task["task_id"],
-                "scenario": task["scenario"],
-                "task_type": task["task_type"],
-                "source_node": task["source_node"],
-                "data": task["data"],
-                "edge_result": edge,
-            }
-        )
-    return edge, schedule, cloud
 
-
-def test_cloud_route_uses_one_task_id_through_cloud_result():
-    low_confidence_task = {
-        **TASK,
-        "data": {**TASK["data"], "current": 1.0, "load": 0.4},
-    }
-
-    edge, schedule, cloud = run_main_flow(low_confidence_task)
-
-    assert schedule["route"] == "cloud"
-    assert cloud is not None
-    assert {low_confidence_task["task_id"], edge["task_id"], schedule["task_id"], cloud["task_id"]} == {"task_0001"}
-
-
-def test_edge_route_does_not_produce_a_cloud_result():
-    edge, schedule, cloud = run_main_flow(TASK)
-
-    assert schedule["route"] == "edge"
-    assert cloud is None
-    assert {TASK["task_id"], edge["task_id"], schedule["task_id"]} == {"task_0001"}
+    assert result["route"] == "fallback_edge"
+    assert result["scheduler"] == "PER-DDPG-rule-minimal"
+    assert set(result["policy_score"]) == {"edge", "cloud"}

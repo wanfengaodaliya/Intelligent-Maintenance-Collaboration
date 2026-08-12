@@ -7,7 +7,14 @@ from statistics import mean
 from time import perf_counter
 from typing import Any
 
-from common.schemas import validate_edge_result, validate_sensor_packet, validate_task_request
+from common.schemas import (
+    require_confidence,
+    require_field,
+    require_number,
+    validate_edge_result,
+    validate_sensor_packet,
+    validate_task_request,
+)
 
 
 EDGE_NODE_ID = "edge_01"
@@ -20,6 +27,26 @@ def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
 
     validated = validate_task_request(task)
     data = validated["data"]
+
+    if validated["scenario"] == "energy":
+        # V0.1 deliberately accepts any non-empty energy business-data object.
+        # With no domain optimizer in this service, return a neutral preliminary
+        # result and request cloud review instead of inventing a dispatch policy.
+        return {
+            "task_id": validated["task_id"],
+            "node_id": EDGE_NODE_ID,
+            "model_name": V01_MODEL_NAME,
+            "label": "normal",
+            "confidence": 0.5,
+            "risk_level": "low",
+            "edge_latency_ms": 1.0,
+            "need_cloud": True,
+        }
+
+    task_id = validated["task_id"]
+    for field in ("temperature", "vibration", "current"):
+        require_number(require_field(data, field, task_id), f"data.{field}", task_id)
+    require_confidence(require_field(data, "load", task_id), "data.load", task_id)
 
     signals = sum((
         float(data["temperature"]) >= 70.0,

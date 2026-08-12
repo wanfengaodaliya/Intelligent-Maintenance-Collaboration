@@ -7,11 +7,12 @@ import atexit
 import sys
 import requests
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
-from common.config import load_config
+from common.config import load_config, service_url
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
@@ -83,7 +84,7 @@ cloud_review_cleanup.start()
 atexit.register(cloud_review_cleanup.stop)
 
 def _post_scheduler_packet_route(path: str, payload: dict) -> dict:
-    response = requests.post("http://127.0.0.1:8003" + path, json=payload, timeout=3.0)
+    response = requests.post(service_url("scheduler", config) + path, json=payload, timeout=3.0)
     response.raise_for_status()
     result = response.json()
     if not isinstance(result, dict):
@@ -106,7 +107,7 @@ def health() -> dict[str, object]:
 
 
 @app.post("/edge/infer", response_model=None)
-def edge_infer(payload: dict) -> dict | JSONResponse:
+def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         if is_v01_task_request(payload):
             return infer_edge_v01(payload)
@@ -114,7 +115,8 @@ def edge_infer(payload: dict) -> dict | JSONResponse:
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except Exception as exc:
-        error = ContractError("MODEL_INFER_FAILED", str(exc), payload.get("packet_id"))
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
         return JSONResponse(status_code=500, content=error_response(error))
 
 

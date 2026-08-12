@@ -220,7 +220,7 @@ def test_single_non_conflicting_decision_reason_does_not_claim_comparison():
     assert result["reason"] == "only applicable decision was selected"
 
 
-def test_single_power_overload_reason_does_not_claim_comparison():
+def test_single_power_overload_returns_no_unsafe_executable_action():
     result = resolve_decisions(
         {
             **CONFLICT_REQUEST,
@@ -229,7 +229,10 @@ def test_single_power_overload_reason_does_not_claim_comparison():
     )
 
     assert result["conflict_type"] == "power_overload"
-    assert result["reason"] == "only applicable decision was selected"
+    assert result["reason"] == "no individually safe decision satisfies the target power limit"
+    assert result["final_action"] is None
+    assert result["selected_source_node"] is None
+    assert result["resolved"] is False
 
 
 @pytest.mark.parametrize(

@@ -140,7 +140,7 @@ def test_task_request_rejects_missing_industrial_sensor_value():
     data = {key: value for key, value in TASK["data"].items() if key != "temperature"}
 
     with pytest.raises(ContractError):
-        validate_task_request({**TASK, "data": data})
+        infer_edge_v01({**TASK, "data": data})
 
 
 def test_task_log_rejects_unsupported_route():
@@ -186,7 +186,11 @@ def test_cloud_http_keeps_legacy_payload_with_task_id_on_legacy_path(monkeypatch
 
     response = TestClient(cloud_service_app.app).post(
         "/cloud/infer",
-        json={"task_id": "legacy_task_0001", "scenario_type": "bearing"},
+        json={
+            "task_id": "legacy_task_0001",
+            "scenario_type": "bearing",
+            "cloud_raw_packet": {},
+        },
     )
 
     assert response.status_code == 200

@@ -13,26 +13,39 @@ from typing import Any, Mapping
 
 try:
     from common.config import load_config
+    from common.schemas import (
+        ContractError,
+        is_v01_schedule_request,
+        require_mapping,
+        validate_schedule_request_v01,
+    )
 except ImportError:  # Allows running this file directly: python scheduler/api.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.config import load_config
+    from common.schemas import (
+        ContractError,
+        is_v01_schedule_request,
+        require_mapping,
+        validate_schedule_request_v01,
+    )
 
 try:
     from .assignment_scheduler import AssignmentError, AssignmentScheduler
     from .node_registry import NodeRegistry, RegistryError
-    from .rule_scheduler import decide_schedule
+    from .rule_scheduler import decide_schedule_v01
     from .task_repository import TaskRepository, TaskRepositoryError
 except ImportError:  # Allows running this file directly: python api.py
     from assignment_scheduler import AssignmentError, AssignmentScheduler
     from node_registry import NodeRegistry, RegistryError
-    from rule_scheduler import decide_schedule
+    from rule_scheduler import decide_schedule_v01
     from task_repository import TaskRepository, TaskRepositoryError
 
 try:
-    from fastapi import APIRouter, FastAPI
+    from fastapi import APIRouter, Body, FastAPI
     from fastapi.responses import JSONResponse
 except ImportError:
     APIRouter = None
+    Body = None
     FastAPI = None
     JSONResponse = None
 
@@ -45,17 +58,15 @@ atexit.register(node_registry.stop_monitor)
 
 
 # 同时兼容文档 6.2 的 V0.1 调度请求和发送器的任务级节点分配请求。
-def decide(request: dict[str, Any]) -> dict[str, Any]:
-    if _is_v01_schedule_request(request):
-        return decide_schedule(request)
-    return scheduler.decide(request).to_dict()
+def decide(request: Any) -> dict[str, Any]:
+    payload = require_mapping(request, "ScheduleRequest")
+    if is_v01_schedule_request(payload):
+        return decide_schedule_v01(validate_schedule_request_v01(payload))
+    return scheduler.decide(payload).to_dict()
 
 
 def _is_v01_schedule_request(request: Mapping[str, Any]) -> bool:
-    return all(
-        isinstance(request.get(field), Mapping)
-        for field in ("task", "edge_result", "network_state", "node_state")
-    )
+    return is_v01_schedule_request(request)
 
 
 # 接收边缘节点的实时状态报告
@@ -88,6 +99,11 @@ def health() -> dict[str, Any]:
 
 
 def _error_payload(error: Exception) -> tuple[int, dict[str, Any]]:
+    if isinstance(error, ContractError):
+        return 400, {
+            "error_code": error.code,
+            "message": error.message,
+        }
     if isinstance(error, (AssignmentError, TaskRepositoryError)):
         return error.status_code, {
             "error_code": error.code,
@@ -113,7 +129,7 @@ if APIRouter is not None:
     router = APIRouter(prefix="/scheduler", tags=["scheduler"])
 
     @router.post("/decide", response_model=None)
-    def decide_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+    def decide_endpoint(request: Any = Body(default=None)) -> dict[str, Any] | JSONResponse:
         try:
             return decide(request)
         except Exception as error:
