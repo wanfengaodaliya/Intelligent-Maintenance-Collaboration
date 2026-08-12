@@ -77,6 +77,128 @@ def test_power_overload_chooses_highest_priority_decision():
     assert result["resolved"] is True
 
 
+def test_allowed_opposite_actions_do_not_combine_power_for_overload():
+    request = {
+        **CONFLICT_REQUEST,
+        "decisions": [
+            {**CONFLICT_REQUEST["decisions"][0], "power_kw": 60},
+            {**CONFLICT_REQUEST["decisions"][1], "power_kw": 60},
+        ],
+        "global_constraints": {
+            "battery_01_max_power_kw": 100,
+            "allow_charge_and_discharge_same_time": True,
+        },
+    }
+
+    result = resolve_decisions(request)
+
+    assert result["has_conflict"] is False
+    assert result["conflict_type"] is None
+    assert result["selected_source_node"] == "edge_1"
+
+
+def test_opposite_action_uses_first_conflicting_device_not_unrelated_global_maximum():
+    request = {
+        **CONFLICT_REQUEST,
+        "decisions": [
+            {**CONFLICT_REQUEST["decisions"][0], "priority": 0.7},
+            {**CONFLICT_REQUEST["decisions"][1], "priority": 0.8},
+            {
+                **CONFLICT_REQUEST["decisions"][0],
+                "source_node": "edge_3",
+                "target_device": "battery_02",
+                "action": "charge",
+                "power_kw": 10,
+                "priority": 1.0,
+            },
+        ],
+        "global_constraints": {
+            "battery_01_max_power_kw": 100,
+            "battery_02_max_power_kw": 100,
+            "allow_charge_and_discharge_same_time": False,
+        },
+    }
+
+    result = resolve_decisions(request)
+
+    assert result["conflict_type"] == "opposite_action"
+    assert result["selected_source_node"] == "edge_2"
+    assert result["final_action"] == "discharge"
+    assert result["reason"] == "discharge decision has highest priority; confidence is used only to break priority ties"
+
+
+def test_opposite_action_takes_precedence_over_earlier_power_overload():
+    request = {
+        **CONFLICT_REQUEST,
+        "decisions": [
+            {**CONFLICT_REQUEST["decisions"][0], "action": "charge", "power_kw": 60, "priority": 0.8},
+            {**CONFLICT_REQUEST["decisions"][1], "action": "charge", "power_kw": 60, "priority": 0.7},
+            {
+                **CONFLICT_REQUEST["decisions"][0],
+                "source_node": "edge_3",
+                "target_device": "battery_02",
+                "action": "charge",
+                "power_kw": 10,
+                "priority": 0.2,
+            },
+            {
+                **CONFLICT_REQUEST["decisions"][1],
+                "source_node": "edge_4",
+                "target_device": "battery_02",
+                "action": "discharge",
+                "power_kw": 10,
+                "priority": 0.3,
+            },
+        ],
+        "global_constraints": {
+            "battery_01_max_power_kw": 100,
+            "battery_02_max_power_kw": 100,
+            "allow_charge_and_discharge_same_time": False,
+        },
+    }
+
+    result = resolve_decisions(request)
+
+    assert result["conflict_type"] == "opposite_action"
+    assert result["selected_source_node"] == "edge_4"
+    assert result["final_action"] == "discharge"
+
+
+def test_first_device_wins_when_multiple_devices_have_opposite_actions():
+    request = {
+        **CONFLICT_REQUEST,
+        "decisions": [
+            {**CONFLICT_REQUEST["decisions"][0], "priority": 0.8},
+            {**CONFLICT_REQUEST["decisions"][1], "priority": 0.7},
+            {
+                **CONFLICT_REQUEST["decisions"][0],
+                "source_node": "edge_3",
+                "target_device": "battery_02",
+                "action": "charge",
+                "priority": 1.0,
+            },
+            {
+                **CONFLICT_REQUEST["decisions"][1],
+                "source_node": "edge_4",
+                "target_device": "battery_02",
+                "action": "discharge",
+                "priority": 0.9,
+            },
+        ],
+        "global_constraints": {
+            "battery_01_max_power_kw": 100,
+            "battery_02_max_power_kw": 100,
+            "allow_charge_and_discharge_same_time": False,
+        },
+    }
+
+    result = resolve_decisions(request)
+
+    assert result["conflict_type"] == "opposite_action"
+    assert result["selected_source_node"] == "edge_1"
+    assert result["final_action"] == "charge"
+
+
 def test_non_conflicting_decisions_select_highest_priority_decision():
     request = {
         **CONFLICT_REQUEST,
@@ -105,6 +227,19 @@ def test_non_conflicting_decisions_select_highest_priority_decision():
 )
 def test_invalid_consistency_requests_return_http_400(payload):
     response = TestClient(consistency_app.app).post("/consistency/resolve", json=payload)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("payload", [None, [], {"decision_id": "decision_001"}, {**CONFLICT_REQUEST, "decisions": [{key: value for key, value in CONFLICT_REQUEST["decisions"][0].items() if key != "action"}]}, {**CONFLICT_REQUEST, "decisions": [{**CONFLICT_REQUEST["decisions"][0], "action": []}]}])
+def test_malformed_json_values_return_http_400_not_framework_or_type_errors(payload):
+    response = TestClient(consistency_app.app).post("/consistency/resolve", json=payload)
+
+    assert response.status_code == 400
+
+
+def test_missing_consistency_request_body_returns_http_400():
+    response = TestClient(consistency_app.app).post("/consistency/resolve")
 
     assert response.status_code == 400
 

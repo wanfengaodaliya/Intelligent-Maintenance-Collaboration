@@ -28,26 +28,47 @@ TASK = {
 }
 
 
-def test_main_flow_uses_one_task_id_through_all_results():
-    edge = infer_edge_v01(TASK)
+def run_main_flow(task):
+    edge = infer_edge_v01(task)
     schedule = decide(
         {
-            "task": TASK,
+            "task": task,
             "edge_result": edge,
             "network_state": {"latency_ms": 30, "bandwidth_mbps": 20, "packet_loss": 0.01, "cloud_available": True},
             "node_state": {"edge_cpu_usage": 0.55, "edge_memory_usage": 0.62, "cloud_queue_length": 3, "fog_available": True},
         }
     )
-    cloud = infer_cloud_v01(
-        {
-            "task_id": TASK["task_id"],
-            "scenario": TASK["scenario"],
-            "task_type": TASK["task_type"],
-            "source_node": TASK["source_node"],
-            "data": TASK["data"],
-            "edge_result": edge,
-        }
-    )
+    cloud = None
+    if schedule["route"] == "cloud":
+        cloud = infer_cloud_v01(
+            {
+                "task_id": task["task_id"],
+                "scenario": task["scenario"],
+                "task_type": task["task_type"],
+                "source_node": task["source_node"],
+                "data": task["data"],
+                "edge_result": edge,
+            }
+        )
+    return edge, schedule, cloud
+
+
+def test_cloud_route_uses_one_task_id_through_cloud_result():
+    low_confidence_task = {
+        **TASK,
+        "data": {**TASK["data"], "current": 1.0, "load": 0.4},
+    }
+
+    edge, schedule, cloud = run_main_flow(low_confidence_task)
+
+    assert schedule["route"] == "cloud"
+    assert cloud is not None
+    assert {low_confidence_task["task_id"], edge["task_id"], schedule["task_id"], cloud["task_id"]} == {"task_0001"}
+
+
+def test_edge_route_does_not_produce_a_cloud_result():
+    edge, schedule, cloud = run_main_flow(TASK)
 
     assert schedule["route"] == "edge"
-    assert {TASK["task_id"], edge["task_id"], schedule["task_id"], cloud["task_id"]} == {"task_0001"}
+    assert cloud is None
+    assert {TASK["task_id"], edge["task_id"], schedule["task_id"]} == {"task_0001"}

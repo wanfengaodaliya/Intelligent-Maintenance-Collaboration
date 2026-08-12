@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from typing import Any
+
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from common.config import load_config
@@ -23,7 +25,7 @@ def health() -> dict[str, object]:
 
 
 @app.post("/consistency/resolve", response_model=None)
-def resolve(payload: dict) -> dict | JSONResponse:
+def resolve(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         return resolve_decisions(payload)
     except ConsistencyValidationError as error:

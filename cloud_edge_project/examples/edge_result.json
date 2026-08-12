@@ -1,6 +1,6 @@
 {
   "task_id": "task_0001",
-  "node_id": "edge_01",
+  "node_id": "edge_1",
   "model_name": "edge_small_model",
   "label": "abnormal",
   "confidence": 0.92,

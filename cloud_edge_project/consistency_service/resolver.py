@@ -22,7 +22,7 @@ _DECISION_FIELDS = (
 )
 
 
-def resolve_decisions(request: Mapping[str, Any]) -> dict[str, Any]:
+def resolve_decisions(request: Any) -> dict[str, Any]:
     """Resolve V0.1 energy decisions with deterministic priority rules."""
 
     validated = _validate_request(request)
@@ -30,24 +30,8 @@ def resolve_decisions(request: Mapping[str, Any]) -> dict[str, Any]:
     constraints = validated["global_constraints"]
     grouped = _group_by_target_device(decisions)
 
-    has_opposite_action = any(
-        not constraints["allow_charge_and_discharge_same_time"]
-        and {decision["action"] for decision in group} == {"charge", "discharge"}
-        for group in grouped.values()
-    )
-    has_power_overload = any(
-        sum(decision["power_kw"] for decision in group)
-        > constraints[f"{target_device}_max_power_kw"]
-        for target_device, group in grouped.items()
-    )
-    selected = max(decisions, key=lambda decision: (decision["priority"], decision["confidence"]))
-
-    if has_opposite_action:
-        conflict_type: str | None = "opposite_action"
-    elif has_power_overload:
-        conflict_type = "power_overload"
-    else:
-        conflict_type = None
+    conflict_type, candidates = _conflict_candidates(grouped, constraints)
+    selected = max(candidates, key=lambda decision: (decision["priority"], decision["confidence"]))
 
     return {
         "decision_id": validated["decision_id"],
@@ -55,12 +39,12 @@ def resolve_decisions(request: Mapping[str, Any]) -> dict[str, Any]:
         "conflict_type": conflict_type,
         "final_action": selected["action"],
         "selected_source_node": selected["source_node"],
-        "reason": f"{selected['action']} decision has higher priority and confidence",
+        "reason": _selection_reason(candidates, selected),
         "resolved": True,
     }
 
 
-def _validate_request(request: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_request(request: Any) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         raise ConsistencyValidationError("request must be an object")
     decision_id = _non_empty_string(request.get("decision_id"), "decision_id")
@@ -85,7 +69,7 @@ def _validate_decision(decision: Any, index: int) -> dict[str, Any]:
     if missing:
         raise ConsistencyValidationError(f"decisions[{index}] missing field: {missing[0]}")
     action = decision["action"]
-    if action not in {"charge", "discharge"}:
+    if not isinstance(action, str) or action not in {"charge", "discharge"}:
         raise ConsistencyValidationError(f"decisions[{index}].action must be charge or discharge")
     power_kw = _number(decision["power_kw"], f"decisions[{index}].power_kw")
     if power_kw < 0:
@@ -127,6 +111,39 @@ def _group_by_target_device(decisions: list[dict[str, Any]]) -> dict[str, list[d
     for decision in decisions:
         grouped.setdefault(decision["target_device"], []).append(decision)
     return grouped
+
+
+def _conflict_candidates(
+    grouped: dict[str, list[dict[str, Any]]], constraints: dict[str, Any]
+) -> tuple[str | None, list[dict[str, Any]]]:
+    if not constraints["allow_charge_and_discharge_same_time"]:
+        for decisions in grouped.values():
+            if {decision["action"] for decision in decisions} == {"charge", "discharge"}:
+                return "opposite_action", decisions
+
+    for target_device, decisions in grouped.items():
+        by_action: dict[str, list[dict[str, Any]]] = {}
+        for decision in decisions:
+            by_action.setdefault(decision["action"], []).append(decision)
+        max_power_kw = constraints[f"{target_device}_max_power_kw"]
+        for action_decisions in by_action.values():
+            if sum(decision["power_kw"] for decision in action_decisions) > max_power_kw:
+                return "power_overload", action_decisions
+
+    return None, [decision for decisions in grouped.values() for decision in decisions]
+
+
+def _selection_reason(candidates: list[dict[str, Any]], selected: dict[str, Any]) -> str:
+    other_decisions = [decision for decision in candidates if decision is not selected]
+    if all(
+        selected["priority"] > decision["priority"]
+        and selected["confidence"] > decision["confidence"]
+        for decision in other_decisions
+    ):
+        return f"{selected['action']} decision has higher priority and confidence"
+    if all(selected["priority"] > decision["priority"] for decision in other_decisions):
+        return f"{selected['action']} decision has highest priority; confidence is used only to break priority ties"
+    return f"{selected['action']} decision has highest priority and confidence among tied priorities"
 
 
 def _non_empty_string(value: Any, field: str) -> str:
