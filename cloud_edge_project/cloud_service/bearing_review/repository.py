@@ -152,6 +152,13 @@ class BearingReviewRepository:
                 (_json(result), now, bearing_review_id),
             )
 
+    def fail(self, bearing_review_id: str, error_code: str) -> None:
+        with connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE bearing_review SET status='FAILED',error_code=?,updated_at_ns=? WHERE bearing_review_id=?",
+                (error_code, time.time_ns(), bearing_review_id),
+            )
+
     @staticmethod
     def _get_in_connection(connection: Any, bearing_review_id: str) -> dict[str, Any]:
         row = connection.execute("SELECT * FROM bearing_review WHERE bearing_review_id=?", (bearing_review_id,)).fetchone()

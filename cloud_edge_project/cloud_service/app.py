@@ -12,12 +12,13 @@ from typing import Any
 
 import requests
 from fastapi import BackgroundTasks, Body, FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
+from scenarios.bearing.cloud.model_update.config import load_label_mapping
 from cloud_service.bearing_review.service import (
     BearingReviewService,
     BearingReviewConflictError,
@@ -470,13 +471,29 @@ def get_latest_global_analysis(
 
 
 def _model_update_service() -> ModelUpdateService:
-    return ModelUpdateService(load_cloud_settings().database_path)
+    settings = load_cloud_settings()
+    source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
+    label_mapping_path = os.getenv("PADERBORN_LABEL_MAPPING_PATH")
+    data_root = os.getenv("MODEL_UPDATE_DATA_ROOT")
+    return ModelUpdateService(
+        settings.database_path,
+        data_root=Path(data_root) if data_root else None,
+        packet_source_database_path=(
+            Path(source_database) if source_database else None
+        ),
+        label_mapping=load_label_mapping(
+            Path(label_mapping_path) if label_mapping_path else None
+        ),
+    )
 
 
 def _model_update_error_response(error: ModelUpdateError) -> JSONResponse:
     status_code = 404 if error.code in {
-        "GLOBAL_ANALYSIS_NOT_FOUND", "UPDATE_NOT_FOUND", "UPDATE_FILE_NOT_FOUND"
-    } else 409 if error.code in {"INVALID_UPDATE_STATE", "UPDATE_FILE_CHANGED"} else 400
+        "GLOBAL_ANALYSIS_NOT_FOUND",
+        "PROBLEM_CANDIDATE_NOT_FOUND",
+        "UPDATE_NOT_FOUND",
+        "DATASET_MANIFEST_NOT_FOUND",
+    } else 409 if error.code == "INVALID_UPDATE_STATE" else 400
     return JSONResponse(status_code=status_code, content={"error_code": error.code})
 
 
@@ -489,10 +506,49 @@ def create_model_update(payload: dict) -> dict | JSONResponse:
 
 
 @app.post("/cloud/model-update/{update_id}/validate", response_model=None)
-def validate_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSONResponse:
+def validate_model_update(update_id: str, payload: Any = Body(...)) -> dict | JSONResponse:
     try:
-        use_demo_data = bool(payload.get("use_demo_data", False)) if isinstance(payload, dict) else False
-        return _model_update_service().validate(update_id, use_demo_data=use_demo_data)
+        test_results = payload.get("test_results") if isinstance(payload, dict) else None
+        if not isinstance(test_results, list):
+            raise ModelUpdateError("INVALID_VALIDATION_RESULT")
+        return _model_update_service().validate(update_id, test_results)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/prepare-data", response_model=None)
+def prepare_model_update_data(
+    update_id: str, payload: Any = Body(None)
+) -> dict | JSONResponse:
+    try:
+        version = (
+            payload.get("feature_pipeline_version", "edge_feature_v1")
+            if isinstance(payload, dict)
+            else "edge_feature_v1"
+        )
+        return _model_update_service().prepare_data(
+            update_id, feature_pipeline_version=version
+        )
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/training-result", response_model=None)
+def register_model_training_result(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        if not isinstance(payload, dict):
+            raise ModelUpdateError("INVALID_TRAINING_RESULT")
+        return _model_update_service().register_training_result(update_id, payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/start-training", response_model=None)
+def start_model_update_training(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().start_training(update_id)
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
@@ -523,18 +579,48 @@ def reject_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSO
         return _model_update_error_response(error)
 
 
-@app.post("/cloud/model-update/{update_id}/distribute", response_model=None)
-def distribute_model_update(update_id: str) -> dict | JSONResponse:
+@app.post("/cloud/model-update/{update_id}/handoff-distribution", response_model=None)
+def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
     try:
-        return _model_update_service().distribute(update_id)
+        return _model_update_service().handoff_distribution(update_id)
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
 
-@app.get("/cloud/model-update/{update_id}/file", response_model=None)
-def download_model_update_file(update_id: str) -> FileResponse | JSONResponse:
+@app.post("/cloud/model-update/{update_id}/distribution-result", response_model=None)
+def record_model_update_distribution(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
     try:
-        return FileResponse(_model_update_service().download_path(update_id))
+        if not isinstance(payload, dict):
+            raise ModelUpdateError("INVALID_DISTRIBUTION_RESULT")
+        return _model_update_service().record_distribution_result(update_id, payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/post-validate", response_model=None)
+def post_validate_model_update(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        analysis_id = payload.get("analysis_id") if isinstance(payload, dict) else None
+        if not isinstance(analysis_id, str) or not analysis_id:
+            raise ModelUpdateError("INVALID_POST_VALIDATION_REQUEST")
+        return _model_update_service().post_validate(update_id, analysis_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/request-rollback", response_model=None)
+def request_model_update_rollback(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        requested_by = payload.get("requested_by") if isinstance(payload, dict) else None
+        return _model_update_service().request_rollback(
+            update_id, requested_by=requested_by
+        )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 

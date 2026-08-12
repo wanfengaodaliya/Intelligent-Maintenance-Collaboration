@@ -34,6 +34,9 @@ class SignalWindow:
     sequence_number: int
     start_seconds: float
     end_seconds: float
+    start_index: int
+    end_index: int
+    window_index: int
     data: dict[str, object]
 
 
@@ -59,6 +62,8 @@ class MatRecord:
             start = zero_based_index * duration_seconds
             end = start + duration_seconds
             data: dict[str, object] = {}
+            vibration_start_index = 0
+            vibration_end_index = 0
 
             for name, signal in self.series.items():
                 samples_per_window = round(signal.sample_rate_hz * duration_seconds)
@@ -66,6 +71,9 @@ class MatRecord:
                 first = origin + zero_based_index * samples_per_window
                 last = min(first + samples_per_window, len(signal.values))
                 values = signal.values[first:last].astype(float, copy=False).tolist()
+                if name == "vibration":
+                    vibration_start_index = first
+                    vibration_end_index = last
                 data[name] = {
                     "sample_rate_hz": signal.sample_rate_hz,
                     "sample_count": len(values),
@@ -85,6 +93,9 @@ class MatRecord:
                 sequence_number=zero_based_index + 1,
                 start_seconds=start,
                 end_seconds=end,
+                start_index=vibration_start_index,
+                end_index=vibration_end_index,
+                window_index=zero_based_index,
                 data=data,
             )
 

@@ -90,6 +90,10 @@ class EdgeTaskIngress:
         self._dispatch_index: dict[str, _TaskState] = {}
         self._tasks_mutex = threading.Lock()
 
+    @property
+    def validation_cache(self) -> EdgeValidationCache:
+        return self._validation_cache
+
     def register_task(self, dispatch: Mapping[str, Any]) -> TaskAck:
         """校验并原子登记一个设备任务；完全相同的重复派发幂等返回。"""
         received_at_ns = self._read_clock()

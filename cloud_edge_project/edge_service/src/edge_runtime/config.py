@@ -5,6 +5,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Mapping
 
 
@@ -38,11 +39,22 @@ class ControlServerConfig:
 
 
 @dataclass(frozen=True)
+class WindowTransferConfig:
+    cache_directory: Path = Path("data/edge_bearing_windows")
+    cloud_base_url: str = "http://127.0.0.1:8004"
+    hard_limit_bytes: int = 20 * 1024**3
+    warning_bytes: int = 16 * 1024**3
+    reserved_free_bytes: int = 10 * 1024**3
+    dispatch_interval_seconds: float = 1.0
+
+
+@dataclass(frozen=True)
 class EdgeRuntimeConfig:
     edge_node_id: str = "edge_01"
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
+    window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -118,4 +130,11 @@ class EdgeRuntimeConfig:
             for node_id, url in self.cloud_node_urls.items()
         ):
             errors.append("cloud_node_urls must map node IDs to HTTP(S) URLs")
+        transfer = self.window_transfer
+        if not transfer.cloud_base_url.startswith(("http://", "https://")):
+            errors.append("window_transfer.cloud_base_url must use HTTP or HTTPS")
+        if not 0 < transfer.warning_bytes < transfer.hard_limit_bytes:
+            errors.append("window transfer warning limit must be below the hard limit")
+        if transfer.reserved_free_bytes < 0 or transfer.dispatch_interval_seconds <= 0:
+            errors.append("window transfer reserve and interval are invalid")
         return errors

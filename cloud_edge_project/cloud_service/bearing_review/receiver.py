@@ -21,7 +21,16 @@ class BearingRawContextReceiver:
         request = self.repository.context_request(batch["request_id"])
         if request is None:
             raise BearingReviewValidationError("UNKNOWN_CONTEXT_REQUEST")
-        if request["status"] != "WAITING_FOR_CONTEXT":
+        if request["status"] == "SUCCEEDED":
+            received, expected = self.repository.progress(request["bearing_review_id"])
+            return {
+                "request_id": request["raw_context_request_id"],
+                "status": "accepted",
+                "received_packet_count": received,
+                "expected_packet_count": expected,
+                "results": [],
+            }
+        if request["status"] not in {"WAITING_FOR_CONTEXT", "PROCESSING", "FAILED"}:
             raise BearingReviewValidationError("CONTEXT_REQUEST_NOT_WAITING")
         for field in ("device_id", "task_id", "bearing_id", "sender_id"):
             if batch[field] != request[field]:
@@ -77,6 +86,9 @@ def _validate_raw_packet(packet: Any, request: dict[str, Any]) -> None:
             raise BearingReviewValidationError("CONTEXT_REQUEST_MISMATCH")
     if not isinstance(packet.get("sequence_number"), int) or isinstance(packet["sequence_number"], bool) or packet["sequence_number"] <= 0:
         raise BearingReviewValidationError("INVALID_CONTEXT_PACKET")
+    timestamp = packet.get("end_generate_timestamp_ns")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp <= 0:
+        raise BearingReviewValidationError("INVALID_CONTEXT_PACKET")
     data = packet.get("data")
     if not isinstance(data, dict):
         raise BearingReviewValidationError("INVALID_CONTEXT_PACKET")
@@ -90,6 +102,9 @@ def _validate_raw_packet(packet: Any, request: dict[str, Any]) -> None:
     ):
         signal = data.get(name)
         if not isinstance(signal, dict) or signal.get("sample_rate_hz") != rate or signal.get("sample_count") != count:
+            raise BearingReviewValidationError("INVALID_SAMPLE_CONFIG")
+        expected_unit = {"vibration": "mm/s", "phase_current_1_A": "A", "phase_current_2_A": "A"}.get(name)
+        if expected_unit is not None and signal.get("unit") != expected_unit:
             raise BearingReviewValidationError("INVALID_SAMPLE_CONFIG")
         values = signal.get("values")
         if not isinstance(values, list) or len(values) != count or any(not isinstance(value, (int, float)) or isinstance(value, bool) or not isfinite(float(value)) for value in values):

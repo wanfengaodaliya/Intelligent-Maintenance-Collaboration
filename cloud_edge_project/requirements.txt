@@ -3,4 +3,5 @@ uvicorn
 requests
 numpy>=1.26,<3
 scipy>=1.9,<2
+paho-mqtt==2.1.0
 

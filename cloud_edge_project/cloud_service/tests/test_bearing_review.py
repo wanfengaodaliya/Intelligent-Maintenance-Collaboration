@@ -123,16 +123,20 @@ def test_bearing_review_rejects_context_packet_outside_manifest(tmp_path: Path):
 
 
 def _raw_packet(number: int) -> dict:
-    def signal(sample_rate_hz: int, sample_count: int, value: float) -> dict:
-        return {"sample_rate_hz": sample_rate_hz, "sample_count": sample_count, "values": [value] * sample_count}
+    def signal(sample_rate_hz: int, sample_count: int, value: float, unit: str | None = None) -> dict:
+        result = {"sample_rate_hz": sample_rate_hz, "sample_count": sample_count, "values": [value] * sample_count}
+        if unit is not None:
+            result["unit"] = unit
+        return result
 
     return {
         "device_id": "device_01", "task_id": "task_01", "bearing_id": "bearing_01", "sender_id": "sender_01",
         "packet_id": f"packet_{number:02d}", "sequence_number": number,
+        "end_generate_timestamp_ns": 1_700_000_000_000_000_000 + number * 50_000_000,
         "data": {
-            "vibration": signal(64_000, 3_200, 0.1),
-            "phase_current_1_A": signal(64_000, 3_200, 0.1),
-            "phase_current_2_A": signal(64_000, 3_200, 0.1),
+            "vibration": signal(64_000, 3_200, 0.1, "mm/s"),
+            "phase_current_1_A": signal(64_000, 3_200, 0.1, "A"),
+            "phase_current_2_A": signal(64_000, 3_200, 0.1, "A"),
             "shaft_speed_rpm": signal(4_000, 200, 1.0),
             "load_torque_nm": signal(4_000, 200, 1.0),
             "bearing_radial_load_n": signal(4_000, 200, 1.0),
@@ -161,3 +165,13 @@ def test_bearing_review_produces_structured_result_only_after_all_twenty_packets
     assert completed["received_packet_count"] == 20
     assert completed["cloud_bearing_result"]["review_packet_count"] == 20
     assert completed["cloud_bearing_result"]["result_source"] == "cloud_bearing_review"
+    assert completed["cloud_bearing_result"]["enhanced_analysis"]["status"] == "succeeded"
+    assert completed["cloud_bearing_result"]["model_version"] == "cloud-diagnosis-v1"
+    assert completed["cloud_bearing_result"]["enhanced_analysis"]["operating_conditions"] == {
+        "speed_rpm": 1.0,
+        "radial_load_n": 1.0,
+    }
+
+    duplicate = receiver.receive_batch({**base, "packets": [_raw_packet(number) for number in range(1, 21)]})
+    assert duplicate["status"] == "accepted"
+    assert duplicate["received_packet_count"] == 20

@@ -7,6 +7,7 @@ from typing import Any
 
 from .contracts import EXPECTED_PACKET_COUNT
 from .repository import BearingReviewRepository
+from .enhanced_bridge import BearingWindowEnhancedBridge
 
 
 class BearingReviewProcessor:
@@ -25,7 +26,18 @@ class BearingReviewProcessor:
         if len(packets) != EXPECTED_PACKET_COUNT:
             raise ValueError("BEARING_REVIEW_INCOMPLETE")
         aggregation = _aggregate(packets)
-        diagnosis = _diagnose(aggregation["enhanced_features"])
+        try:
+            enhanced = BearingWindowEnhancedBridge(
+                self.repository.database_path
+            ).analyze(review, packets)
+        except Exception as error:
+            self.repository.fail(bearing_review_id, type(error).__name__.upper())
+            raise
+        model = enhanced["model_evidence"]
+        cloud_state = model.get("label") or "normal"
+        cloud_confidence = model.get("probability")
+        if cloud_confidence is None:
+            cloud_confidence = 0.5
         result = {
             "bearing_review_id": bearing_review_id,
             "device_id": review["device_id"],
@@ -34,12 +46,14 @@ class BearingReviewProcessor:
             "window_index": review["window_index"],
             "edge_state": review["edge_state"],
             "edge_confidence": review["edge_confidence"],
-            "cloud_state": diagnosis["state"],
-            "cloud_confidence": diagnosis["confidence"],
+            "cloud_state": cloud_state,
+            "cloud_confidence": cloud_confidence,
             "review_packet_count": EXPECTED_PACKET_COUNT,
             "result_source": "cloud_bearing_review",
-            "model_version": self.model_version,
+            "model_version": model.get("model_version", self.model_version),
             "aggregation": aggregation,
+            "enhanced_analysis_review_id": enhanced["review_id"],
+            "enhanced_analysis": enhanced,
         }
         self.repository.complete(bearing_review_id, aggregation=aggregation, result=result)
         return result
@@ -68,11 +82,3 @@ def _aggregate(packets: list[dict[str, Any]]) -> dict[str, Any]:
             "vibration_peak": peak,
         },
     }
-
-
-def _diagnose(features: dict[str, float]) -> dict[str, Any]:
-    if features["vibration_peak"] >= 4.0 or features["vibration_rms_mean"] >= 2.0:
-        return {"state": "abnormal", "confidence": 0.9}
-    if features["vibration_peak"] >= 2.0 or features["vibration_rms_mean"] >= 1.0:
-        return {"state": "warning", "confidence": 0.78}
-    return {"state": "normal", "confidence": 0.92}

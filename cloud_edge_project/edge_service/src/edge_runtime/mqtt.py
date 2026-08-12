@@ -40,7 +40,7 @@ class MqttIngress:
         if hasattr(self.client, "manual_ack_set"):
             self.client.manual_ack_set(True)
         self.client.reconnect_delay_set(min_delay=1, max_delay=10)
-        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(
+        self._queue: queue.Queue[tuple[dict[str, Any], Any]] = queue.Queue(
             maxsize=config.ingress_queue_capacity
         )
         self._stop = threading.Event()
@@ -112,12 +112,11 @@ class MqttIngress:
             self._ack(message)
             return
         try:
-            self._queue.put(value, timeout=1.0)
+            self._queue.put((value, message), timeout=1.0)
         except queue.Full:
             self._emit_error("INGRESS_QUEUE_FULL", "edge MQTT ingress queue is full")
             client.disconnect()
             return
-        self._ack(message)
 
     def _ack(self, message: Any) -> None:
         if hasattr(self.client, "ack"):
@@ -128,11 +127,13 @@ class MqttIngress:
     def _consume(self) -> None:
         while not self._stop.is_set():
             try:
-                packet = self._queue.get(timeout=0.2)
+                packet, message = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
-                self.on_packet(packet)
+                accepted = self.on_packet(packet)
+                if accepted is not False:
+                    self._ack(message)
             except Exception as exc:
                 self._emit_error("PACKET_HANDLER_FAILED", repr(exc))
             finally:
@@ -143,6 +144,14 @@ class MqttIngress:
             self.on_error({"error_code": code, "message": message, "stage": "mqtt_ingress"})
         except Exception:
             pass
+
+    @property
+    def connected(self) -> bool:
+        return self._connected.is_set()
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queue.qsize()
 
 
 class MqttJsonPublisher:

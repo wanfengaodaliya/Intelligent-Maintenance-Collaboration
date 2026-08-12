@@ -4,6 +4,13 @@ from .device import DeviceTaskAggregator
 from .cloud_http import HttpCloudReviewGateway
 from .workflow import BearingAggregationWorkflow, CloudReviewGateway
 from .window import BearingWindowAggregator, WindowConflictPolicy
+from .window_transfer import (
+    DurableWindowReviewGateway,
+    WindowReviewDispatcher,
+    WindowReviewHttpClient,
+    WindowReviewStore,
+    WindowTransferError,
+)
 
 __all__ = [
     "BearingAggregationWorkflow",
@@ -12,4 +19,9 @@ __all__ = [
     "DeviceTaskAggregator",
     "HttpCloudReviewGateway",
     "WindowConflictPolicy",
+    "DurableWindowReviewGateway",
+    "WindowReviewDispatcher",
+    "WindowReviewHttpClient",
+    "WindowReviewStore",
+    "WindowTransferError",
 ]

@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """边缘节点对调度器、MQTT、汇总模块和云端的运行时集成。"""
 
-from .config import ControlServerConfig, EdgeRuntimeConfig, MqttConfig, SchedulerConfig
+from .config import (
+    ControlServerConfig,
+    EdgeRuntimeConfig,
+    MqttConfig,
+    SchedulerConfig,
+    WindowTransferConfig,
+)
 from .contracts import action_level_for
 from .coordinator import EdgeRuntimeCoordinator
 from .factory import EdgeRuntimeAssembly, build_edge_runtime
@@ -14,6 +20,7 @@ __all__ = [
     "EdgeRuntimeAssembly",
     "EdgeRuntimeService",
     "MqttConfig",
+    "WindowTransferConfig",
     "SchedulerConfig",
     "action_level_for",
     "build_edge_runtime",

@@ -49,7 +49,11 @@ class ContextWindowLoader:
         ]
         loaded.sort(key=lambda item: item.relative_position)
         positions = [item.relative_position for item in loaded]
-        expected = list(range(-20, 1)) if request["request_status"] == "complete" else list(range(min(positions), 1))
+        expected = (
+            list(range(-request["before_packet_count"], 1))
+            if request["request_status"] == "complete"
+            else list(range(min(positions), 1))
+        )
         if positions != expected or (request["request_status"] == "partial_context" and not -19 <= min(positions) <= -16):
             raise AggregationError("CONTEXT_SEQUENCE_GAP", "context packets are not a continuous eligible suffix")
         return review, request, loaded
