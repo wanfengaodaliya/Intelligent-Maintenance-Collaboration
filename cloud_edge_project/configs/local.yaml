@@ -10,6 +10,9 @@ services:
   cloud:
     host: "127.0.0.1"
     port: 8004
+  consistency:
+    host: "127.0.0.1"
+    port: 8005
   log:
     host: "127.0.0.1"
     port: 8006
