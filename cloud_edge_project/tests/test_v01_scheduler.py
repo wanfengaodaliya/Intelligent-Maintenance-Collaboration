@@ -88,3 +88,36 @@ def test_sender_assignment_requests_keep_assignment_response(monkeypatch):
     monkeypatch.setattr(scheduler_api, "scheduler", ExistingAssignmentScheduler())
 
     assert scheduler_api.decide(sender_request) == expected
+
+
+def test_health_uses_scheduler_port_from_configuration(monkeypatch):
+    monkeypatch.setattr(
+        scheduler_api,
+        "load_config",
+        lambda: {"services": {"scheduler": {"host": "10.0.0.3", "port": 9123}}},
+    )
+
+    assert scheduler_api.health()["port"] == 9123
+
+
+def test_run_uses_scheduler_configuration_unless_arguments_override(monkeypatch):
+    started_at = []
+
+    class Server:
+        def __init__(self, address, handler):
+            started_at.append(address)
+
+        def serve_forever(self):
+            return None
+
+    monkeypatch.setattr(
+        scheduler_api,
+        "load_config",
+        lambda: {"services": {"scheduler": {"host": "10.0.0.3", "port": 9123}}},
+    )
+    monkeypatch.setattr(scheduler_api, "ThreadingHTTPServer", Server)
+
+    scheduler_api.run()
+    scheduler_api.run(host="127.0.0.9", port=9456)
+
+    assert started_at == [("10.0.0.3", 9123), ("127.0.0.9", 9456)]

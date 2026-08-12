@@ -6,8 +6,16 @@ from __future__ import annotations
 import atexit
 import json
 import sqlite3
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Mapping
+
+try:
+    from common.config import load_config
+except ImportError:  # Allows running this file directly: python scheduler/api.py
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.config import load_config
 
 try:
     from .assignment_scheduler import AssignmentError, AssignmentScheduler
@@ -66,6 +74,7 @@ def save_task_result(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def health() -> dict[str, Any]:
+    scheduler_config = _scheduler_config()
     return {
         "service": "scheduler_service",
         "node_id": "scheduler_1",
@@ -73,7 +82,7 @@ def health() -> dict[str, Any]:
         "model_loaded": True,
         "model_backend": "rule",
         "device": "cpu",
-        "port": 8003,
+        "port": scheduler_config["port"],
         "edge_nodes": node_registry.status_counts(),
     }
 
@@ -188,10 +197,17 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def run(host: str = "127.0.0.1", port: int = 8003) -> None:
-    server = ThreadingHTTPServer((host, port), SchedulerRequestHandler)
-    print(f"scheduler service running at http://{host}:{port}")
+def run(host: str | None = None, port: int | None = None) -> None:
+    scheduler_config = _scheduler_config()
+    selected_host = scheduler_config["host"] if host is None else host
+    selected_port = scheduler_config["port"] if port is None else port
+    server = ThreadingHTTPServer((selected_host, selected_port), SchedulerRequestHandler)
+    print(f"scheduler service running at http://{selected_host}:{selected_port}")
     server.serve_forever()
+
+
+def _scheduler_config() -> Mapping[str, Any]:
+    return load_config()["services"]["scheduler"]
 
 
 if __name__ == "__main__":
