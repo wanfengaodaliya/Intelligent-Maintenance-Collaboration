@@ -214,6 +214,24 @@ def test_non_conflicting_decisions_select_highest_priority_decision():
     assert result["resolved"] is True
 
 
+def test_single_non_conflicting_decision_reason_does_not_claim_comparison():
+    result = resolve_decisions({**CONFLICT_REQUEST, "decisions": [CONFLICT_REQUEST["decisions"][0]]})
+
+    assert result["reason"] == "only applicable decision was selected"
+
+
+def test_single_power_overload_reason_does_not_claim_comparison():
+    result = resolve_decisions(
+        {
+            **CONFLICT_REQUEST,
+            "decisions": [{**CONFLICT_REQUEST["decisions"][0], "power_kw": 101}],
+        }
+    )
+
+    assert result["conflict_type"] == "power_overload"
+    assert result["reason"] == "only applicable decision was selected"
+
+
 @pytest.mark.parametrize(
     "payload",
     [

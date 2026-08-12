@@ -135,6 +135,8 @@ def _conflict_candidates(
 
 def _selection_reason(candidates: list[dict[str, Any]], selected: dict[str, Any]) -> str:
     other_decisions = [decision for decision in candidates if decision is not selected]
+    if not other_decisions:
+        return "only applicable decision was selected"
     if all(
         selected["priority"] > decision["priority"]
         and selected["confidence"] > decision["confidence"]
