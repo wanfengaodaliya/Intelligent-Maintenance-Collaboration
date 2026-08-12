@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from common.config import load_config
-from common.schemas import ContractError, error_response
+from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
 
@@ -108,7 +108,7 @@ def health() -> dict[str, object]:
 @app.post("/edge/infer", response_model=None)
 def edge_infer(payload: dict) -> dict | JSONResponse:
     try:
-        if "task_id" in payload:
+        if is_v01_task_request(payload):
             return infer_edge_v01(payload)
         return infer_edge(payload)
     except ContractError as error:

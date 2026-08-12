@@ -19,6 +19,13 @@ SAMPLE_COUNT = 800
 DURATION_MS = 50
 ROUTES = {"edge", "cloud", "fallback_edge"}
 V01_ROUTES = {"edge", "fog", "cloud", "fallback_edge", "edge_cloud"}
+V01_TASK_REQUEST_FIELDS = {
+    "task_id", "scenario", "source_node", "task_type", "timestamp",
+    "deadline_ms", "priority", "data_size_kb", "data",
+}
+V01_CLOUD_REQUEST_FIELDS = {
+    "task_id", "scenario", "task_type", "source_node", "data", "edge_result",
+}
 LABELS = {"normal", "abnormal"}
 RISK_LEVELS = {"low", "medium", "high"}
 PROCESSING_STATUSES = {"perception_completed", "perception_rejected"}
@@ -87,6 +94,18 @@ def require_confidence(value: Any, field: str, packet_id: str | None = None) -> 
     return confidence
 
 
+def is_v01_task_request(payload: Any) -> bool:
+    """Return whether a payload has the complete V0.1 edge request shape."""
+
+    return isinstance(payload, dict) and V01_TASK_REQUEST_FIELDS.issubset(payload)
+
+
+def is_v01_cloud_request(payload: Any) -> bool:
+    """Return whether a payload has the complete V0.1 cloud request shape."""
+
+    return isinstance(payload, dict) and V01_CLOUD_REQUEST_FIELDS.issubset(payload)
+
+
 def validate_task_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate the V0.1 TaskRequest contract."""
 
@@ -99,7 +118,10 @@ def validate_task_request(payload: dict[str, Any]) -> dict[str, Any]:
     require_confidence(require_field(task, "priority", task_id), "priority", task_id)
     if require_number(require_field(task, "data_size_kb", task_id), "data_size_kb", task_id) <= 0:
         raise ContractError("INVALID_PACKET", "data_size_kb must be greater than 0", task_id)
-    require_mapping(require_field(task, "data", task_id), "data", task_id)
+    data = require_mapping(require_field(task, "data", task_id), "data", task_id)
+    for field in ("temperature", "vibration", "current"):
+        require_number(require_field(data, field, task_id), f"data.{field}", task_id)
+    require_confidence(require_field(data, "load", task_id), "data.load", task_id)
     return task
 
 

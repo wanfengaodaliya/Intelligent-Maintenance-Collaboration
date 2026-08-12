@@ -42,6 +42,7 @@ from common.config import load_config
 from common.schemas import (
     ContractError,
     error_response,
+    is_v01_cloud_request,
     require_confidence,
     require_field,
     require_mapping,
@@ -245,7 +246,7 @@ def health() -> dict[str, object] | JSONResponse:
 @app.post("/cloud/infer", response_model=None)
 def cloud_infer(payload: dict) -> dict | JSONResponse:
     try:
-        if "task_id" in payload:
+        if is_v01_cloud_request(payload):
             return infer_cloud_v01(payload)
         settings = load_cloud_settings()
         handler = get_scenario_handler(

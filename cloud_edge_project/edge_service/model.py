@@ -20,9 +20,6 @@ def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
 
     validated = validate_task_request(task)
     data = validated["data"]
-    for field in ("temperature", "vibration", "current", "load"):
-        if field not in data:
-            raise ValueError(f"data.{field} is required for edge inference")
 
     signals = sum((
         float(data["temperature"]) >= 70.0,
@@ -35,7 +32,7 @@ def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
     risk_level = "high" if signals >= 3 else "medium" if label == "abnormal" else "low"
     return {
         "task_id": validated["task_id"],
-        "node_id": validated["source_node"],
+        "node_id": EDGE_NODE_ID,
         "model_name": V01_MODEL_NAME,
         "label": label,
         "confidence": confidence,
