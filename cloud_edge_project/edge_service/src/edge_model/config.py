@@ -59,8 +59,10 @@ class EdgeModelConfig:
 
     def validate(self) -> List[str]:
         errors: List[str] = []
-        if self.diagnostic_backend not in {"mock", "http"}:
-            errors.append("diagnostic_backend must be mock or http")
+        if self.diagnostic_backend not in {"mock", "http", "rf_50ms_integration"}:
+            errors.append(
+                "diagnostic_backend must be mock, http or rf_50ms_integration"
+            )
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):

@@ -25,7 +25,10 @@ for _path in (_SRC, _REPO):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from edge_diagnosis import MockDiagnosticModel  # noqa: E402
+from edge_diagnosis import (  # noqa: E402
+    MockDiagnosticModel,
+    RandomForestDiagnosticModel,
+)
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.contracts import (  # noqa: E402
     EXECUTION_CODE_FALLBACK,
@@ -181,9 +184,21 @@ def _packet(sequence: int, signals: dict[str, np.ndarray]) -> dict:
     }
 
 
-def _model_pipeline(mode: str, records: list, packet_results: list):
+def _model_pipeline(
+    mode: str,
+    records: list,
+    packet_results: list,
+    model_path: Path | None = None,
+    metadata_path: Path | None = None,
+):
     cfg = EdgeModelConfig()
-    cfg.diagnostic_backend = "http" if mode == "real" else "mock"
+    cfg.diagnostic_backend = (
+        "http"
+        if mode == "real"
+        else "rf_50ms_integration"
+        if mode == "rf-integration"
+        else "mock"
+    )
     cfg.fallback.allow_test_rule = True
     if mode == "fallback":
         cfg.model_client = ModelClientConfig(
@@ -199,20 +214,32 @@ def _model_pipeline(mode: str, records: list, packet_results: list):
         raise RealModelUnavailable(detail)
     if mode == "fallback" and health.ok:
         raise RuntimeError("fallback测试端口意外存在可用模型服务")
+    if mode == "rf-integration":
+        if model_path is None or metadata_path is None:
+            raise ValueError("rf-integration需要--model-path和--metadata-path")
+        runner = RandomForestDiagnosticModel(model_path, metadata_path)
+    else:
+        runner = MockDiagnosticModel(cfg.fallback.rule_version)
     pipeline = EdgeModelPipeline(
         cfg,
         client,
-        MockDiagnosticModel(cfg.fallback.rule_version),
+        runner,
         on_run_record=records.append,
         on_packet_result=packet_results.append,
     )
     return pipeline, health, readiness
 
 
-def run_minimal_loop(mode: str) -> dict:
+def run_minimal_loop(
+    mode: str,
+    model_path: Path | None = None,
+    metadata_path: Path | None = None,
+) -> dict:
     records: list = []
     packet_results: list = []
-    pipeline, health, readiness = _model_pipeline(mode, records, packet_results)
+    pipeline, health, readiness = _model_pipeline(
+        mode, records, packet_results, model_path, metadata_path
+    )
     cache = _validation_cache()
     ingress = EdgeTaskIngress(TaskIngressConfig(_EDGE_NODE_ID), cache)
     perception = EdgePerception(_perception_config())
@@ -290,7 +317,9 @@ def run_minimal_loop(mode: str) -> dict:
         "PacketResult序号不完整",
     )
     expected_mode = (
-        EXECUTION_CODE_FALLBACK if mode == "fallback" else EXECUTION_LOCAL_MODEL
+        EXECUTION_CODE_FALLBACK
+        if mode in {"fallback", "rf-integration"}
+        else EXECUTION_LOCAL_MODEL
     )
     _require(
         execution_modes == Counter({expected_mode: PACKET_COUNT}),
@@ -301,6 +330,11 @@ def run_minimal_loop(mode: str) -> dict:
         _require(
             all(not version.startswith("edge_rule_test") for version in versions),
             "真实模型结果包含测试规则版本",
+        )
+    elif mode == "rf-integration":
+        _require(
+            set(versions) == {"bearing-rf-50ms-integration-only-v1"},
+            "RF联调结果未使用明确的临时模型版本",
         )
     else:
         _require(
@@ -340,10 +374,18 @@ def _require(condition: bool, message: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-mode", choices=("fallback", "real"), default="fallback")
+    parser.add_argument(
+        "--model-mode",
+        choices=("fallback", "real", "rf-integration"),
+        default="fallback",
+    )
+    parser.add_argument("--model-path", type=Path)
+    parser.add_argument("--metadata-path", type=Path)
     args = parser.parse_args()
     try:
-        report = run_minimal_loop(args.model_mode)
+        report = run_minimal_loop(
+            args.model_mode, args.model_path, args.metadata_path
+        )
     except RealModelUnavailable as exc:
         report = {
             "status": "BLOCKED",

@@ -1,0 +1,63 @@
+{
+  "device_id": "device_01",
+  "bearing_id": "bearing_01",
+  "task_id": "sd_01_tk_0001",
+  "packet_id": "sd_01_tk_0001_bearing_01_pkt_001",
+  "sender_id": "sender_01",
+  "sequence_number": 1,
+  "end_generate_timestamp_ns": 1781920800050000000,
+  "feature_generated_at_ns": 1781920800075000000,
+  "perception_quality": {"status": "good", "flags": []},
+  "features": {
+    "vibration": {
+      "source_sample_rate_hz": 64000,
+      "analysis_sample_rate_hz": 16000,
+      "rms": 0.34,
+      "absolute_peak": 1.82,
+      "kurtosis": 3.21,
+      "dominant_frequency_hz": 240.0,
+      "band_power_ratio_500_2000": 0.31,
+      "spectral_entropy": 0.64,
+      "unit": "mm/s"
+    },
+    "phase_current_1": {
+      "source_sample_rate_hz": 64000,
+      "analysis_sample_rate_hz": 16000,
+      "rms_a": 2.35,
+      "absolute_peak_a": 3.42,
+      "unit": "A"
+    },
+    "phase_current_2": {
+      "source_sample_rate_hz": 64000,
+      "analysis_sample_rate_hz": 16000,
+      "rms_a": 2.29,
+      "absolute_peak_a": 3.38,
+      "unit": "A"
+    },
+    "current_relationship": {"current_imbalance_ratio": 0.026},
+    "operating_context": {
+      "shaft_speed_rpm": {
+        "mean": 900.0,
+        "last": 900.0,
+        "minimum": 899.5,
+        "maximum": 900.5,
+        "standard_deviation": 0.3
+      },
+      "load_torque_nm": {
+        "mean": 0.7,
+        "last": 0.7,
+        "minimum": 0.69,
+        "maximum": 0.71,
+        "standard_deviation": 0.01
+      },
+      "bearing_radial_load_n": {
+        "mean": 1000.0,
+        "last": 1000.0,
+        "minimum": 998.0,
+        "maximum": 1002.0,
+        "standard_deviation": 1.0
+      },
+      "bearing_module_temperature_c": 46.3
+    }
+  }
+}

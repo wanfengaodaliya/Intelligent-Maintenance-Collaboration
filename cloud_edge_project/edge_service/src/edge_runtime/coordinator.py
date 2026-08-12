@@ -18,6 +18,9 @@ from .contracts import action_level_for
 from .http import SchedulerReporter
 
 
+_INTEGRATION_ONLY_MODEL_VERSION_PREFIX = "bearing-rf-50ms-integration-only-"
+
+
 class JsonPublisher(Protocol):
     def publish(self, payload: Mapping[str, Any], *, timeout_seconds: float = 2.0) -> None: ...
 
@@ -127,6 +130,10 @@ class EdgeRuntimeCoordinator:
     ) -> None:
         workflow = self.aggregation_workflow
         if workflow is None or completion.edge is None or raw_uri is None:
+            return
+        if completion.edge.model_version.startswith(
+            _INTEGRATION_ONLY_MODEL_VERSION_PREFIX
+        ):
             return
         workflow.register_task(completion.device_id, completion.task_id, expected_bearing_ids)
         edge = completion.edge

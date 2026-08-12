@@ -58,7 +58,7 @@ class EdgeModelPipeline:
         errors = self.cfg.validate()
         if errors:
             raise ValueError("边缘模型配置校验失败: " + "; ".join(errors))
-        if self.cfg.diagnostic_backend == "mock":
+        if self.cfg.diagnostic_backend in {"mock", "rf_50ms_integration"}:
             self.started = True
             return
         url = (self.cfg.model_client.base_url or "").strip()
@@ -89,7 +89,7 @@ class EdgeModelPipeline:
         if not self.started:
             raise RuntimeError("边缘模型管线未启动")
         task = self._make_task(sender_id, perception)
-        if self.cfg.diagnostic_backend == "mock":
+        if self.cfg.diagnostic_backend in {"mock", "rf_50ms_integration"}:
             task.submit_ts = self._clock()
             self._run_fallback(task, None)
             return task.request_id

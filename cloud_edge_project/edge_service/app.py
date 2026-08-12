@@ -33,7 +33,7 @@ from edge_validation_cache import (  # noqa: E402
     ValidationCacheConfig,
 )
 from edge_aggregation import WindowTransferError  # noqa: E402
-from edge_diagnosis import MockDiagnosticModel  # noqa: E402
+from edge_diagnosis import diagnostic_runner_from_environment  # noqa: E402
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
@@ -129,14 +129,16 @@ def _build_runtime():
             relative_tolerance=1e-9,
         )
     )
-    model_config = EdgeModelConfig()
+    model_config = EdgeModelConfig(
+        diagnostic_backend=os.getenv("EDGE_DIAGNOSTIC_BACKEND", "mock")
+    )
     model_client = ModelClient(
         ModelClientConfig(base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"))
     )
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
-        MockDiagnosticModel(model_config.fallback.rule_version),
+        diagnostic_runner_from_environment(model_config),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
     )

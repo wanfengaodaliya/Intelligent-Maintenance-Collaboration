@@ -1,2 +1,5 @@
 # 项目内部 Git worktree 目录。
 .worktrees/
+
+# Local/generated model artifacts. Build or obtain these separately; do not commit them.
+artifacts/
