@@ -7,15 +7,17 @@ import atexit
 import json
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 
 try:
     from .assignment_scheduler import AssignmentError, AssignmentScheduler
     from .node_registry import NodeRegistry, RegistryError
+    from .rule_scheduler import decide_schedule
     from .task_repository import TaskRepository, TaskRepositoryError
 except ImportError:  # Allows running this file directly: python api.py
     from assignment_scheduler import AssignmentError, AssignmentScheduler
     from node_registry import NodeRegistry, RegistryError
+    from rule_scheduler import decide_schedule
     from task_repository import TaskRepository, TaskRepositoryError
 
 try:
@@ -34,9 +36,18 @@ node_registry.start_monitor()
 atexit.register(node_registry.stop_monitor)
 
 
-# 接收发送器的任务级调度请求，返回边缘节点 MQTT Topic
+# 同时兼容文档 6.2 的 V0.1 调度请求和发送器的任务级节点分配请求。
 def decide(request: dict[str, Any]) -> dict[str, Any]:
+    if _is_v01_schedule_request(request):
+        return decide_schedule(request)
     return scheduler.decide(request).to_dict()
+
+
+def _is_v01_schedule_request(request: Mapping[str, Any]) -> bool:
+    return all(
+        isinstance(request.get(field), Mapping)
+        for field in ("task", "edge_result", "network_state", "node_state")
+    )
 
 
 # 接收边缘节点的实时状态报告
