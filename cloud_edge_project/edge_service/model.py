@@ -3,14 +3,27 @@
 
 from __future__ import annotations
 
+import os
+import re
 from statistics import mean
 from time import perf_counter
-from typing import Any
+from typing import Any, Mapping
 
 from common.schemas import validate_edge_result, validate_sensor_packet
 
 
-EDGE_NODE_ID = "edge_01"
+_EDGE_NODE_ID_PATTERN = re.compile(r"^edge_\d{2,}$")
+
+
+def load_edge_node_id(environ: Mapping[str, str] | None = None) -> str:
+    env = os.environ if environ is None else environ
+    edge_node_id = env.get("EDGE_NODE_ID", "edge_01").strip()
+    if not _EDGE_NODE_ID_PATTERN.fullmatch(edge_node_id):
+        raise ValueError("EDGE_NODE_ID must match edge_<at least two digits>")
+    return edge_node_id
+
+
+EDGE_NODE_ID = load_edge_node_id()
 MODEL_NAME = "edge_bearing_mock"
 
 

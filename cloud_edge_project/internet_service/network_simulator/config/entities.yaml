@@ -7,6 +7,10 @@ senders:
     mqtt_proxy_host: toxiproxy
     base_listen_port: 18931
 
+  - sender_id: sender_03
+    mqtt_proxy_host: toxiproxy
+    base_listen_port: 19031
+
 edges:
   - edge_id: edge_01
     broker_upstream: mqtt-broker:1883

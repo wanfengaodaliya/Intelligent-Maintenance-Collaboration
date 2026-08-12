@@ -24,6 +24,8 @@ class LinkType(StrEnum):
     EDGE_TO_SCHEDULER = "edge_to_scheduler"
     SCHEDULER_TO_EDGE = "scheduler_to_edge"
     EDGE_TO_CLOUD = "edge_to_cloud"
+    CLOUD_TO_EDGE = "cloud_to_edge"
+    CLOUD_TO_SCHEDULER = "cloud_to_scheduler"
     SCHEDULER_TO_CLOUD = "scheduler_to_cloud"
     NETWORK_TO_SCHEDULER = "network_to_scheduler"
 

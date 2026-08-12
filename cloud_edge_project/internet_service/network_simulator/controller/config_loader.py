@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping as MappingABC
 from copy import deepcopy
 from enum import Enum
+import json
 import math
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ LINK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 ENTITY_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 ENV_TOXIPROXY_URL = "TOXIPROXY_API_BASE_URL"
 ENV_SCHEDULER_URL = "NETWORK_SCHEDULER_URL"
+ENV_LINK_UPSTREAMS_JSON = "NETWORK_LINK_UPSTREAMS_JSON"
 
 
 def _validate_native_yaml_type(
@@ -404,6 +406,7 @@ class LinkDefinition(StrictFrozenModel):
             LinkType.EDGE_TO_SCHEDULER,
             LinkType.SCHEDULER_TO_EDGE,
             LinkType.EDGE_TO_CLOUD,
+            LinkType.CLOUD_TO_EDGE,
         } and self.edge_id is None:
             raise ValueError(f"{self.link_type.value} links require edge_id")
         return self
@@ -948,6 +951,39 @@ class ConfigLoader:
             if not isinstance(reporter, dict):
                 raise ConfigurationError("reporter.yaml reporter must be a mapping")
             reporter["scheduler_url"] = scheduler_url
+        link_upstreams_json = self._environ.get(ENV_LINK_UPSTREAMS_JSON)
+        if link_upstreams_json:
+            try:
+                link_upstreams = json.loads(link_upstreams_json)
+            except json.JSONDecodeError as exc:
+                raise ConfigurationError(
+                    f"{ENV_LINK_UPSTREAMS_JSON} must be valid JSON: {exc}"
+                ) from exc
+            if not isinstance(link_upstreams, dict) or any(
+                not isinstance(link_id, str)
+                or not link_id.strip()
+                or not isinstance(upstream, str)
+                or not upstream.strip()
+                for link_id, upstream in link_upstreams.items()
+            ):
+                raise ConfigurationError(
+                    f"{ENV_LINK_UPSTREAMS_JSON} must map link IDs to host:port strings"
+                )
+            links = documents["links"].get("links")
+            if not isinstance(links, list):
+                raise ConfigurationError("links.yaml links must be a sequence")
+            configured_links = {
+                link.get("link_id"): link
+                for link in links
+                if isinstance(link, dict)
+            }
+            unknown = set(link_upstreams) - set(configured_links)
+            if unknown:
+                raise ConfigurationError(
+                    f"{ENV_LINK_UPSTREAMS_JSON} references unknown links: {sorted(unknown)}"
+                )
+            for link_id, upstream in link_upstreams.items():
+                configured_links[link_id]["upstream"] = upstream.strip()
 
     def _load_report_token(self, reporter: ReporterConfig) -> SecretStr | None:
         token_name = reporter.auth.token_env

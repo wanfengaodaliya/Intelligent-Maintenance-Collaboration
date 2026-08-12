@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from common.config import load_config
 from common.schemas import ContractError, error_response
-from edge_service.model import EDGE_NODE_ID, infer_edge
+from edge_service.model import EDGE_NODE_ID, MODEL_NAME, infer_edge
 
 
 EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
@@ -39,10 +39,16 @@ from cloud_review import (  # noqa: E402
     SchedulerUploadReporter,
     load_cloud_review_config,
 )
+from edge_status_reporter import build_edge_status_integration  # noqa: E402
 
 
 config = load_config()
-app = FastAPI(title="edge_service")
+edge_status_integration = build_edge_status_integration(
+    edge_node_id=EDGE_NODE_ID,
+    default_model_version=MODEL_NAME,
+)
+app = FastAPI(title="edge_service", lifespan=edge_status_integration.lifespan)
+edge_status_integration.install(app)
 
 
 def _create_task_ingress() -> EdgeTaskIngress:
@@ -83,7 +89,11 @@ cloud_review_cleanup.start()
 atexit.register(cloud_review_cleanup.stop)
 
 def _post_scheduler_packet_route(path: str, payload: dict) -> dict:
-    response = requests.post("http://127.0.0.1:8003" + path, json=payload, timeout=3.0)
+    response = requests.post(
+        cloud_review_config.scheduler_base_url + path,
+        json=payload,
+        timeout=cloud_review_config.timeout_seconds,
+    )
     response.raise_for_status()
     result = response.json()
     if not isinstance(result, dict):

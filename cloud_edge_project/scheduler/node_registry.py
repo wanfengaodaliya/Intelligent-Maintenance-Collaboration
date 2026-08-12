@@ -326,27 +326,31 @@ def _validate_status_report(payload: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
 
-    network = _mapping(report.get("network_to_scheduler"), "network_to_scheduler")
-    validated_network = {
-        "measured_at_ns": _positive_int(network.get("measured_at_ns"), "measured_at_ns"),
-        "available_uplink_mbps_estimate": _non_negative_float(
-            network.get("available_uplink_mbps_estimate"), "available_uplink_mbps_estimate"
-        ),
-        "rtt_ms_avg": _non_negative_float(network.get("rtt_ms_avg"), "rtt_ms_avg"),
-        "rtt_ms_p95": _non_negative_float(network.get("rtt_ms_p95"), "rtt_ms_p95"),
-        "loss_rate": _bounded_float(network.get("loss_rate"), "loss_rate", 0.0, 1.0),
-    }
+    validated_network = None
+    if report.get("network_to_scheduler") is not None:
+        network = _mapping(report.get("network_to_scheduler"), "network_to_scheduler")
+        validated_network = {
+            "measured_at_ns": _positive_int(network.get("measured_at_ns"), "measured_at_ns"),
+            "available_uplink_mbps_estimate": _non_negative_float(
+                network.get("available_uplink_mbps_estimate"), "available_uplink_mbps_estimate"
+            ),
+            "rtt_ms_avg": _non_negative_float(network.get("rtt_ms_avg"), "rtt_ms_avg"),
+            "rtt_ms_p95": _non_negative_float(network.get("rtt_ms_p95"), "rtt_ms_p95"),
+            "loss_rate": _bounded_float(network.get("loss_rate"), "loss_rate", 0.0, 1.0),
+        }
     last_task_activity_ns = _non_negative_int(
         report.get("last_task_activity_ns"), "last_task_activity_ns"
     )
-    return {
+    validated = {
         "edge_node_id": edge_node_id,
         "reported_at_ns": reported_at_ns,
         "resources": validated_resources,
         "models": validated_models,
-        "network_to_scheduler": validated_network,
         "last_task_activity_ns": last_task_activity_ns,
     }
+    if validated_network is not None:
+        validated["network_to_scheduler"] = validated_network
+    return validated
 
 
 def _validate_link_snapshot(

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Mapping
@@ -42,6 +44,44 @@ class EdgeRuntimeConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "EdgeRuntimeConfig":
+        env = os.environ if environ is None else environ
+        edge_node_id = env.get("EDGE_NODE_ID", "edge_01").strip()
+        cloud_node_urls = json.loads(env.get("EDGE_CLOUD_NODE_URLS_JSON", "{}"))
+        if not isinstance(cloud_node_urls, dict):
+            raise ValueError("EDGE_CLOUD_NODE_URLS_JSON must be a JSON object")
+        return cls(
+            edge_node_id=edge_node_id,
+            mqtt=MqttConfig(
+                host=env.get("EDGE_MQTT_HOST", "127.0.0.1").strip(),
+                port=int(env.get("EDGE_MQTT_PORT", "1883")),
+                input_topic=env.get(
+                    "EDGE_MQTT_INPUT_TOPIC",
+                    f"edge/{edge_node_id}/input",
+                ).strip(),
+                device_result_topic=env.get(
+                    "EDGE_MQTT_DEVICE_RESULT_TOPIC",
+                    "summary/device-results",
+                ).strip(),
+                client_id=env.get(
+                    "EDGE_MQTT_CLIENT_ID",
+                    f"{edge_node_id}-runtime",
+                ).strip(),
+            ),
+            scheduler=SchedulerConfig(
+                base_url=env.get(
+                    "SCHEDULER_SERVICE_BASE_URL",
+                    "http://127.0.0.1:8003",
+                ).rstrip("/"),
+            ),
+            control=ControlServerConfig(
+                host=env.get("EDGE_CONTROL_HOST", "0.0.0.0").strip(),
+                port=int(env.get("EDGE_CONTROL_PORT", "8011")),
+            ),
+            cloud_node_urls=cloud_node_urls,
+        )
 
     def validate(self) -> list[str]:
         errors: list[str] = []

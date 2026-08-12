@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -28,9 +29,10 @@ from cloud_service.context_aggregation.coordinator import ContextAggregationCoor
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
+from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
-from cloud_service.raw_context.transport import HttpRawContextTransport
+from cloud_service.raw_context.transport import RoutedRawContextTransport
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
@@ -53,6 +55,7 @@ from core.arbitration_contracts import ArbitrationValidationError
 
 
 config = load_config()
+edge_status_registry = EdgeStatusRegistry()
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
@@ -141,13 +144,27 @@ def _models_url(settings: CloudSettings) -> str:
     return base_url + "/models"
 
 
-def _raw_context_transport() -> HttpRawContextTransport:
+def _raw_context_transport() -> RoutedRawContextTransport:
     edge = config["services"]["edge"]
-    return HttpRawContextTransport(
-        os.getenv(
+    edge_base_urls = json.loads(
+        os.getenv("EDGE_RAW_CONTEXT_BASE_URLS_JSON", "{}")
+    )
+    if not isinstance(edge_base_urls, dict) or any(
+        not isinstance(edge_node_id, str)
+        or not edge_node_id.strip()
+        or not isinstance(base_url, str)
+        or not base_url.startswith(("http://", "https://"))
+        for edge_node_id, base_url in edge_base_urls.items()
+    ):
+        raise ValueError(
+            "EDGE_RAW_CONTEXT_BASE_URLS_JSON must map edge node IDs to HTTP(S) URLs"
+        )
+    return RoutedRawContextTransport(
+        default_edge_base_url=os.getenv(
             "EDGE_RAW_CONTEXT_BASE_URL",
             f"http://{edge['host']}:{edge['port']}",
         ),
+        edge_base_urls=edge_base_urls,
         timeout_seconds=float(
             os.getenv("EDGE_RAW_CONTEXT_TIMEOUT_SECONDS", "3")
         ),
@@ -196,6 +213,28 @@ def health() -> dict[str, object] | JSONResponse:
             content=_health_payload(settings, "unavailable"),
         )
     return _health_payload(settings, "ok")
+
+
+@app.post("/cloud/edge-status", response_model=None)
+def receive_edge_status(payload: dict) -> dict | JSONResponse:
+    try:
+        return edge_status_registry.update(payload)
+    except EdgeStatusValidationError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_EDGE_STATUS", "message": str(error)},
+        )
+
+
+@app.get("/cloud/edge-status/{edge_node_id}", response_model=None)
+def get_edge_status(edge_node_id: str) -> dict | JSONResponse:
+    report = edge_status_registry.get(edge_node_id)
+    if report is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error_code": "EDGE_STATUS_NOT_FOUND"},
+        )
+    return report
 
 
 @app.post("/cloud/infer", response_model=None)

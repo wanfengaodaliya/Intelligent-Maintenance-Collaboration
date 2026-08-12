@@ -56,6 +56,16 @@ def test_bearing_review_requests_exact_manifest_and_is_idempotent(tmp_path: Path
     assert request["requested_packets"] == _request()["source_packet_manifest"]
 
 
+def test_bearing_review_forwards_optional_edge_node_id(tmp_path: Path):
+    transport = CapturingTransport()
+    payload = _request()
+    payload["edge_node_id"] = "edge_02"
+
+    BearingReviewService(tmp_path / "cloud.db", transport=transport).create(payload)
+
+    assert transport.requests[0]["edge_node_id"] == "edge_02"
+
+
 def test_bearing_review_rejects_manifest_that_is_not_exactly_twenty_packets(tmp_path: Path):
     payload = _request()
     payload["source_packet_manifest"] = payload["source_packet_manifest"][:-1]

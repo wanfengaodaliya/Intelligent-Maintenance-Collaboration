@@ -5,6 +5,7 @@ var/
 __pycache__/
 *.py[cod]
 .venv*/
-docs/
+docs/*
+!docs/Edge_Status_Reporter_执行开发文档_V6.md
 
 .claude/

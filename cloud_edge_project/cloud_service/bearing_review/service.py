@@ -30,7 +30,12 @@ class BearingReviewService:
         stored, created = self.repository.create_or_get(request)
         if created:
             try:
-                self.transport.send(_raw_context_request(stored))
+                self.transport.send(
+                    _raw_context_request(
+                        stored,
+                        edge_node_id=request.get("edge_node_id"),
+                    )
+                )
             except Exception:
                 self.repository.mark_dispatch_failed(stored["bearing_review_id"], "EDGE_UNAVAILABLE")
             else:
@@ -44,8 +49,12 @@ class BearingReviewService:
         return _response(stored, self.repository.progress(bearing_review_id))
 
 
-def _raw_context_request(stored: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _raw_context_request(
+    stored: dict[str, Any],
+    *,
+    edge_node_id: str | None = None,
+) -> dict[str, Any]:
+    request = {
         "request_id": stored["raw_context_request_id"],
         "review_type": "bearing_review",
         "device_id": stored["device_id"],
@@ -56,6 +65,9 @@ def _raw_context_request(stored: dict[str, Any]) -> dict[str, Any]:
         "expected_packet_count": EXPECTED_PACKET_COUNT,
         "requested_packets": json.loads(stored["packet_manifest_json"]),
     }
+    if edge_node_id is not None:
+        request["edge_node_id"] = edge_node_id
+    return request
 
 
 def _response(stored: dict[str, Any], progress: tuple[int, int] | None = None) -> dict[str, Any]:
