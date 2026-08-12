@@ -25,7 +25,7 @@ class EdgeRuntimeService:
         pipeline: EdgeModelPipeline,
         mqtt_ingress: MqttIngress,
         control_application: EdgeControlApplication,
-        heartbeat: HeartbeatLoop,
+        heartbeat: HeartbeatLoop | None,
         window_dispatcher: WindowReviewDispatcher,
     ):
         errors = config.validate()
@@ -61,14 +61,16 @@ class EdgeRuntimeService:
             self._server_thread.start()
             self.mqtt_ingress.start()
             self.window_dispatcher.start()
-            self.heartbeat.start()
+            if self.heartbeat is not None:
+                self.heartbeat.start()
         except Exception:
             self.stop()
             raise
         self._started = True
 
     def stop(self) -> None:
-        self.heartbeat.stop()
+        if self.heartbeat is not None:
+            self.heartbeat.stop()
         self.window_dispatcher.stop()
         try:
             self.mqtt_ingress.stop()

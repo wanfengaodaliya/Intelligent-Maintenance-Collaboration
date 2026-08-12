@@ -42,6 +42,7 @@ def build_edge_runtime(
     cache: EdgeValidationCache,
     perception: EdgePerception,
     pipeline: EdgeModelPipeline,
+    enable_heartbeat: bool = True,
 ) -> EdgeRuntimeAssembly:
     """把现有边缘计算模块装配为可启动的协议运行时。"""
     errors = config.validate()
@@ -97,9 +98,13 @@ def build_edge_runtime(
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     control_application = EdgeControlApplication(ingress)
-    heartbeat = HeartbeatLoop(
-        config.scheduler.heartbeat_interval_seconds,
-        coordinator.report_node_status,
+    heartbeat = (
+        HeartbeatLoop(
+            config.scheduler.heartbeat_interval_seconds,
+            coordinator.report_node_status,
+        )
+        if enable_heartbeat
+        else None
     )
     service = EdgeRuntimeService(
         config=config,

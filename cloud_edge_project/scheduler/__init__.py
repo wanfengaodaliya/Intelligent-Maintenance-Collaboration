@@ -3,7 +3,7 @@
 
 from .assignment_scheduler import AssignmentDecision, AssignmentScheduler
 from .node_registry import NodeRegistry
-from .rule_scheduler import PreDDPGScheduler, ScheduleDecision, decide_schedule
+from .rule_scheduler import PreDDPGScheduler, ScheduleDecision, decide_schedule, decide_schedule_v01
 from .task_repository import TaskRepository
 
 __all__ = [
@@ -14,4 +14,5 @@ __all__ = [
     "ScheduleDecision",
     "TaskRepository",
     "decide_schedule",
+    "decide_schedule_v01",
 ]

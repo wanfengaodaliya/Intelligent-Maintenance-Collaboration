@@ -8,15 +8,16 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
-from common.config import load_config
-from common.schemas import ContractError, error_response
-from edge_service.model import EDGE_NODE_ID, infer_edge
+from common.config import load_config, service_url
+from common.schemas import ContractError, error_response, is_v01_task_request
+from edge_service.model import EDGE_NODE_ID, MODEL_NAME, infer_edge, infer_edge_v01
 
 
 EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
@@ -60,24 +61,31 @@ from cloud_review import (  # noqa: E402
     SchedulerUploadReporter,
     load_cloud_review_config,
 )
+from edge_status_reporter import build_edge_status_integration  # noqa: E402
 
 
 config = load_config()
+edge_status_integration = build_edge_status_integration(
+    edge_node_id=EDGE_NODE_ID,
+    default_model_version=MODEL_NAME,
+)
 runtime_assembly = None
 
 
 @asynccontextmanager
-async def _lifespan(_: FastAPI):
+async def _lifespan(app: FastAPI):
     if runtime_assembly is not None:
         runtime_assembly.service.start()
     try:
-        yield
+        async with edge_status_integration.lifespan(app):
+            yield
     finally:
         if runtime_assembly is not None:
             runtime_assembly.service.stop()
 
 
 app = FastAPI(title="edge_service", lifespan=_lifespan)
+edge_status_integration.install(app)
 
 
 def _create_task_ingress() -> EdgeTaskIngress:
@@ -157,7 +165,10 @@ def _build_runtime():
             str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
         ),
     )
-    scheduler_base = os.getenv("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:8003")
+    scheduler_base = os.getenv(
+        "SCHEDULER_SERVICE_BASE_URL",
+        service_url("scheduler", config),
+    )
     cloud_base = os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:8004")
     runtime_config = EdgeRuntimeConfig(
         edge_node_id=EDGE_NODE_ID,
@@ -193,6 +204,7 @@ def _build_runtime():
         cache=task_ingress.validation_cache,
         perception=perception,
         pipeline=pipeline,
+        enable_heartbeat=False,
     )
 
 
@@ -232,13 +244,16 @@ def health() -> dict[str, object]:
 
 
 @app.post("/edge/infer", response_model=None)
-def edge_infer(payload: dict) -> dict | JSONResponse:
+def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
+        if is_v01_task_request(payload):
+            return infer_edge_v01(payload)
         return infer_edge(payload)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except Exception as exc:
-        error = ContractError("MODEL_INFER_FAILED", str(exc), payload.get("packet_id"))
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
         return JSONResponse(status_code=500, content=error_response(error))
 
 

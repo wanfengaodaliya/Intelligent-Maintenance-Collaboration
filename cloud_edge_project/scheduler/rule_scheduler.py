@@ -1,11 +1,5 @@
 #最核心的文件，真正决定任务走 edge、cloud 还是 fallback_edge
-"""Minimal PER-DDPG-style rule scheduler for edge/cloud task decisions.
-
-The paper's PER-DDPG scheduler learns an Actor policy from task, network, and
-node state. This first runnable version keeps that state shape but replaces the
-trained Actor with deterministic rules and scores. Fog routing is intentionally
-disabled for the current edge/cloud-only system.
-"""
+"""Legacy PER-DDPG rules plus the separate documented V0.1 projection."""
 
 from __future__ import annotations
 
@@ -15,14 +9,14 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True)
 class ScheduleDecision:
-    """Public scheduling result matching the project interface document."""
+    """Legacy scheduling result, including internal policy details."""
 
     task_id: str
-    route: str          #调度路径
-    target_node: str    #目标节点
-    reason: str         #为什么这么调度
-    estimated_total_latency_ms: float   #预计总时延
-    upload_required: bool   #是否需要上传
+    route: str
+    target_node: str
+    reason: str
+    estimated_total_latency_ms: float
+    upload_required: bool
     scheduler: str = "PER-DDPG-rule-minimal"
     policy_score: dict[str, float] = field(default_factory=dict)
 
@@ -31,22 +25,21 @@ class ScheduleDecision:
 
 
 class PreDDPGScheduler:
-    """Decide whether a task stays on edge or is uploaded to cloud."""
+    """Decide whether a legacy task stays on edge or is uploaded to cloud."""
 
     def __init__(
         self,
         *,
-        confidence_threshold: float = 0.80,     #边缘置信度低于 0.8，倾向上云
-        max_packet_loss: float = 0.10,          #丢包率高于 0.10，不上云
-        min_bandwidth_mbps: float = 2.0,        #带宽低于 2 Mbps，不上云
-        cloud_score_threshold: float = 0.50,    #云端规则分数高于 0.50，且云端更快，可以上云
+        confidence_threshold: float = 0.80,
+        max_packet_loss: float = 0.10,
+        min_bandwidth_mbps: float = 2.0,
+        cloud_score_threshold: float = 0.50,
     ) -> None:
         self.confidence_threshold = confidence_threshold
         self.max_packet_loss = max_packet_loss
         self.min_bandwidth_mbps = min_bandwidth_mbps
         self.cloud_score_threshold = cloud_score_threshold
 
-    # 主决策函数
     def decide(self, request: Mapping[str, Any]) -> ScheduleDecision:
         task = self._mapping(request.get("task"))
         edge_result = self._mapping(request.get("edge_result"))
@@ -62,7 +55,6 @@ class PreDDPGScheduler:
         estimates = self._estimate_latency(task, edge_result, network_state, node_state)
         policy_score = self._actor_scores(task, edge_result, network_state, node_state, estimates)
 
-        #cloud_available = false → fallback_edge
         if not cloud_available:
             return self._edge_decision(
                 task,
@@ -71,8 +63,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["edge"],
                 policy_score=policy_score,
             )
-
-        #packet_loss 太高 → fallback_edge
         if packet_loss > self.max_packet_loss:
             return self._edge_decision(
                 task,
@@ -81,8 +71,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["edge"],
                 policy_score=policy_score,
             )
-
-        #bandwidth 太低 → fallback_edge
         if bandwidth_mbps < self.min_bandwidth_mbps:
             return self._edge_decision(
                 task,
@@ -91,8 +79,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["edge"],
                 policy_score=policy_score,
             )
-
-        #confidence < 0.8 → cloud
         if confidence < self.confidence_threshold:
             return self._cloud_decision(
                 task,
@@ -100,8 +86,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["cloud"],
                 policy_score=policy_score,
             )
-
-        #need_cloud = true → cloud
         if need_cloud:
             return self._cloud_decision(
                 task,
@@ -109,8 +93,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["cloud"],
                 policy_score=policy_score,
             )
-
-        #规则分数支持 cloud 且 cloud 更快 → cloud
         if policy_score["cloud"] >= self.cloud_score_threshold and estimates["cloud"] <= estimates["edge"]:
             return self._cloud_decision(
                 task,
@@ -118,8 +100,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["cloud"],
                 policy_score=policy_score,
             )
-
-        #边缘预计超 deadline 且 cloud 更快 → cloud
         if estimates["edge"] > estimates["deadline"] and estimates["cloud"] < estimates["edge"]:
             return self._cloud_decision(
                 task,
@@ -127,8 +107,6 @@ class PreDDPGScheduler:
                 estimated_total_latency_ms=estimates["cloud"],
                 policy_score=policy_score,
             )
-
-        #否则 → edge
         return self._edge_decision(
             task,
             route="edge",
@@ -137,7 +115,6 @@ class PreDDPGScheduler:
             policy_score=policy_score,
         )
 
-    # 估算边缘和云端的预计总时延
     def _estimate_latency(
         self,
         task: Mapping[str, Any],
@@ -155,20 +132,19 @@ class PreDDPGScheduler:
         edge_memory = self._float(node_state.get("edge_memory_usage"), default=0.0) or 0.0
         cloud_queue = self._float(node_state.get("cloud_queue_length"), default=0.0) or 0.0
 
-        transfer_ms = network_latency + (data_size_kb * 8.0 / 1024.0 / max(bandwidth_mbps, 0.1) * 1000.0)
+        transfer_ms = network_latency + (
+            data_size_kb * 8.0 / 1024.0 / max(bandwidth_mbps, 0.1) * 1000.0
+        )
         edge_pressure = 1.0 + 0.35 * edge_cpu + 0.20 * edge_memory
         packet_loss_penalty = 1.0 + min(packet_loss, 0.5)
         cloud_compute_ms = 45.0 + cloud_queue * 8.0
 
         return {
-            #edge_latency_ms × 节点压力系数
             "edge": round(edge_latency * edge_pressure, 3),
-            #边缘已耗时 + 网络传输时延 + 云端计算/排队时延
             "cloud": round(edge_latency + transfer_ms * packet_loss_penalty + cloud_compute_ms, 3),
             "deadline": round(deadline, 3),
         }
 
-    #模拟 PER-DDPG Actor 网络输出的地方
     def _actor_scores(
         self,
         task: Mapping[str, Any],
@@ -177,16 +153,6 @@ class PreDDPGScheduler:
         node_state: Mapping[str, Any],
         estimates: Mapping[str, float],
     ) -> dict[str, float]:
-        """Deterministic stand-in for the PER-DDPG Actor output."""
-
-        #confidence是否低
-        #need_cloud是否为true
-        #priority是否高
-        #边缘 / 内存压力
-        #带宽是否好
-        #是否超过deadline
-        #数据量是否太大
-        #丢包率是否高
         confidence = self._float(edge_result.get("confidence"), default=0.0) or 0.0
         need_cloud = bool(edge_result.get("need_cloud", False))
         priority = self._float(task.get("priority"), default=0.0) or 0.0
@@ -275,9 +241,7 @@ class PreDDPGScheduler:
 
     @staticmethod
     def _mapping(value: Any) -> Mapping[str, Any]:
-        if isinstance(value, Mapping):
-            return value
-        return {}
+        return value if isinstance(value, Mapping) else {}
 
     @staticmethod
     def _float(value: Any, *, default: float | None) -> float | None:
@@ -290,6 +254,79 @@ class PreDDPGScheduler:
 
 
 def decide_schedule(request: Mapping[str, Any]) -> dict[str, Any]:
-    """Convenience function used by tests or non-HTTP callers."""
+    """Run the complete legacy deterministic PreDDPG behavior."""
 
     return PreDDPGScheduler().decide(request).to_dict()
+
+
+def decide_schedule_v01(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply only the three V0.1 rules and return exactly six public fields."""
+
+    task = _mapping(request.get("task"))
+    edge_result = _mapping(request.get("edge_result"))
+    network_state = _mapping(request.get("network_state"))
+    task_id = str(task.get("task_id", ""))
+    source_node = str(task.get("source_node") or "edge_1")
+    edge_latency_ms = _number(edge_result.get("edge_latency_ms"), 0.0)
+
+    if not network_state.get("cloud_available"):
+        return _v01_decision(
+            task_id,
+            "fallback_edge",
+            source_node,
+            "cloud_available is false; use edge fallback",
+            edge_latency_ms,
+            False,
+        )
+    if _number(edge_result.get("confidence"), 0.0) < 0.80:
+        bandwidth = max(_number(network_state.get("bandwidth_mbps"), 0.0), 0.1)
+        transfer_ms = _number(task.get("data_size_kb"), 0.0) * 8.0 / 1024.0 / bandwidth * 1000.0
+        cloud_latency = round(
+            edge_latency_ms + _number(network_state.get("latency_ms"), 0.0) + transfer_ms + 45.0,
+            3,
+        )
+        return _v01_decision(
+            task_id,
+            "cloud",
+            "cloud_1",
+            "edge confidence is below 0.80",
+            cloud_latency,
+            True,
+        )
+    return _v01_decision(
+        task_id,
+        "edge",
+        source_node,
+        "edge confidence is at least 0.80",
+        edge_latency_ms,
+        False,
+    )
+
+
+def _v01_decision(
+    task_id: str,
+    route: str,
+    target_node: str,
+    reason: str,
+    estimated_total_latency_ms: float,
+    upload_required: bool,
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "route": route,
+        "target_node": target_node,
+        "reason": reason,
+        "estimated_total_latency_ms": estimated_total_latency_ms,
+        "upload_required": upload_required,
+    }
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _number(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

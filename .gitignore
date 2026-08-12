@@ -3,3 +3,6 @@
 
 # Local/generated model artifacts. Build or obtain these separately; do not commit them.
 artifacts/
+
+# 本地 Python 虚拟环境。
+.venv/

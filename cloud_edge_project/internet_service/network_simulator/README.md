@@ -158,7 +158,7 @@ curl.exe http://127.0.0.1:8090/health
   "status": "ok",
   "toxiproxy_available": true,
   "scheduler_reporter_healthy": true,
-  "link_count": 4
+  "link_count": 18
 }
 ```
 
@@ -173,7 +173,7 @@ curl.exe http://127.0.0.1:8090/api/v1/network/links
 curl.exe http://127.0.0.1:8000/api/v1/network/cache
 ```
 
-默认应能看到 4 条 Sender→Edge 独立链路。
+默认应能看到 18 条链路，其中 6 条 Sender→Edge MQTT 链路、12 条 HTTP 链路。
 
 ### 5.2 Linux/macOS
 
@@ -194,7 +194,7 @@ docker compose --env-file .env down
 
 ## 6. 默认独立链路与业务接入
 
-默认 `entities.yaml` 定义 2 个发送器和 2 个边缘节点，`cartesian` 模式生成 4 条独立 MQTT Proxy：
+默认 `entities.yaml` 定义 3 个发送器和 2 个边缘节点，`cartesian` 模式生成 6 条独立 MQTT Proxy：
 
 | link_id | Sender | Edge | 容器内接入地址 | 宿主机接入地址 | 上游 |
 |---|---|---|---|---|---|
@@ -202,6 +202,8 @@ docker compose --env-file .env down
 | `sender_01__to__edge_02__mqtt` | sender_01 | edge_02 | `toxiproxy:18832` | `127.0.0.1:18832` | `mqtt-broker:1883` |
 | `sender_02__to__edge_01__mqtt` | sender_02 | edge_01 | `toxiproxy:18931` | `127.0.0.1:18931` | `mqtt-broker:1883` |
 | `sender_02__to__edge_02__mqtt` | sender_02 | edge_02 | `toxiproxy:18932` | `127.0.0.1:18932` | `mqtt-broker:1883` |
+| `sender_03__to__edge_01__mqtt` | sender_03 | edge_01 | `toxiproxy:19031` | `127.0.0.1:19031` | `mqtt-broker:1883` |
+| `sender_03__to__edge_02__mqtt` | sender_03 | edge_02 | `toxiproxy:19032` | `127.0.0.1:19032` | `mqtt-broker:1883` |
 
 发送器获得 Scheduler 返回的 `edge_id` 后，必须选择对应代理入口，例如：
 
@@ -215,7 +217,9 @@ edge_routes:
     port: 18832
 ```
 
-上例适用于 `sender_01`。`sender_02` 使用 18931/18932。宿主机进程把 `toxiproxy` 改为 `127.0.0.1`；其他 Compose 容器使用 Docker DNS 名 `toxiproxy`。
+上例适用于 `sender_01`。`sender_02` 使用 18931/18932，`sender_03` 使用 19031/19032。宿主机进程把 `toxiproxy` 改为 `127.0.0.1`；其他 Compose 容器使用 Docker DNS 名 `toxiproxy`。
+
+当前项目还配置了 12 条 HTTP 通信链路，覆盖 edge_01 和 edge_02。完整映射、代理端口及虚拟机上游覆盖方法见 `NETWORK_LINK_PORTS.md`。
 
 每个入口虽然默认都连接同一个 Broker，但拥有独立 Proxy 和 toxic。只有业务按 Sender→Edge 路由使用不同入口，这些链路才在实际通信拓扑中真正独立。仅在内存里区分 `link_id`、但所有流量仍连接同一入口，不能形成独立网络链路。
 
@@ -491,6 +495,12 @@ pytest tests/integration -q
 pytest -q
 ```
 
+当前项目端口和链路配置验证：
+
+```bash
+pytest verification -q
+```
+
 普通测试使用 mock，不要求运行 Toxiproxy。真实效果集成测试要求单独启动可访问的 Toxiproxy，并设置：
 
 ```bash
@@ -572,10 +582,10 @@ Controller 收到 SIGINT/SIGTERM 后停止新 Tick，并按插件逆序退出。
 
 1. `docker compose config --quiet` 成功；
 2. 四个服务启动，Toxiproxy、Broker、Scheduler 健康；
-3. `/proxies` 出现 4 个默认独立 Proxy；
+3. `/proxies` 出现 18 个默认独立 Proxy；
 4. `/health` 的 `last_tick` 持续递增；
 5. `/api/v1/network/links` 返回 desired、applied、score 和 available；
-6. Fake Scheduler 缓存出现同样 4 条链路；
+6. Fake Scheduler 缓存出现同样 18 条链路；
 7. latency、bandwidth、断连和恢复真实影响经 Proxy 的 TCP 流量；
 8. 停止 Scheduler 后网络状态仍继续更新；
 9. 日志卷中生成五类日志；

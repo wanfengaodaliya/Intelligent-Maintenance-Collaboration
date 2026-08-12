@@ -34,6 +34,11 @@ def validate_bearing_review_request(payload: Any) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             raise BearingReviewValidationError("INVALID_BEARING_REVIEW")
         result[field] = value
+    edge_node_id = payload.get("edge_node_id")
+    if edge_node_id is not None:
+        if not isinstance(edge_node_id, str) or not edge_node_id.strip():
+            raise BearingReviewValidationError("INVALID_BEARING_REVIEW")
+        result["edge_node_id"] = edge_node_id.strip()
     edge = payload.get("edge_bearing_result")
     if not isinstance(edge, dict) or edge.get("bearing_state") not in {"normal", "warning", "abnormal"}:
         raise BearingReviewValidationError("INVALID_EDGE_BEARING_RESULT")

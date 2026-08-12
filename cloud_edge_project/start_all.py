@@ -22,6 +22,7 @@ SERVICES = [
     Service("edge_service", "edge_service.app:app", "edge"),
     Service("scheduler_service", "scheduler.api:app", "scheduler"),
     Service("cloud_service", "cloud_service.app:app", "cloud"),
+    Service("consistency_service", "consistency_service.app:app", "consistency"),
     Service("log_service", "log_service.app:app", "log"),
 ]
 

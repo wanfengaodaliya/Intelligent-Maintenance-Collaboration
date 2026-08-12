@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -29,9 +30,10 @@ from cloud_service.context_aggregation.coordinator import ContextAggregationCoor
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
+from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
-from cloud_service.raw_context.transport import HttpRawContextTransport
+from cloud_service.raw_context.transport import RoutedRawContextTransport
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
@@ -42,6 +44,11 @@ from common.config import load_config
 from common.schemas import (
     ContractError,
     error_response,
+    is_v01_cloud_request,
+    require_confidence,
+    require_field,
+    require_mapping,
+    require_non_empty_string,
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
@@ -54,6 +61,7 @@ from core.arbitration_contracts import ArbitrationValidationError
 
 
 config = load_config()
+edge_status_registry = EdgeStatusRegistry()
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
@@ -113,6 +121,50 @@ async def _lifespan(_: FastAPI):
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
 
 
+def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
+    """Produce the documented V0.1 CloudResult from an edge result."""
+
+    request = require_mapping(payload, "CloudRequest")
+    task_id = require_non_empty_string(require_field(request, "task_id"), "task_id")
+    scenario = require_field(request, "scenario", task_id)
+    if scenario not in {"industrial", "energy"}:
+        raise ContractError("INVALID_PACKET", "scenario must be industrial or energy", task_id)
+    for field in ("task_type", "source_node"):
+        require_non_empty_string(require_field(request, field, task_id), field, task_id)
+    data = require_mapping(require_field(request, "data", task_id), "data", task_id)
+    if not data:
+        raise ContractError("INVALID_PACKET", "data must be a non-empty object", task_id)
+    edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
+    label = require_field(edge_result, "label", task_id)
+    if label not in {"normal", "abnormal"}:
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", task_id)
+    edge_confidence = require_confidence(
+        require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id
+    )
+    risk_level = require_field(edge_result, "risk_level", task_id)
+    if risk_level not in {"low", "medium", "high"}:
+        raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", task_id)
+
+    if label == "abnormal":
+        confidence = max(edge_confidence, 0.93)
+        decision = {"action": "send_alert", "description": "设备存在高风险异常，建议停机检查"}
+        final_risk = "high"
+    else:
+        confidence = max(edge_confidence, 0.9)
+        decision = {"action": "ignore", "description": "未发现高风险异常，建议持续监测"}
+        final_risk = "low"
+    return {
+        "task_id": task_id,
+        "node_id": "cloud_1",
+        "model_name": "cloud_full_model",
+        "label": label,
+        "confidence": round(confidence, 2),
+        "risk_level": final_risk,
+        "cloud_latency_ms": 1.0,
+        "decision": decision,
+    }
+
+
 def _workflow_review_service() -> WorkflowReviewService:
     return WorkflowReviewService(load_cloud_settings().database_path)
 
@@ -142,13 +194,27 @@ def _models_url(settings: CloudSettings) -> str:
     return base_url + "/models"
 
 
-def _raw_context_transport() -> HttpRawContextTransport:
+def _raw_context_transport() -> RoutedRawContextTransport:
     edge = config["services"]["edge"]
-    return HttpRawContextTransport(
-        os.getenv(
+    edge_base_urls = json.loads(
+        os.getenv("EDGE_RAW_CONTEXT_BASE_URLS_JSON", "{}")
+    )
+    if not isinstance(edge_base_urls, dict) or any(
+        not isinstance(edge_node_id, str)
+        or not edge_node_id.strip()
+        or not isinstance(base_url, str)
+        or not base_url.startswith(("http://", "https://"))
+        for edge_node_id, base_url in edge_base_urls.items()
+    ):
+        raise ValueError(
+            "EDGE_RAW_CONTEXT_BASE_URLS_JSON must map edge node IDs to HTTP(S) URLs"
+        )
+    return RoutedRawContextTransport(
+        default_edge_base_url=os.getenv(
             "EDGE_RAW_CONTEXT_BASE_URL",
             f"http://{edge['host']}:{edge['port']}",
         ),
+        edge_base_urls=edge_base_urls,
         timeout_seconds=float(
             os.getenv("EDGE_RAW_CONTEXT_TIMEOUT_SECONDS", "3")
         ),
@@ -199,15 +265,40 @@ def health() -> dict[str, object] | JSONResponse:
     return _health_payload(settings, "ok")
 
 
-@app.post("/cloud/infer", response_model=None)
-def cloud_infer(payload: dict) -> dict | JSONResponse:
+@app.post("/cloud/edge-status", response_model=None)
+def receive_edge_status(payload: dict) -> dict | JSONResponse:
     try:
+        return edge_status_registry.update(payload)
+    except EdgeStatusValidationError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_EDGE_STATUS", "message": str(error)},
+        )
+
+
+@app.get("/cloud/edge-status/{edge_node_id}", response_model=None)
+def get_edge_status(edge_node_id: str) -> dict | JSONResponse:
+    report = edge_status_registry.get(edge_node_id)
+    if report is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error_code": "EDGE_STATUS_NOT_FOUND"},
+        )
+    return report
+
+
+@app.post("/cloud/infer", response_model=None)
+def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    try:
+        request = require_mapping(payload, "CloudRequest")
+        if is_v01_cloud_request(request):
+            return infer_cloud_v01(request)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.infer(payload)
+        return handler.infer(request)
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -219,7 +310,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except CloudServiceError as error:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         contract_error = ContractError(
             error.code,
             error.message,
@@ -230,7 +321,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
             content=error_response(contract_error),
         )
     except Exception as exc:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
 
