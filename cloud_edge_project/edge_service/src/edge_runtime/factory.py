@@ -7,7 +7,14 @@ from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception
 from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
-from edge_aggregation import BearingAggregationWorkflow, HttpCloudReviewGateway
+from edge_aggregation import (
+    BearingAggregationWorkflow,
+    DurableWindowReviewGateway,
+    HttpCloudReviewGateway,
+    WindowReviewDispatcher,
+    WindowReviewHttpClient,
+    WindowReviewStore,
+)
 
 from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
@@ -25,6 +32,7 @@ from .service import EdgeRuntimeService
 class EdgeRuntimeAssembly:
     service: EdgeRuntimeService
     coordinator: EdgeRuntimeCoordinator
+    window_review_store: WindowReviewStore
 
 
 def build_edge_runtime(
@@ -55,12 +63,26 @@ def build_edge_runtime(
         topic=config.mqtt.device_result_topic,
         qos=config.mqtt.qos,
     )
+    transfer = config.window_transfer
+    window_review_store = WindowReviewStore(
+        transfer.cache_directory,
+        hard_limit_bytes=transfer.hard_limit_bytes,
+        warning_bytes=transfer.warning_bytes,
+        reserved_free_bytes=transfer.reserved_free_bytes,
+    )
+    dispatcher = WindowReviewDispatcher(
+        window_review_store,
+        WindowReviewHttpClient(transfer.cloud_base_url),
+        interval_seconds=transfer.dispatch_interval_seconds,
+    )
     aggregation_workflow = None
     if config.cloud_node_urls:
         cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
         aggregation_workflow = BearingAggregationWorkflow(
             cache=cache,
-            cloud=HttpCloudReviewGateway(cloud_base_url),
+            cloud=DurableWindowReviewGateway(
+                HttpCloudReviewGateway(cloud_base_url), window_review_store
+            ),
         )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,
@@ -71,6 +93,7 @@ def build_edge_runtime(
         scheduler=scheduler,
         aggregation_workflow=aggregation_workflow,
         device_result_publisher=device_result_publisher,
+        window_review_store=window_review_store,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     control_application = EdgeControlApplication(ingress)
@@ -85,5 +108,10 @@ def build_edge_runtime(
         mqtt_ingress=mqtt_ingress,
         control_application=control_application,
         heartbeat=heartbeat,
+        window_dispatcher=dispatcher,
     )
-    return EdgeRuntimeAssembly(service=service, coordinator=coordinator)
+    return EdgeRuntimeAssembly(
+        service=service,
+        coordinator=coordinator,
+        window_review_store=window_review_store,
+    )

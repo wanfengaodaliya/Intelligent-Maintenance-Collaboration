@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from cloud_service.storage.database import connect
+from cloud_service.storage.raw_packet_repository import RawPacketRepository
 
 from .config import AnalysisConfig
 from .contracts import (
@@ -29,6 +30,7 @@ class EnhancedAnalysisLoader:
         self.database_path = Path(database_path)
         self.root = self.database_path.parent.resolve()
         self.bearing_repository = bearing_repository or BearingMetadataRepository(self.database_path)
+        self.packets = RawPacketRepository(self.database_path)
 
     def load(
         self, aggregation: dict[str, Any], config: AnalysisConfig
@@ -188,7 +190,9 @@ class EnhancedAnalysisLoader:
             for row in self._edge_rows(device_id, bearing_id, sender_id, aggregation)
             if row.get("shaft_speed_rpm_mean") is not None and row["shaft_speed_rpm_mean"] > 0
         ]
-        return float(np.median(values)) if values else None
+        if values:
+            return float(np.median(values))
+        return self._raw_operating_median(aggregation, "shaft_speed_rpm", positive=True)
 
     def _radial_load_n(self, device_id: str, bearing_id: str, sender_id: str, aggregation: dict[str, Any]) -> float | None:
         values = [
@@ -197,4 +201,29 @@ class EnhancedAnalysisLoader:
             if row.get("bearing_radial_load_n_mean") is not None
             and row["bearing_radial_load_n_mean"] >= 0
         ]
+        if values:
+            return float(np.median(values))
+        return self._raw_operating_median(
+            aggregation, "bearing_radial_load_n", positive=False
+        )
+
+    def _raw_operating_median(
+        self, aggregation: dict[str, Any], channel: str, *, positive: bool
+    ) -> float | None:
+        manifest = json.loads(aggregation.get("packet_manifest_json") or "[]")
+        values: list[float] = []
+        for item in manifest:
+            try:
+                packet, _ = self.packets.load_indexed_packet(
+                    str(item["sender_id"]), str(item["packet_id"])
+                )
+            except (KeyError, OSError, ValueError):
+                continue
+            samples = packet.get("data", {}).get(channel, {}).get("values")
+            if isinstance(samples, list):
+                values.extend(float(value) for value in samples)
+        if positive:
+            values = [value for value in values if value > 0]
+        else:
+            values = [value for value in values if value >= 0]
         return float(np.median(values)) if values else None

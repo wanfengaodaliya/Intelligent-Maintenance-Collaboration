@@ -7,6 +7,7 @@ from typing import Any, Mapping, Optional, Protocol
 
 from core.bearing_workflow_contracts import FINAL_EDGE, FinalPacketResult
 from edge_aggregation.workflow import BearingAggregationWorkflow
+from edge_aggregation.window_transfer import WindowReviewStore
 from edge_model.contracts import PacketExecutionCompleted
 from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception, PerceptionInvocationContext
@@ -35,6 +36,7 @@ class EdgeRuntimeCoordinator:
         scheduler: SchedulerReporter,
         aggregation_workflow: Optional[BearingAggregationWorkflow] = None,
         device_result_publisher: Optional[JsonPublisher] = None,
+        window_review_store: Optional[WindowReviewStore] = None,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -45,6 +47,7 @@ class EdgeRuntimeCoordinator:
         self.scheduler = scheduler
         self.aggregation_workflow = aggregation_workflow
         self.device_result_publisher = device_result_publisher
+        self.window_review_store = window_review_store
         self._clock_ns = clock_ns
         self._pending_aggregation: dict[
             tuple[str, str, str, str, str], FinalPacketResult
@@ -54,11 +57,13 @@ class EdgeRuntimeCoordinator:
         self._model_versions: set[str] = set()
         self.pipeline.on_packet_completed = self.on_packet_completed
 
-    def receive_raw_packet(self, raw_packet: dict[str, Any]) -> None:
+    def receive_raw_packet(self, raw_packet: dict[str, Any]) -> bool:
+        if self.window_review_store is not None:
+            self.window_review_store.preflight_packet(raw_packet)
         result = self.ingress.receive_packet(raw_packet)
         self._last_task_activity_ns = max(self._last_task_activity_ns, result.received_at_ns)
         if result.status != INGRESS_ACCEPTED or result.validated_packet is None:
-            return
+            return result.status != "REJECTED"
         context = PerceptionInvocationContext(
             edge_node_id=self.edge_node_id,
             perception_received_at_ns=result.received_at_ns,
@@ -70,7 +75,7 @@ class EdgeRuntimeCoordinator:
                 error_code=downsampled.status.error_code or "DOWNSAMPLING_FAILED",
                 started_at_ns=result.received_at_ns,
             )
-            return
+            return True
         perceived = self.perception.perceive(downsampled.payload, context)
         if not perceived.status.success or perceived.payload is None:
             self._report_pre_model_failure(
@@ -78,8 +83,9 @@ class EdgeRuntimeCoordinator:
                 error_code=perceived.status.error_code or "PERCEPTION_FAILED",
                 started_at_ns=result.received_at_ns,
             )
-            return
+            return True
         self.pipeline.ingest(raw_packet["sender_id"], perceived.payload)
+        return True
 
     def on_packet_completed(self, completion: PacketExecutionCompleted) -> None:
         packet = self.ingress.packet_snapshot(

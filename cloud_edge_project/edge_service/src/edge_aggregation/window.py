@@ -11,6 +11,8 @@ from core.bearing_workflow_contracts import (
     PACKETS_PER_WINDOW,
     REVIEW_NOT_REQUIRED,
     REVIEW_PENDING,
+    REVIEW_QUEUED,
+    REVIEW_SUCCEEDED,
     BearingWindowResult,
     FinalPacketResult,
 )
@@ -53,8 +55,11 @@ class BearingWindowAggregator:
         key = (result.device_id, result.task_id, result.bearing_id, result.window_index)
         if key not in self._packets:
             raise ValueError("WINDOW_NOT_FOUND")
-        if result.review_required or result.review_status != "SUCCEEDED":
-            raise ValueError("cloud-reviewed window must be final")
+        if result.review_required or result.review_status not in {
+            REVIEW_QUEUED,
+            REVIEW_SUCCEEDED,
+        }:
+            raise ValueError("reviewed window must be queued or final")
         self._final_windows[key] = result
         return result
 

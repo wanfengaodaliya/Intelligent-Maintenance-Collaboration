@@ -11,6 +11,7 @@ from edge_validation_cache import EdgeValidationCache
 from .config import EdgeRuntimeConfig
 from .http import EdgeControlApplication, HeartbeatLoop, make_control_server
 from .mqtt import MqttIngress
+from edge_aggregation.window_transfer import WindowReviewDispatcher
 
 
 class EdgeRuntimeService:
@@ -25,6 +26,7 @@ class EdgeRuntimeService:
         mqtt_ingress: MqttIngress,
         control_application: EdgeControlApplication,
         heartbeat: HeartbeatLoop,
+        window_dispatcher: WindowReviewDispatcher,
     ):
         errors = config.validate()
         if errors:
@@ -35,6 +37,7 @@ class EdgeRuntimeService:
         self.mqtt_ingress = mqtt_ingress
         self.control_application = control_application
         self.heartbeat = heartbeat
+        self.window_dispatcher = window_dispatcher
         self._server: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._started = False
@@ -57,6 +60,7 @@ class EdgeRuntimeService:
             )
             self._server_thread.start()
             self.mqtt_ingress.start()
+            self.window_dispatcher.start()
             self.heartbeat.start()
         except Exception:
             self.stop()
@@ -65,6 +69,7 @@ class EdgeRuntimeService:
 
     def stop(self) -> None:
         self.heartbeat.stop()
+        self.window_dispatcher.stop()
         try:
             self.mqtt_ingress.stop()
         except Exception:

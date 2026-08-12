@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any, Protocol
 
 from core.bearing_workflow_contracts import (
     FINAL_CLOUD,
-    REVIEW_SUCCEEDED,
     BearingTaskResult,
     BearingWindowResult,
     DeviceTaskResult,
@@ -88,7 +86,12 @@ class BearingAggregationWorkflow:
             raw_packet = self.cache.read(raw_ref)
             if raw_packet is None:
                 raise ValueError("DATA_REFERENCE_NOT_FOUND")
-            reviewed = self.cloud.review_packet(packet, raw_packet)
+            try:
+                reviewed = self.cloud.review_packet(packet, raw_packet)
+            except Exception:
+                # A packet-level cloud outage must not prevent the complete
+                # 20-packet window from being assembled and durably queued.
+                return packet
         finally:
             self.cache.unpin(raw_ref)
         if reviewed.decision_source != FINAL_CLOUD:
@@ -109,8 +112,6 @@ class BearingAggregationWorkflow:
             reviewed = self.cloud.review_bearing_window(window, raw_packets)
         finally:
             self.cache.unpin_many(refs)
-        if reviewed.result_source != FINAL_CLOUD:
-            reviewed = replace(reviewed, result_source=FINAL_CLOUD)
-        if reviewed.review_required or reviewed.review_status != REVIEW_SUCCEEDED:
-            raise ValueError("cloud window review did not return a final result")
+        if reviewed.review_required:
+            raise ValueError("window review was not accepted")
         return reviewed
