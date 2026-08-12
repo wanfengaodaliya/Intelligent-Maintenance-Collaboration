@@ -1,2 +1,5 @@
 # 项目内部 Git worktree 目录。
 .worktrees/
+
+# 本地 Python 虚拟环境。
+.venv/

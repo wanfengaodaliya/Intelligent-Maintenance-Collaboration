@@ -9,7 +9,14 @@ from statistics import mean
 from time import perf_counter
 from typing import Any, Mapping
 
-from common.schemas import validate_edge_result, validate_sensor_packet
+from common.schemas import (
+    require_confidence,
+    require_field,
+    require_number,
+    validate_edge_result,
+    validate_sensor_packet,
+    validate_task_request,
+)
 
 
 _EDGE_NODE_ID_PATTERN = re.compile(r"^edge_\d{2,}$")
@@ -25,6 +32,54 @@ def load_edge_node_id(environ: Mapping[str, str] | None = None) -> str:
 
 EDGE_NODE_ID = load_edge_node_id()
 MODEL_NAME = "edge_bearing_mock"
+V01_MODEL_NAME = "edge_small_model"
+
+
+def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
+    """Produce the documented V0.1 EdgeResult from an industrial task."""
+
+    validated = validate_task_request(task)
+    data = validated["data"]
+
+    if validated["scenario"] == "energy":
+        # V0.1 deliberately accepts any non-empty energy business-data object.
+        # With no domain optimizer in this service, return a neutral preliminary
+        # result and request cloud review instead of inventing a dispatch policy.
+        return {
+            "task_id": validated["task_id"],
+            "node_id": EDGE_NODE_ID,
+            "model_name": V01_MODEL_NAME,
+            "label": "normal",
+            "confidence": 0.5,
+            "risk_level": "low",
+            "edge_latency_ms": 1.0,
+            "need_cloud": True,
+        }
+
+    task_id = validated["task_id"]
+    for field in ("temperature", "vibration", "current"):
+        require_number(require_field(data, field, task_id), f"data.{field}", task_id)
+    require_confidence(require_field(data, "load", task_id), "data.load", task_id)
+
+    signals = sum((
+        float(data["temperature"]) >= 70.0,
+        float(data["vibration"]) >= 0.5,
+        float(data["current"]) >= 10.0,
+        float(data["load"]) >= 0.7,
+    ))
+    label = "abnormal" if signals >= 2 else "normal"
+    confidence = round(0.6 + signals * 0.08 if label == "abnormal" else 0.9 - signals * 0.03, 2)
+    risk_level = "high" if signals >= 3 else "medium" if label == "abnormal" else "low"
+    return {
+        "task_id": validated["task_id"],
+        "node_id": EDGE_NODE_ID,
+        "model_name": V01_MODEL_NAME,
+        "label": label,
+        "confidence": confidence,
+        "risk_level": risk_level,
+        "edge_latency_ms": 1.0,
+        "need_cloud": label == "abnormal" and confidence < 0.9,
+    }
 
 
 def infer_edge(packet: dict[str, Any]) -> dict[str, Any]:

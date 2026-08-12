@@ -16,6 +16,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "edge": {"host": "127.0.0.1", "port": 8001},
         "scheduler": {"host": "127.0.0.1", "port": 8003},
         "cloud": {"host": "127.0.0.1", "port": 8004},
+        "consistency": {"host": "127.0.0.1", "port": 8005},
         "log": {"host": "127.0.0.1", "port": 8006},
     },
     "model": {"edge_backend": "mock", "cloud_backend": "mock"},

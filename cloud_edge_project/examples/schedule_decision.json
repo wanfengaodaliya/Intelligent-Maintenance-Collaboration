@@ -1,0 +1,8 @@
+{
+  "task_id": "task_0001",
+  "route": "edge",
+  "target_node": "edge_1",
+  "reason": "edge confidence is at least 0.80",
+  "estimated_total_latency_ms": 1.0,
+  "upload_required": false
+}
