@@ -10,9 +10,9 @@ from typing import Any, Callable, Mapping
 import requests
 
 try:
-    from .deferred_cloud_repository import DeferredCloudRepository
+    from .deferred_cloud_repository import DeferredCloudError, DeferredCloudRepository
 except ImportError:
-    from deferred_cloud_repository import DeferredCloudRepository
+    from deferred_cloud_repository import DeferredCloudError, DeferredCloudRepository
 
 
 class EdgeDispatchClient:
@@ -87,12 +87,28 @@ class DeferredCloudDispatcher:
         try:
             self.client.dispatch(self.edge_url_lookup(task["edge_node_id"]), payload)
         except Exception as error:
+            current = self._current_task(task["decision_id"])
+            if current["state"] != "DISPATCHING":
+                return current
             return self.repository.schedule_retry(
                 task["decision_id"],
                 reason_code=_dispatch_reason(error),
                 now_ns=now,
             )
+        current = self._current_task(task["decision_id"])
+        if current["state"] != "DISPATCHING":
+            return current
         return self.repository.mark_dispatched(task["decision_id"], now_ns=now)
+
+    def _current_task(self, decision_id: str) -> dict[str, Any]:
+        current = self.repository.get(decision_id)
+        if current is None:
+            raise DeferredCloudError(
+                "DEFERRED_TASK_NOT_FOUND",
+                "decision disappeared after edge dispatch",
+                404,
+            )
+        return current
 
     def start(self, interval_seconds: float = 1.0) -> None:
         if self._thread is not None and self._thread.is_alive():

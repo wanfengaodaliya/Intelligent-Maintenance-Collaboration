@@ -42,7 +42,15 @@ class CloudReviewStore:
         with self._lock:
             existing = self._read(path)
             if existing is not None:
-                if _canonical(existing) != _canonical(record):
+                existing_content = {
+                    "raw_packet": existing.get("raw_packet"),
+                    "edge_perception_result": existing.get("edge_perception_result"),
+                }
+                requested_content = {
+                    "raw_packet": raw,
+                    "edge_perception_result": edge,
+                }
+                if _canonical(existing_content) != _canonical(requested_content):
                     raise CloudReviewError("CLOUD_REVIEW_RECORD_CONFLICT", "packet identity already has different data", 409)
                 return existing
             self._write(path, record)

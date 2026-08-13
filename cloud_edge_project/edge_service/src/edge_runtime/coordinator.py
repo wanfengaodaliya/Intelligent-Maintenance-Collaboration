@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Mapping, Optional, Protocol
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from core.bearing_workflow_contracts import FINAL_EDGE, FinalPacketResult
 from edge_aggregation.workflow import BearingAggregationWorkflow
@@ -13,6 +13,7 @@ from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception, PerceptionInvocationContext
 from edge_task_ingress import INGRESS_ACCEPTED, EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
+from packet_routing_bridge import PacketRoutingBridge
 
 from .contracts import action_level_for
 from .http import SchedulerReporter
@@ -37,6 +38,8 @@ class EdgeRuntimeCoordinator:
         aggregation_workflow: Optional[BearingAggregationWorkflow] = None,
         device_result_publisher: Optional[JsonPublisher] = None,
         window_review_store: Optional[WindowReviewStore] = None,
+        packet_router: Optional[PacketRoutingBridge] = None,
+        on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -48,6 +51,8 @@ class EdgeRuntimeCoordinator:
         self.aggregation_workflow = aggregation_workflow
         self.device_result_publisher = device_result_publisher
         self.window_review_store = window_review_store
+        self.packet_router = packet_router
+        self.on_packet_route_error = on_packet_route_error or (lambda _: None)
         self._clock_ns = clock_ns
         self._pending_aggregation: dict[
             tuple[str, str, str, str, str], FinalPacketResult
@@ -117,7 +122,37 @@ class EdgeRuntimeCoordinator:
         )
         if completion.edge is not None:
             self._model_versions.add(completion.edge.model_version)
+        if self.packet_router is not None:
+            self._route_packet(completion, raw_ref)
         self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
+
+    def _route_packet(
+        self,
+        completion: PacketExecutionCompleted,
+        raw_ref: Any,
+    ) -> None:
+        try:
+            raw_packet = self.cache.read(raw_ref) if raw_ref is not None else None
+            if raw_packet is None:
+                raise ValueError("completed packet raw data is unavailable")
+            self.packet_router.route(raw_packet, completion)
+        except Exception as error:
+            record = {
+                "stage": "packet_route",
+                "device_id": completion.device_id,
+                "task_id": completion.task_id,
+                "bearing_id": completion.bearing_id,
+                "sender_id": completion.sender_id,
+                "packet_id": completion.packet_id,
+                "sequence_number": completion.sequence_number,
+                "error_code": getattr(error, "code", type(error).__name__),
+                "message": str(error),
+                "action": "raw_packet_retained_for_replay",
+            }
+            try:
+                self.on_packet_route_error(record)
+            except Exception:
+                pass
 
     def _aggregate_completion(
         self,

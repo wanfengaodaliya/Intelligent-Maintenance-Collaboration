@@ -26,6 +26,7 @@ from cloud_service.bearing_review.service import (
 )
 from cloud_service.bearing_review.receiver import BearingRawContextReceiver
 from cloud_service.task_results import TaskResultService
+from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
@@ -63,6 +64,32 @@ from core.arbitration_contracts import ArbitrationValidationError
 
 config = load_config()
 edge_status_registry = EdgeStatusRegistry()
+
+
+def build_cloud_status_reporter() -> CloudNodeStatusReporter:
+    scheduler_config = config["services"]["scheduler"]
+    scheduler_base_url = os.getenv(
+        "SCHEDULER_SERVICE_BASE_URL",
+        f"http://{scheduler_config['host']}:{scheduler_config['port']}",
+    )
+
+    def health_provider() -> tuple[str, str]:
+        result = health()
+        if isinstance(result, JSONResponse) and result.status_code >= 400:
+            return "DEGRADED", "FAILED"
+        return "ONLINE", "LOADED"
+
+    return CloudNodeStatusReporter(
+        scheduler_base_url=scheduler_base_url,
+        cloud_node_id=os.getenv("CLOUD_REVIEW_NODE_ID", "cloud_01").strip(),
+        settings_provider=load_cloud_settings,
+        queue_length_provider=lambda: 0,
+        health_provider=health_provider,
+        last_activity_provider=lambda: 0,
+    )
+
+
+status_reporter = build_cloud_status_reporter()
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
@@ -111,12 +138,15 @@ async def _lifespan(_: FastAPI):
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
     expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        expiry_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await expiry_task
+        for task in (status_task, expiry_task):
+            task.cancel()
+        for task in (status_task, expiry_task):
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="cloud_service", lifespan=_lifespan)

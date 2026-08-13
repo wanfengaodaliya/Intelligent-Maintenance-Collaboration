@@ -116,6 +116,7 @@ class PacketExecutionCompleted:
     finished_at_ns: int
     edge: Optional[EdgeResult]
     data_quality_score: float = 1.0
+    perception: Optional[Dict[str, Any]] = None
 
 
 @dataclass

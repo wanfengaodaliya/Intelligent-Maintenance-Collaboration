@@ -1,45 +1,43 @@
-# 这个文件负责把调度器包装成 HTTP 服务
-"""HTTP API for sender-to-edge node assignment."""
+"""HTTP API for assignment and package-level cloud review scheduling."""
 
 from __future__ import annotations
 
-import atexit
 import json
 import sqlite3
 import sys
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 
-try:
-    from common.config import load_config
-    from common.schemas import (
-        ContractError,
-        is_v01_schedule_request,
-        require_mapping,
-        validate_schedule_request_v01,
-    )
-except ImportError:  # Allows running this file directly: python scheduler/api.py
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from common.config import load_config
-    from common.schemas import (
-        ContractError,
-        is_v01_schedule_request,
-        require_mapping,
-        validate_schedule_request_v01,
-    )
+if __package__ in {None, ""}:
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
-try:
-    from .assignment_scheduler import AssignmentError, AssignmentScheduler
-    from .node_registry import NodeRegistry, RegistryError
-    from .rule_scheduler import decide_schedule_v01
-    from .task_repository import TaskRepository, TaskRepositoryError
-except ImportError:  # Allows running this file directly: python api.py
-    from assignment_scheduler import AssignmentError, AssignmentScheduler
-    from node_registry import NodeRegistry, RegistryError
-    from rule_scheduler import decide_schedule_v01
-    from task_repository import TaskRepository, TaskRepositoryError
+from common.config import load_config
+from common.schemas import (
+    ContractError,
+    is_v01_schedule_request,
+    require_mapping,
+    validate_schedule_request_v01,
+)
+
+if __package__ in {None, ""}:
+    from scheduler.assignment_scheduler import AssignmentError
+    from scheduler.deferred_cloud_repository import DeferredCloudError
+    from scheduler.node_registry import RegistryError
+    from scheduler.packet_router import PacketRouteError
+    from scheduler.runtime import SchedulerRuntime
+    from scheduler.task_repository import TaskRepositoryError
+else:
+    from .assignment_scheduler import AssignmentError
+    from .deferred_cloud_repository import DeferredCloudError
+    from .node_registry import RegistryError
+    from .packet_router import PacketRouteError
+    from .runtime import SchedulerRuntime
+    from .task_repository import TaskRepositoryError
 
 try:
     from fastapi import APIRouter, Body, FastAPI
@@ -51,18 +49,20 @@ except ImportError:
     JSONResponse = None
 
 
-node_registry = NodeRegistry()
-task_repository = TaskRepository()
-scheduler = AssignmentScheduler(node_registry, task_repository)
-node_registry.start_monitor()
-atexit.register(node_registry.stop_monitor)
+default_runtime = SchedulerRuntime()
+# Compatibility aliases for callers that imported the previous module globals.
+node_registry = default_runtime.node_registry
+task_repository = default_runtime.task_repository
+scheduler = default_runtime.assignment_scheduler
 
 
-# 同时兼容文档 6.2 的 V0.1 调度请求和发送器的任务级节点分配请求。
 def decide(request: Any) -> dict[str, Any]:
     payload = require_mapping(request, "ScheduleRequest")
     if is_v01_schedule_request(payload):
-        return decide_schedule_v01(validate_schedule_request_v01(payload))
+        return default_runtime.decide(
+            validate_schedule_request_v01(payload),
+            v01=True,
+        )
     return scheduler.decide(payload).to_dict()
 
 
@@ -70,14 +70,24 @@ def _is_v01_schedule_request(request: Mapping[str, Any]) -> bool:
     return is_v01_schedule_request(request)
 
 
-# 接收边缘节点的实时状态报告
-def update_edge_node_status(request: dict[str, Any]) -> dict[str, Any]:
-    return node_registry.update_status(request)
+def update_edge_node_status(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.update_edge_node_status(request)
 
 
-# 接收网络模块提供的发送器到边缘节点链路快照
-def update_link_snapshot(request: dict[str, Any]) -> dict[str, Any]:
-    return node_registry.update_link(request)
+def update_cloud_node_status(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.update_cloud_node_status(request)
+
+
+def update_link_snapshot(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.update_link_snapshot(request)
+
+
+def route_packet(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.route_packet(request)
+
+
+def save_cloud_upload_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.save_cloud_upload_result(request)
 
 
 def update_network_report(
@@ -146,77 +156,79 @@ def _non_negative_network_value(value: Any) -> float:
 
 
 # 保存任务最终执行结果
-def save_task_result(request: dict[str, Any]) -> dict[str, Any]:
-    return scheduler.save_result(request)
+def save_task_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.save_task_result(request)
 
 
 def health() -> dict[str, Any]:
     scheduler_config = _scheduler_config()
-    return {
-        "service": "scheduler_service",
-        "node_id": "scheduler_1",
-        "status": "ok",
-        "model_loaded": True,
-        "model_backend": "rule",
-        "device": "cpu",
-        "port": scheduler_config["port"],
-        "edge_nodes": node_registry.status_counts(),
-    }
+    payload = default_runtime.health()
+    payload["port"] = scheduler_config["port"]
+    return payload
 
 
 def _error_payload(error: Exception) -> tuple[int, dict[str, Any]]:
     if isinstance(error, ContractError):
-        return 400, {
-            "error_code": error.code,
-            "message": error.message,
-        }
-    if isinstance(error, (AssignmentError, TaskRepositoryError)):
-        return error.status_code, {
-            "error_code": error.code,
-            "message": error.message,
-        }
+        return 400, {"error_code": error.code, "message": error.message}
+    if isinstance(
+        error,
+        (AssignmentError, TaskRepositoryError, PacketRouteError, DeferredCloudError),
+    ):
+        return error.status_code, {"error_code": error.code, "message": error.message}
     if isinstance(error, RegistryError):
-        return 400, {
-            "error_code": error.code,
-            "message": error.message,
-        }
+        return 400, {"error_code": error.code, "message": error.message}
     if isinstance(error, sqlite3.OperationalError):
         return 503, {
             "error_code": "SCHEDULER_BUSY",
             "message": "scheduler storage is temporarily busy",
         }
-    return 500, {
-        "error_code": "SCHEDULER_INTERNAL_ERROR",
-        "message": str(error),
-    }
+    return 500, {"error_code": "SCHEDULER_INTERNAL_ERROR", "message": str(error)}
 
 
-if APIRouter is not None:
+def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
+    if FastAPI is None:
+        return None
+    selected = runtime or default_runtime
+
+    @asynccontextmanager
+    async def lifespan(_: Any):
+        selected.start()
+        try:
+            yield
+        finally:
+            selected.stop()
+
     router = APIRouter(prefix="/scheduler", tags=["scheduler"])
+
+    def endpoint(method_name: str, request: Any) -> dict[str, Any] | JSONResponse:
+        try:
+            return getattr(selected, method_name)(request)
+        except Exception as error:
+            status_code, payload = _error_payload(error)
+            return JSONResponse(status_code=status_code, content=payload)
 
     @router.post("/decide", response_model=None)
     def decide_endpoint(request: Any = Body(default=None)) -> dict[str, Any] | JSONResponse:
         try:
-            return decide(request)
+            payload = require_mapping(request, "ScheduleRequest")
+            if is_v01_schedule_request(payload):
+                return selected.decide(validate_schedule_request_v01(payload), v01=True)
+            return selected.decide(payload)
         except Exception as error:
             status_code, payload = _error_payload(error)
             return JSONResponse(status_code=status_code, content=payload)
 
     @router.post("/edge-nodes/status", response_model=None)
-    def edge_node_status_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
-        try:
-            return update_edge_node_status(request)
-        except Exception as error:
-            status_code, payload = _error_payload(error)
-            return JSONResponse(status_code=status_code, content=payload)
+    def edge_status_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        return endpoint("update_edge_node_status", request)
+
+    @router.post("/cloud-nodes/status", response_model=None)
+    def cloud_status_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        return endpoint("update_cloud_node_status", request)
 
     @router.post("/link-snapshots", response_model=None)
-    def link_snapshot_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
-        try:
-            return update_link_snapshot(request)
-        except Exception as error:
-            status_code, payload = _error_payload(error)
-            return JSONResponse(status_code=status_code, content=payload)
+    def link_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        return endpoint("update_link_snapshot", request)
 
     @router.post("/network-reports/{link_id}", response_model=None)
     def network_report_endpoint(
@@ -233,21 +245,32 @@ if APIRouter is not None:
 
     @router.post("/tasks/result", response_model=None)
     def task_result_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
-        try:
-            return save_task_result(request)
-        except Exception as error:
-            status_code, payload = _error_payload(error)
-            return JSONResponse(status_code=status_code, content=payload)
+        return endpoint("save_task_result", request)
 
-    app = FastAPI(title="Edge Node Assignment Scheduler")
-    app.include_router(router)
+    @router.post("/packet-route", response_model=None)
+    def packet_route_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        return endpoint("route_packet", request)
 
-    @app.get("/health")
+    @router.post("/cloud-upload-results", response_model=None)
+    def upload_result_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+        return endpoint("save_cloud_upload_result", request)
+
+    application = FastAPI(
+        title="Edge Node Assignment Scheduler",
+        lifespan=lifespan,
+    )
+    application.state.scheduler_router = router
+    application.include_router(router)
+
+    @application.get("/health")
     def health_endpoint() -> dict[str, Any]:
-        return health()
-else:
-    router = None
-    app = None
+        return selected.health()
+
+    return application
+
+
+app = create_app()
+router = app.state.scheduler_router if app is not None else None
 
 
 class SchedulerRequestHandler(BaseHTTPRequestHandler):
@@ -259,11 +282,14 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlsplit(self.path)
-        handlers = {
+        handlers: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
             "/scheduler/decide": decide,
             "/scheduler/edge-nodes/status": update_edge_node_status,
+            "/scheduler/cloud-nodes/status": update_cloud_node_status,
             "/scheduler/link-snapshots": update_link_snapshot,
             "/scheduler/tasks/result": save_task_result,
+            "/scheduler/packet-route": route_packet,
+            "/scheduler/cloud-upload-results": save_cloud_upload_result,
         }
         report_prefix = "/scheduler/network-reports/"
         if parsed.path.startswith(report_prefix):
@@ -288,7 +314,6 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         if handler is None:
             self._send_json(404, {"detail": "not found"})
             return
-
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
@@ -317,8 +342,15 @@ def run(host: str | None = None, port: int | None = None) -> None:
     selected_host = scheduler_config["host"] if host is None else host
     selected_port = scheduler_config["port"] if port is None else port
     server = ThreadingHTTPServer((selected_host, selected_port), SchedulerRequestHandler)
-    print(f"scheduler service running at http://{selected_host}:{selected_port}")
-    server.serve_forever()
+    default_runtime.start()
+    try:
+        print(f"scheduler service running at http://{selected_host}:{selected_port}")
+        server.serve_forever()
+    finally:
+        close = getattr(server, "server_close", None)
+        if callable(close):
+            close()
+        default_runtime.stop()
 
 
 def _scheduler_config() -> Mapping[str, Any]:

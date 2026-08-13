@@ -28,7 +28,7 @@ def load_packet_routing_config() -> PacketRoutingConfig:
         max_rtt_p95_ms=float(network.get("max_rtt_p95_ms", 100.0)),
         max_loss_rate=float(network.get("max_loss_rate", 0.10)),
         required_cloud_model=required_model,
-        default_cloud_node_id=os.getenv("SCHEDULER_CLOUD_NODE_ID", "cloud_1").strip(),
+        default_cloud_node_id=os.getenv("SCHEDULER_CLOUD_NODE_ID", "cloud_01").strip(),
     )
 
 

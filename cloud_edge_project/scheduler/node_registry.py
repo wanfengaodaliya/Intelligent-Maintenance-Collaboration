@@ -131,6 +131,18 @@ class NodeRegistry:
             self._monitor_thread.join(timeout=1.0)
             self._monitor_thread = None
 
+    def control_url(self, edge_node_id: str) -> str:
+        """Return the registered edge control URL without exposing registry internals."""
+
+        with self._lock:
+            state = self._nodes.get(edge_node_id)
+            if state is None:
+                raise RegistryError(
+                    "UNREGISTERED_EDGE_NODE",
+                    f"unregistered edge node: {edge_node_id}",
+                )
+            return state.config.control_url
+
     def update_status(
         self,
         report: Mapping[str, Any],
