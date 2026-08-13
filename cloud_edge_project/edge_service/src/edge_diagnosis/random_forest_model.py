@@ -44,10 +44,10 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
             raise ModelArtifactError("invalid random-forest metadata") from exc
 
         _require_digest(model_path, manifest.get("model_sha256"), "model")
-        _require_digest(
+        _require_metadata_digest(
             schema_path, manifest.get("feature_schema_sha256"), "feature schema"
         )
-        _require_digest(
+        _require_metadata_digest(
             label_path, manifest.get("label_mapping_sha256"), "label mapping"
         )
         if manifest.get("model_version") != RUNTIME_MODEL_VERSION:
@@ -141,3 +141,19 @@ def _require_digest(path: Path, expected: object, description: str) -> None:
         raise ModelArtifactError("%s file is missing" % description) from exc
     if not isinstance(expected, str) or actual != expected.lower():
         raise ModelArtifactError("%s checksum mismatch" % description)
+
+
+def _require_metadata_digest(path: Path, expected: object, description: str) -> None:
+    try:
+        actual = _sha256_normalized_text(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ModelArtifactError("%s file is missing" % description) from exc
+    if not isinstance(expected, str) or actual != expected.lower():
+        raise ModelArtifactError("%s checksum mismatch" % description)
+
+
+def _sha256_normalized_text(path: Path) -> str:
+    content = path.read_text(encoding="utf-8")
+    digest = hashlib.sha256()
+    digest.update(content.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
+    return digest.hexdigest()

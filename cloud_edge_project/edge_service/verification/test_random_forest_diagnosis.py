@@ -57,6 +57,18 @@ def test_model_rejects_corrupted_committed_artifact(tmp_path) -> None:
         RandomForestDiagnosticModel(copied)
 
 
+def test_model_accepts_metadata_checked_out_with_crlf_line_endings(tmp_path) -> None:
+    copied = tmp_path / "model"
+    shutil.copytree(DEFAULT_MODEL_DIR, copied)
+    for name in ("feature_schema.json", "label_mapping.json", "model_manifest.json"):
+        path = copied / name
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+
+    model = RandomForestDiagnosticModel(copied)
+
+    assert model.model_version == RUNTIME_MODEL_VERSION
+
+
 def test_model_rejects_non_numeric_feature() -> None:
     model = RandomForestDiagnosticModel()
     task = _task()
