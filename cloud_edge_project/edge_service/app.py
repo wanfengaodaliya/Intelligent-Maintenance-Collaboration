@@ -132,7 +132,10 @@ def _create_task_ingress() -> EdgeTaskIngress:
 task_ingress = _create_task_ingress()
 
 
-def _build_runtime(review_store: CloudReviewStore):
+def _build_runtime(review_store: CloudReviewStore | None = None):
+    if review_store is None:
+        review_store = cloud_review_store
+
     fir = EDGE_RUNTIME_SRC / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
     source = "development_test"
     perception = EdgePerception(
