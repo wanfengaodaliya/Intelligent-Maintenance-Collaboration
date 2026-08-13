@@ -23,7 +23,7 @@ services:
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:19031:19031"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:19032:19032"
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}"
     healthcheck:
       test: ["CMD", "/toxiproxy-cli", "list"]
       interval: 3s
@@ -87,7 +87,7 @@ services:
     ports:
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:${NETWORK_API_HOST_PORT:-8090}:8090"
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}"
     volumes:
       - ./config:/app/config:ro
       - network-simulator-logs:/app/logs

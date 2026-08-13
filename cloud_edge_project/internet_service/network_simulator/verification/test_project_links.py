@@ -80,5 +80,6 @@ def test_edge_01_business_traffic_uses_confirmed_proxy_ports():
     assert '18011:18011' in compose
     assert '18021:18021' in compose
     assert '18831:18831' in compose
+    assert 'host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}' in compose
     assert "/scheduler/network-reports/sender_01__to__edge_01__mqtt" in reporter
     assert sender["senders"][0]["mqtt_port"] == 18831
