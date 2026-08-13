@@ -6,7 +6,7 @@
       "bearing_id": "bearing_01",
       "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 1883
+      "mqtt_port": 18831
     },
     {
       "sender_id": "sender_02",

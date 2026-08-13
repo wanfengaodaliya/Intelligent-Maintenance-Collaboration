@@ -27,7 +27,7 @@ class MqttConfig:
 @dataclass(frozen=True)
 class SchedulerConfig:
     base_url: str = "http://127.0.0.1:8003"
-    status_path: str = "/scheduler/edge-status"
+    status_path: str = "/scheduler/edge-nodes/status"
     request_timeout_seconds: float = 2.0
     heartbeat_interval_seconds: float = 1.0
 

@@ -78,9 +78,9 @@ links:
     edge_id: edge_01
     protocol: http
     proxy_name: edge_01__to__scheduler__http
-    listen: "0.0.0.0:18041"
+    listen: "0.0.0.0:18011"
     advertised_host: toxiproxy
-    advertised_port: 18041
+    advertised_port: 18011
     upstream: "host.docker.internal:8003"
     seed_offset: 104
     disconnect_mode: auto
@@ -104,9 +104,9 @@ links:
     edge_id: edge_01
     protocol: http
     proxy_name: edge_01__to__cloud__http
-    listen: "0.0.0.0:18043"
+    listen: "0.0.0.0:18021"
     advertised_host: toxiproxy
-    advertised_port: 18043
+    advertised_port: 18021
     upstream: "host.docker.internal:8004"
     seed_offset: 106
     disconnect_mode: auto

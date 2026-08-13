@@ -5,10 +5,10 @@ services:
     host: "127.0.0.1"
     port: 8001
   scheduler:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8003
   cloud:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8004
   consistency:
     host: "127.0.0.1"

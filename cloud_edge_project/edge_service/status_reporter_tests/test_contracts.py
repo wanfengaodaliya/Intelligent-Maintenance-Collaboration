@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from edge_status_reporter.contracts import AcceleratorSnapshot, EdgeStatusReport, ModelStatus, ResourceSnapshot
+from edge_status_reporter.contracts import (
+    AcceleratorSnapshot,
+    EdgeStatusReport,
+    ModelStatus,
+    NetworkSnapshot,
+    ResourceSnapshot,
+)
 
 
 def test_report_serializes_all_required_status_dimensions() -> None:
@@ -11,6 +17,7 @@ def test_report_serializes_all_required_status_dimensions() -> None:
         reported_at_ns=123,
         resources=ResourceSnapshot(4, 25.5, 2048.0),
         accelerators=AcceleratorSnapshot(False, True),
+        network_to_scheduler=NetworkSnapshot(120, 12.0, 8.0, 10.0, 0.01),
         queue_length=0,
         models=(ModelStatus("edge_bearing_mock", "loaded"),),
         last_task_activity_ns=100,
@@ -27,6 +34,13 @@ def test_report_serializes_all_required_status_dimensions() -> None:
             "queue_length": 0,
         },
         "models": [{"model_version": "edge_bearing_mock", "load_status": "LOADED"}],
+        "network_to_scheduler": {
+            "measured_at_ns": 120,
+            "available_uplink_mbps_estimate": 12.0,
+            "rtt_ms_avg": 8.0,
+            "rtt_ms_p95": 10.0,
+            "loss_rate": 0.01,
+        },
         "last_task_activity_ns": 100,
     }
 

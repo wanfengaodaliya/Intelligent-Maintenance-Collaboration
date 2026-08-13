@@ -9,8 +9,9 @@ def test_default_config_enables_both_targets_with_project_ports() -> None:
     config = EdgeStatusReporterConfig.from_env(default_model_version="edge_bearing_mock", environ={})
     assert config.enabled is True
     assert config.interval_seconds == 1.0
-    assert config.scheduler.url == "http://127.0.0.1:8003/scheduler/edge-nodes/status"
-    assert config.cloud.url == "http://127.0.0.1:8004/cloud/edge-status"
+    assert config.scheduler.url == "http://127.0.0.1:18011/scheduler/edge-nodes/status"
+    assert config.cloud.url == "http://127.0.0.1:18021/cloud/edge-status"
+    assert config.network.url.endswith("/edge_01__to__scheduler__http")
     assert config.resource.mode == "system"
 
 

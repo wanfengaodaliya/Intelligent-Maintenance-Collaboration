@@ -5,6 +5,7 @@ from .collectors import AcceleratorDetector, build_resource_collector
 from .config import (
     AcceleratorConfig,
     EdgeStatusReporterConfig,
+    NetworkConfig,
     ResourceConfig,
     StatusTargetConfig,
 )
@@ -13,6 +14,7 @@ from .contracts import (
     BusinessStatusSnapshot,
     EdgeStatusReport,
     ModelStatus,
+    NetworkSnapshot,
     ResourceSnapshot,
 )
 from .middleware import EdgeActivityMiddleware
@@ -33,6 +35,8 @@ __all__ = [
     "EdgeStatusReporterConfig",
     "HttpStatusTarget",
     "ModelStatus",
+    "NetworkConfig",
+    "NetworkSnapshot",
     "ResourceConfig",
     "ResourceSnapshot",
     "StatusTargetConfig",

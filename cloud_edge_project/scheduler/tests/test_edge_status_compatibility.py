@@ -16,11 +16,18 @@ def _report(reported_at_ns: int) -> dict:
         "models": [
             {"model_version": "bearing_packet_model_v1", "load_status": "LOADED"}
         ],
+        "network_to_scheduler": {
+            "measured_at_ns": reported_at_ns,
+            "available_uplink_mbps_estimate": 12.0,
+            "rtt_ms_avg": 8.0,
+            "rtt_ms_p95": 10.0,
+            "loss_rate": 0.01,
+        },
         "last_task_activity_ns": 0,
     }
 
 
-def test_scheduler_accepts_reporter_payload_without_network_status():
+def test_scheduler_accepts_reporter_payload_with_network_status():
     registry = NodeRegistry(
         {
             "edge_01": EdgeNodeConfig(

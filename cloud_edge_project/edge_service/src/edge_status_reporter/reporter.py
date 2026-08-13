@@ -7,12 +7,16 @@ import time
 from typing import Callable, Protocol
 
 from .collectors import AcceleratorDetector, ResourceCollector
-from .contracts import BusinessStatusSnapshot, EdgeStatusReport
+from .contracts import BusinessStatusSnapshot, EdgeStatusReport, NetworkSnapshot
 from .transport import HttpStatusTarget
 
 
 class BusinessStatusSource(Protocol):
     def snapshot(self) -> BusinessStatusSnapshot: ...
+
+
+class NetworkCollector(Protocol):
+    def collect(self) -> NetworkSnapshot: ...
 
 
 class EdgeStatusReporter:
@@ -22,6 +26,7 @@ class EdgeStatusReporter:
         status_source: BusinessStatusSource,
         resource_collector: ResourceCollector,
         accelerator_detector: AcceleratorDetector,
+        network_collector: NetworkCollector,
         targets: tuple[HttpStatusTarget, ...],
         interval_seconds: float,
         clock_ns: Callable[[], int] = time.time_ns,
@@ -31,6 +36,7 @@ class EdgeStatusReporter:
         self.status_source = status_source
         self.resource_collector = resource_collector
         self.accelerator_detector = accelerator_detector
+        self.network_collector = network_collector
         self.targets = targets
         self.interval_seconds = interval_seconds
         self.clock_ns = clock_ns
@@ -46,11 +52,13 @@ class EdgeStatusReporter:
             business = self.status_source.snapshot()
             resources = self.resource_collector.collect()
             accelerators = self.accelerator_detector.detect()
+            network = self.network_collector.collect()
             report = EdgeStatusReport(
                 edge_node_id=business.edge_node_id,
                 reported_at_ns=self.clock_ns(),
                 resources=resources,
                 accelerators=accelerators,
+                network_to_scheduler=network,
                 queue_length=business.queue_length,
                 models=business.models,
                 last_task_activity_ns=business.last_task_activity_ns,
