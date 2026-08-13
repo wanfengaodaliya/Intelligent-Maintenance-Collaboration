@@ -10,7 +10,11 @@ import requests
 
 from cloud_service.config import CloudSettings
 from cloud_service.errors import CloudServiceError
-from cloud_service.prompt import build_cloud_messages, build_enhanced_analysis_messages
+from cloud_service.prompt import (
+    build_cloud_messages,
+    build_enhanced_analysis_messages,
+    build_v01_cloud_messages,
+)
 
 
 CLOUD_NODE_ID = "cloud_1"
@@ -81,12 +85,9 @@ def _model_result(content: Any) -> dict[str, Any]:
     }
 
 
-def infer_vllm(
-    perception_result: dict[str, Any],
-    settings: CloudSettings,
-) -> dict[str, Any]:
-    """Call vLLM and convert its answer to the project CloudResult."""
-
+def _request_structured_result(
+    messages: list[dict[str, str]], settings: CloudSettings
+) -> tuple[dict[str, Any], float]:
     start = perf_counter()
     try:
         response = requests.post(
@@ -94,7 +95,7 @@ def infer_vllm(
             headers=_headers(settings),
             json={
                 "model": settings.vllm_model_name,
-                "messages": build_cloud_messages(perception_result),
+                "messages": messages,
                 "temperature": 0.1,
                 "max_tokens": 512,
                 "chat_template_kwargs": {"enable_thinking": False},
@@ -127,7 +128,18 @@ def infer_vllm(
             502,
         ) from exc
 
-    elapsed_ms = (perf_counter() - start) * 1000
+    return model_result, (perf_counter() - start) * 1000
+
+
+def infer_vllm(
+    perception_result: dict[str, Any],
+    settings: CloudSettings,
+) -> dict[str, Any]:
+    """Call vLLM and convert its answer to the project CloudResult."""
+
+    model_result, elapsed_ms = _request_structured_result(
+        build_cloud_messages(perception_result), settings
+    )
     return {
         "analysis_scope": "bearing_packet_review",
         "device_id": perception_result["device_id"],
@@ -144,6 +156,32 @@ def infer_vllm(
         "decision": {
             "recommended_action": model_result["recommended_action"],
             "action": model_result["recommended_action"],
+            "description": model_result["description"],
+        },
+    }
+
+
+def infer_v01_vllm(request: dict[str, Any], settings: CloudSettings) -> dict[str, Any]:
+    """Call vLLM for a documented V0.1 CloudRequest."""
+
+    model_result, elapsed_ms = _request_structured_result(
+        build_v01_cloud_messages(request), settings
+    )
+    action = (
+        "ignore"
+        if model_result["recommended_action"] == "record_only"
+        else "send_alert"
+    )
+    return {
+        "task_id": request["task_id"],
+        "node_id": CLOUD_NODE_ID,
+        "model_name": settings.vllm_model_name,
+        "label": model_result["label"],
+        "confidence": model_result["confidence"],
+        "risk_level": model_result["risk_level"],
+        "cloud_latency_ms": round(elapsed_ms, 2),
+        "decision": {
+            "action": action,
             "description": model_result["description"],
         },
     }

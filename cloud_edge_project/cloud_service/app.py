@@ -30,6 +30,7 @@ from cloud_service.context_aggregation.coordinator import ContextAggregationCoor
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
+from cloud_service.vllm_backend import infer_v01_vllm
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
@@ -144,6 +145,16 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
     risk_level = require_field(edge_result, "risk_level", task_id)
     if risk_level not in {"low", "medium", "high"}:
         raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", task_id)
+
+    settings = load_cloud_settings()
+    if settings.backend == "vllm":
+        return infer_v01_vllm(request, settings)
+    if settings.backend != "mock":
+        raise CloudServiceError(
+            "INVALID_CLOUD_BACKEND",
+            f"unsupported cloud backend: {settings.backend}",
+            500,
+        )
 
     if label == "abnormal":
         confidence = max(edge_confidence, 0.93)

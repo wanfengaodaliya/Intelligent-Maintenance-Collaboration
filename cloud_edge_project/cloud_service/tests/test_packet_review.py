@@ -118,3 +118,36 @@ def test_packet_review_uses_injected_diagnosis_model_without_context_request(tmp
     assert packet_result["cloud_label"] == "abnormal"
     assert packet_result["cloud_model_version"] == "bearing_packet_model_v1"
     assert "raw_context_request" not in result
+
+
+def test_packet_review_uses_vllm_when_backend_is_vllm(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_infer_vllm(perception_result: dict, settings: CloudSettings) -> dict:
+        calls.append((perception_result, settings))
+        return {
+            "model_name": "qwen3.5-2b-local",
+            "label": "abnormal",
+            "confidence": 0.88,
+            "risk_level": "medium",
+            "decision": {"recommended_action": "flag_for_task_aggregation"},
+        }
+
+    monkeypatch.setattr("cloud_service.service.infer_vllm", fake_infer_vllm, raising=False)
+    result = infer_cloud(
+        _packet_request(),
+        settings=CloudSettings(
+            backend="vllm",
+            vllm_url="http://127.0.0.1:6006/v1/chat/completions",
+            vllm_model_name="qwen3.5-2b-local",
+            vllm_api_key="",
+            vllm_timeout_seconds=30,
+            database_path=tmp_path / "cloud.db",
+        ),
+    )
+
+    packet_result = result["cloud_packet_result"]
+    assert calls
+    assert packet_result["cloud_model_version"] == "qwen3.5-2b-local"
+    assert packet_result["cloud_label"] == "abnormal"
+    assert packet_result["recommended_action"] == "flag_for_task_aggregation"
