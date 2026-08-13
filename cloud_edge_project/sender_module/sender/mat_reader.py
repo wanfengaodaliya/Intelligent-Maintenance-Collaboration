@@ -74,11 +74,14 @@ class MatRecord:
                 if name == "vibration":
                     vibration_start_index = first
                     vibration_end_index = last
-                data[name] = {
+                channel_data = {
                     "sample_rate_hz": signal.sample_rate_hz,
                     "sample_count": len(values),
                     "values": values,
                 }
+                if name in PACKET_UNITS:
+                    channel_data["unit"] = PACKET_UNITS[name]
+                data[name] = channel_data
 
             temperature_index = int(
                 np.searchsorted(self.temperature_times, end, side="right") - 1
@@ -107,6 +110,11 @@ SOURCE_TO_PACKET = {
     "speed": ("shaft_speed_rpm", 4000),
     "torque": ("load_torque_nm", 4000),
     "force": ("bearing_radial_load_n", 4000),
+}
+PACKET_UNITS = {
+    "vibration": "mm/s",
+    "phase_current_1_A": "A",
+    "phase_current_2_A": "A",
 }
 TEMPERATURE_SOURCE = "temp_2_bearing_module"
 

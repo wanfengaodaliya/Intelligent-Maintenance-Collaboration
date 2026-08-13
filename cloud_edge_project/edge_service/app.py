@@ -40,6 +40,7 @@ from edge_diagnosis import (  # noqa: E402
     RandomForestDiagnosticModel,
 )
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
+from edge_model.code_fallback import TestRuleRunner  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
 from edge_perception import (  # noqa: E402
@@ -69,9 +70,17 @@ from edge_status_reporter import build_edge_status_integration  # noqa: E402
 
 
 config = load_config()
+diagnostic_backend = str(config["model"]["edge_backend"])
+if diagnostic_backend not in {"rule", "random_forest"}:
+    raise ValueError("unsupported edge diagnostic backend: %s" % diagnostic_backend)
+runtime_model_version = (
+    "edge_rule_test_v1"
+    if diagnostic_backend == "rule"
+    else RUNTIME_MODEL_VERSION
+)
 edge_status_integration = build_edge_status_integration(
     edge_node_id=EDGE_NODE_ID,
-    default_model_version=RUNTIME_MODEL_VERSION,
+    default_model_version=runtime_model_version,
 )
 runtime_assembly = None
 
@@ -148,8 +157,12 @@ def _build_runtime():
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
-        RandomForestDiagnosticModel(
-            os.getenv("EDGE_RF_MODEL_DIR", str(DEFAULT_MODEL_DIR))
+        (
+            TestRuleRunner(runtime_model_version)
+            if diagnostic_backend == "rule"
+            else RandomForestDiagnosticModel(
+                os.getenv("EDGE_RF_MODEL_DIR", str(DEFAULT_MODEL_DIR))
+            )
         ),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
@@ -198,6 +211,9 @@ def _build_runtime():
             reserved_free_bytes=int(transfer_settings.get("reserved_free_gib", 10)) * 1024**3,
             dispatch_interval_seconds=float(
                 transfer_settings.get("dispatch_interval_seconds", 1.0)
+            ),
+            packet_cloud_confidence_threshold=float(
+                transfer_settings.get("packet_cloud_confidence_threshold", 0.0)
             ),
         ),
         cloud_node_urls={"cloud_01": cloud_base},

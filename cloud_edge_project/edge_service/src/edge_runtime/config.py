@@ -46,6 +46,7 @@ class WindowTransferConfig:
     warning_bytes: int = 16 * 1024**3
     reserved_free_bytes: int = 10 * 1024**3
     dispatch_interval_seconds: float = 1.0
+    packet_cloud_confidence_threshold: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,8 @@ class EdgeRuntimeConfig:
             errors.append("MQTT host and client_id must be non-empty")
         if not self.mqtt.device_result_topic.strip():
             errors.append("mqtt.device_result_topic must be non-empty")
+        if not 0.0 <= self.window_transfer.packet_cloud_confidence_threshold <= 1.0:
+            errors.append("packet_cloud_confidence_threshold must be between 0 and 1")
         if not self.scheduler.base_url.startswith(("http://", "https://")):
             errors.append("scheduler.base_url must use HTTP or HTTPS")
         if self.scheduler.heartbeat_interval_seconds != 1.0:

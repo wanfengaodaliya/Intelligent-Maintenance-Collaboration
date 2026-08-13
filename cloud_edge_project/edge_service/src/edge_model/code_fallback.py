@@ -84,6 +84,8 @@ class TestRuleRunner(CodeFallbackRunner):
 
     def __init__(self, rule_version: str = "edge_rule_test_v1"):
         self.rule_version = rule_version
+        self.model_version = rule_version
+        self.deployment_status = "built_in_rule"
 
     def run(self, task: PacketInferenceTask) -> EdgeResult:
         self._validate_input(task)

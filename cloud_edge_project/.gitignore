@@ -13,3 +13,5 @@ cloud_service/tests/*.pyc
 logs/*.jsonl
 logs/*.csv
 data/*.db
+data/
+edge_service/data/

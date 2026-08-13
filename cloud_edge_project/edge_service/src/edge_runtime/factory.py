@@ -84,6 +84,9 @@ def build_edge_runtime(
             cloud=DurableWindowReviewGateway(
                 HttpCloudReviewGateway(cloud_base_url), window_review_store
             ),
+            packet_cloud_confidence_threshold=(
+                transfer.packet_cloud_confidence_threshold
+            ),
         )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,

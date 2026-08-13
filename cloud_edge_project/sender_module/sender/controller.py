@@ -199,7 +199,10 @@ def run_sender_task(
                 sender_id=node.sender_id,
                 sequence_number=sequence_number,
                 data=window.data,
-                end_generate_timestamp_ns=time.time_ns(),
+                end_generate_timestamp_ns=(
+                    started_ns
+                    + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
+                ),
             )
             source_store.save(
                 packet_id=packet["packet_id"],

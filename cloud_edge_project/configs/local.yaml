@@ -18,7 +18,7 @@ services:
     port: 8006
 
 model:
-  edge_backend: "random_forest"
+  edge_backend: "rule"
   cloud_backend: "rule"
 
 mqtt:
@@ -34,6 +34,8 @@ bearing_window_transfer:
   warning_gib: 16
   reserved_free_gib: 10
   dispatch_interval_seconds: 1.0
+  # 本链路只做轴承级 20 包复核，不以前置单包云复核阻塞窗口落盘。
+  packet_cloud_confidence_threshold: 0.0
 
 log:
   path: "logs/task_trace.jsonl"

@@ -20,7 +20,7 @@ score:
     latency_worst_ms: 350
     jitter_best_ms: 1
     jitter_worst_ms: 80
-    bandwidth_best_kbps: 25000
+    bandwidth_best_kbps: 80000
     bandwidth_worst_kbps: 500
     packet_loss_best_percent: 0
     packet_loss_worst_percent: 5

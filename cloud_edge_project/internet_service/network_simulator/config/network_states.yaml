@@ -2,7 +2,7 @@ states:
   GOOD:
     latency_ms: {min: 8, max: 25}
     jitter_ms: {min: 1, max: 5}
-    bandwidth_kbps: {min: 12000, max: 25000}
+    bandwidth_kbps: {min: 40000, max: 80000}
     packet_loss_percent: {min: 0.0, max: 0.2}
     disconnect_mode: none
 

@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "consistency": {"host": "127.0.0.1", "port": 8005},
         "log": {"host": "127.0.0.1", "port": 8006},
     },
-    "model": {"edge_backend": "random_forest", "cloud_backend": "mock"},
+    "model": {"edge_backend": "rule", "cloud_backend": "mock"},
     "log": {"path": "logs/task_trace.jsonl"},
     "demo": {
         "network_state": {
