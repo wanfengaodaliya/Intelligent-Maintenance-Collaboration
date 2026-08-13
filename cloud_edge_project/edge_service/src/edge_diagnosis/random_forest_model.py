@@ -44,10 +44,10 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
             raise ModelArtifactError("invalid random-forest metadata") from exc
 
         _require_digest(model_path, manifest.get("model_sha256"), "model")
-        _require_digest(
+        _require_metadata_digest(
             schema_path, manifest.get("feature_schema_sha256"), "feature schema"
         )
-        _require_digest(
+        _require_metadata_digest(
             label_path, manifest.get("label_mapping_sha256"), "label mapping"
         )
         if manifest.get("model_version") != RUNTIME_MODEL_VERSION:
@@ -61,6 +61,13 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
             raise ModelArtifactError("feature schema does not match model manifest")
         if labels.get("labels") != {"normal": 0, "fault": 1}:
             raise ModelArtifactError("label mapping is not the frozen binary contract")
+
+        feature_schema_version = schema.get("schema_version")
+        model_input_schema_version = schema.get("model_input_schema_version")
+        if not isinstance(feature_schema_version, str) or not feature_schema_version:
+            raise ModelArtifactError("feature schema version is missing")
+        if not isinstance(model_input_schema_version, str) or not model_input_schema_version:
+            raise ModelArtifactError("model input schema version is missing")
 
         try:
             artifact = joblib.load(model_path)
@@ -81,6 +88,8 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
         self.model_version = RUNTIME_MODEL_VERSION
         self.deployment_status = str(manifest.get("deployment_status"))
         self.feature_columns = schema_columns
+        self.feature_schema_version = feature_schema_version
+        self.model_input_schema_version = model_input_schema_version
         self.estimator = estimator
         self.classes = classes
 
@@ -132,3 +141,19 @@ def _require_digest(path: Path, expected: object, description: str) -> None:
         raise ModelArtifactError("%s file is missing" % description) from exc
     if not isinstance(expected, str) or actual != expected.lower():
         raise ModelArtifactError("%s checksum mismatch" % description)
+
+
+def _require_metadata_digest(path: Path, expected: object, description: str) -> None:
+    try:
+        actual = _sha256_normalized_text(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ModelArtifactError("%s file is missing" % description) from exc
+    if not isinstance(expected, str) or actual != expected.lower():
+        raise ModelArtifactError("%s checksum mismatch" % description)
+
+
+def _sha256_normalized_text(path: Path) -> str:
+    content = path.read_text(encoding="utf-8")
+    digest = hashlib.sha256()
+    digest.update(content.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
+    return digest.hexdigest()
