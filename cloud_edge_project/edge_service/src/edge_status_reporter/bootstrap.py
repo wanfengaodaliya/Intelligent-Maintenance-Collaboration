@@ -11,6 +11,7 @@ import requests
 from .collectors import AcceleratorDetector, build_resource_collector
 from .config import EdgeStatusReporterConfig
 from .middleware import EdgeActivityMiddleware
+from .network import SimulationNetworkCollector
 from .reporter import EdgeStatusReporter
 from .state import EdgeApplicationState
 from .transport import HttpStatusTarget
@@ -106,6 +107,12 @@ def build_edge_status_integration(
         accelerator_detector=AcceleratorDetector(
             config.accelerator,
             logger=selected_logger,
+        ),
+        network_collector=SimulationNetworkCollector(
+            config.network.url,
+            timeout_seconds=config.network.timeout_seconds,
+            stale_after_seconds=config.network.stale_after_seconds,
+            clock_ns=clock_ns,
         ),
         targets=targets,
         interval_seconds=config.interval_seconds,

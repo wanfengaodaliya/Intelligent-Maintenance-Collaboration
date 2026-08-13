@@ -8,6 +8,7 @@ from edge_status_reporter.contracts import (
     AcceleratorSnapshot,
     BusinessStatusSnapshot,
     ModelStatus,
+    NetworkSnapshot,
     ResourceSnapshot,
 )
 from edge_status_reporter.reporter import EdgeStatusReporter
@@ -37,6 +38,11 @@ class ResourceCollector:
 class AcceleratorDetector:
     def detect(self) -> AcceleratorSnapshot:
         return AcceleratorSnapshot(False, False)
+
+
+class NetworkCollector:
+    def collect(self) -> NetworkSnapshot:
+        return NetworkSnapshot(120, 12.0, 8.0, 10.0, 0.01)
 
 
 class Target:
@@ -79,6 +85,7 @@ def _reporter(targets: tuple[Target, ...], interval: float = 10.0) -> tuple[Edge
         status_source=StatusSource(),
         resource_collector=resources,
         accelerator_detector=AcceleratorDetector(),
+        network_collector=NetworkCollector(),
         targets=targets,
         interval_seconds=interval,
         clock_ns=lambda: 123,

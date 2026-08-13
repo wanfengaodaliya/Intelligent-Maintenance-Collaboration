@@ -1,7 +1,7 @@
 reporter:
   enabled: true
   reporter_id: network-controller-01
-  scheduler_url: "http://scheduler:8000/api/v1/network/reports"
+  scheduler_url: "http://host.docker.internal:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt"
   report_interval_seconds: 1
   connect_timeout_seconds: 1
   read_timeout_seconds: 2

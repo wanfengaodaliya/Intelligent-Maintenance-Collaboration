@@ -30,8 +30,8 @@ def load_cloud_review_config() -> CloudReviewConfig:
                 str(project_root / "data" / "edge_cloud_review"),
             )
         ),
-        cloud_base_url=os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:8004").rstrip("/"),
-        scheduler_base_url=os.getenv("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:8003").rstrip("/"),
+        cloud_base_url=os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021").rstrip("/"),
+        scheduler_base_url=os.getenv("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:18011").rstrip("/"),
         timeout_seconds=float(os.getenv("EDGE_CLOUD_REVIEW_TIMEOUT_SECONDS", "3")),
         retention_ns=int(
             os.getenv(

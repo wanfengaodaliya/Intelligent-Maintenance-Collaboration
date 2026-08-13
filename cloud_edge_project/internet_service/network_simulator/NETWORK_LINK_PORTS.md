@@ -30,9 +30,9 @@
 | sender_01 → Scheduler | `127.0.0.1:18031` | `toxiproxy:18031` | `host.docker.internal:8003` |
 | sender_02 → Scheduler | `127.0.0.1:18032` | `toxiproxy:18032` | `host.docker.internal:8003` |
 | sender_03 → Scheduler | `127.0.0.1:18033` | `toxiproxy:18033` | `host.docker.internal:8003` |
-| edge_01 → Scheduler | `127.0.0.1:18041` | `toxiproxy:18041` | `host.docker.internal:8003` |
+| edge_01 → Scheduler | `127.0.0.1:18011` | `toxiproxy:18011` | `host.docker.internal:8003` |
 | Scheduler → edge_01 | `127.0.0.1:18042` | `toxiproxy:18042` | `host.docker.internal:8001` |
-| edge_01 → Cloud | `127.0.0.1:18043` | `toxiproxy:18043` | `host.docker.internal:8004` |
+| edge_01 → Cloud | `127.0.0.1:18021` | `toxiproxy:18021` | `host.docker.internal:8004` |
 | Cloud → edge_01 | `127.0.0.1:18044` | `toxiproxy:18044` | `host.docker.internal:8001` |
 | Cloud → Scheduler | `127.0.0.1:18045` | `toxiproxy:18045` | `host.docker.internal:8003` |
 | edge_02 → Scheduler | `127.0.0.1:18051` | `toxiproxy:18051` | `host.docker.internal:8003` |
@@ -47,8 +47,8 @@
 Edge Status Reporter 经过网络模拟时，宿主机启动前设置：
 
 ```powershell
-$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18041/scheduler/edge-nodes/status"
-$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18043/cloud/edge-status"
+$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18011/scheduler/edge-nodes/status"
+$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18021/cloud/edge-status"
 ```
 
 edge_02 使用：
@@ -80,4 +80,4 @@ sender_03: http://127.0.0.1:18033/scheduler/decide
 
 - Scheduler → Sender：Sender 没有 HTTP 服务端口。
 - Scheduler → Cloud：当前 Scheduler 没有对应直接调用。
-- Network Reporter → Scheduler：两者当前 HTTP 合同不兼容。
+- Network Reporter → Scheduler：通过正式 `/scheduler/network-reports/{link_id}` 适配入口上报。

@@ -124,6 +124,20 @@ class AcceleratorConfig:
 
 
 @dataclass(frozen=True)
+class NetworkConfig:
+    url: str
+    timeout_seconds: float = 0.5
+    stale_after_seconds: float = 3.0
+
+    def __post_init__(self) -> None:
+        _http_url(self.url, "network.url")
+        if self.timeout_seconds <= 0 or not math.isfinite(float(self.timeout_seconds)):
+            raise ValueError("network.timeout_seconds is invalid")
+        if self.stale_after_seconds < 0 or not math.isfinite(float(self.stale_after_seconds)):
+            raise ValueError("network.stale_after_seconds is invalid")
+
+
+@dataclass(frozen=True)
 class EdgeStatusReporterConfig:
     enabled: bool
     interval_seconds: float
@@ -132,6 +146,7 @@ class EdgeStatusReporterConfig:
     cloud: StatusTargetConfig
     resource: ResourceConfig
     accelerator: AcceleratorConfig
+    network: NetworkConfig
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -158,6 +173,7 @@ class EdgeStatusReporterConfig:
                 cloud=StatusTargetConfig("cloud", False, "", 0.5, 1),
                 resource=ResourceConfig(),
                 accelerator=AcceleratorConfig(),
+                network=NetworkConfig("http://127.0.0.1:8090/api/v1/network/links/edge_01__to__scheduler__http"),
             )
         scheduler_enabled = _boolean(
             env.get("EDGE_STATUS_SCHEDULER_ENABLED", "true"),
@@ -167,7 +183,7 @@ class EdgeStatusReporterConfig:
             name="scheduler",
             enabled=scheduler_enabled,
             url=(
-                env.get("EDGE_STATUS_SCHEDULER_URL", "http://127.0.0.1:8003/scheduler/edge-nodes/status").strip()
+                env.get("EDGE_STATUS_SCHEDULER_URL", "http://127.0.0.1:18011/scheduler/edge-nodes/status").strip()
                 if scheduler_enabled else ""
             ),
             timeout_seconds=(
@@ -187,7 +203,7 @@ class EdgeStatusReporterConfig:
             name="cloud",
             enabled=cloud_enabled,
             url=(
-                env.get("EDGE_STATUS_CLOUD_URL", "http://127.0.0.1:8004/cloud/edge-status").strip()
+                env.get("EDGE_STATUS_CLOUD_URL", "http://127.0.0.1:18021/cloud/edge-status").strip()
                 if cloud_enabled else ""
             ),
             timeout_seconds=(
@@ -218,5 +234,16 @@ class EdgeStatusReporterConfig:
             accelerator=AcceleratorConfig(
                 gpu_available_override=_optional_boolean(env.get("EDGE_STATUS_GPU_AVAILABLE_OVERRIDE"), "EDGE_STATUS_GPU_AVAILABLE_OVERRIDE"),
                 npu_available_override=_optional_boolean(env.get("EDGE_STATUS_NPU_AVAILABLE_OVERRIDE"), "EDGE_STATUS_NPU_AVAILABLE_OVERRIDE"),
+            ),
+            network=NetworkConfig(
+                url=env.get(
+                    "EDGE_NETWORK_STATUS_URL",
+                    "http://127.0.0.1:8090/api/v1/network/links/edge_01__to__scheduler__http",
+                ).strip(),
+                timeout_seconds=_positive_float(
+                    env.get("EDGE_NETWORK_STATUS_TIMEOUT_SECONDS", "0.5"),
+                    "EDGE_NETWORK_STATUS_TIMEOUT_SECONDS",
+                ),
+                stale_after_seconds=float(env.get("EDGE_NETWORK_STATUS_STALE_SECONDS", "3.0")),
             ),
         )

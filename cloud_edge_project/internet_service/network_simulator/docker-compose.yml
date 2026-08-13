@@ -7,9 +7,9 @@ services:
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18031:18031"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18032:18032"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18033:18033"
-      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18041:18041"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18011:18011"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18042:18042"
-      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18043:18043"
+      - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18021:18021"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18044:18044"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18045:18045"
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:18051:18051"
@@ -80,12 +80,14 @@ services:
       NETWORK_CONFIG_DIR: /app/config
       NETWORK_LOG_DIR: /app/logs
       TOXIPROXY_API_BASE_URL: http://toxiproxy:8474
-      NETWORK_SCHEDULER_URL: http://scheduler:8000/api/v1/network/reports
+      NETWORK_SCHEDULER_URL: "http://host.docker.internal:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt"
       NETWORK_REPORT_TOKEN: "${NETWORK_REPORT_TOKEN:-}"
       NETWORK_LINK_UPSTREAMS_JSON: "${NETWORK_LINK_UPSTREAMS_JSON:-}"
       TZ: "${TZ:-Asia/Shanghai}"
     ports:
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:${NETWORK_API_HOST_PORT:-8090}:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config:/app/config:ro
       - network-simulator-logs:/app/logs
