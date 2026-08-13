@@ -62,7 +62,8 @@ def test_model_accepts_metadata_checked_out_with_crlf_line_endings(tmp_path) -> 
     shutil.copytree(DEFAULT_MODEL_DIR, copied)
     for name in ("feature_schema.json", "label_mapping.json", "model_manifest.json"):
         path = copied / name
-        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        path.write_bytes(normalized.replace("\n", "\r\n").encode("utf-8"))
 
     model = RandomForestDiagnosticModel(copied)
 
