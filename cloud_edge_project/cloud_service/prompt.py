@@ -25,6 +25,21 @@ CLOUD_SYSTEM_PROMPT = """
 """.strip()
 
 
+V01_CLOUD_SYSTEM_PROMPT = """
+你是边缘—云协同智能维护系统的云端复核模型。根据任务传感器数据和边缘初判，给出保守、可追溯的单任务复核结论。
+不得编造输入中不存在的测量数据；信息不足时采用保守判断。
+
+只能返回一个合法 JSON 对象，不要输出 Markdown、代码围栏或额外说明：
+{
+  "label": "normal 或 abnormal",
+  "confidence": 0.0,
+  "risk_level": "low、medium 或 high",
+  "recommended_action": "record_only、flag_for_task_aggregation 或 urgent_bearing_attention",
+  "description": "复核依据"
+}
+""".strip()
+
+
 def summarize_vibration(values: list[float]) -> dict[str, float | int]:
     """Return compact statistics for a validated vibration sequence."""
 
@@ -52,6 +67,15 @@ def build_cloud_messages(perception_result: dict[str, Any]) -> list[dict[str, st
             "role": "user",
             "content": json.dumps(user_payload, ensure_ascii=False),
         },
+    ]
+
+
+def build_v01_cloud_messages(request: dict[str, Any]) -> list[dict[str, str]]:
+    """Build a compact V0.1 review prompt from the documented request fields."""
+
+    return [
+        {"role": "system", "content": V01_CLOUD_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
     ]
 
 
