@@ -62,6 +62,13 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
         if labels.get("labels") != {"normal": 0, "fault": 1}:
             raise ModelArtifactError("label mapping is not the frozen binary contract")
 
+        feature_schema_version = schema.get("schema_version")
+        model_input_schema_version = schema.get("model_input_schema_version")
+        if not isinstance(feature_schema_version, str) or not feature_schema_version:
+            raise ModelArtifactError("feature schema version is missing")
+        if not isinstance(model_input_schema_version, str) or not model_input_schema_version:
+            raise ModelArtifactError("model input schema version is missing")
+
         try:
             artifact = joblib.load(model_path)
         except Exception as exc:  # joblib may expose backend-specific exceptions
@@ -81,6 +88,8 @@ class RandomForestDiagnosticModel(CodeFallbackRunner):
         self.model_version = RUNTIME_MODEL_VERSION
         self.deployment_status = str(manifest.get("deployment_status"))
         self.feature_columns = schema_columns
+        self.feature_schema_version = feature_schema_version
+        self.model_input_schema_version = model_input_schema_version
         self.estimator = estimator
         self.classes = classes
 

@@ -8,6 +8,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,7 @@ from edge_diagnosis import (  # noqa: E402
     RandomForestDiagnosticModel,
 )
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
+from edge_model.contracts import EdgeResult, PacketInferenceTask  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
 from edge_perception import (  # noqa: E402
@@ -66,6 +68,7 @@ from cloud_review import (  # noqa: E402
     load_cloud_review_config,
 )
 from edge_status_reporter import build_edge_status_integration  # noqa: E402
+from model_input_contract import validate_model_input  # noqa: E402
 
 
 config = load_config()
@@ -74,6 +77,7 @@ edge_status_integration = build_edge_status_integration(
     default_model_version=RUNTIME_MODEL_VERSION,
 )
 runtime_assembly = None
+EDGE_FEATURE_EXTRACTOR_VERSION = "edge-perception-v1"
 
 
 @asynccontextmanager
@@ -135,7 +139,7 @@ def _build_runtime():
             current_relationship_zero_rms_threshold=1e-10,
             numerical_threshold_source=source,
             numerical_threshold_version="runtime-v1",
-            feature_extractor_version="edge-perception-v1",
+            feature_extractor_version=EDGE_FEATURE_EXTRACTOR_VERSION,
             runtime_dependencies={"numpy": np.__version__},
             absolute_tolerance=1e-12,
             relative_tolerance=1e-9,
@@ -233,16 +237,18 @@ atexit.register(cloud_review_cleanup.stop)
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    model = _random_forest_model()
     return {
         "service": "edge_service",
         "node_id": EDGE_NODE_ID,
         "status": "ok",
         "port": config["services"]["edge"]["port"],
         "model_backend": config["model"]["edge_backend"],
-        "model_version": runtime_assembly.coordinator.pipeline.fallback.model_version,
-        "model_deployment_status": (
-            runtime_assembly.coordinator.pipeline.fallback.deployment_status
-        ),
+        "model_version": model.model_version,
+        "model_deployment_status": model.deployment_status,
+        "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
+        "feature_schema_version": model.feature_schema_version,
+        "model_input_schema_version": model.model_input_schema_version,
         "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
         "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
@@ -263,6 +269,66 @@ def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
         packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/edge/rf/infer", response_model=None)
+def random_forest_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    try:
+        task = _packet_task_from_perception(payload)
+        started_at = perf_counter()
+        result = _random_forest_model().run(task)
+        latency_ms = max((perf_counter() - started_at) * 1000, 0.0)
+        return public_rf_result(task, result, edge_latency_ms=latency_ms)
+    except ValueError as exc:
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("INVALID_MODEL_INPUT", str(exc), packet_id)
+        return JSONResponse(status_code=400, content=error_response(error))
+    except Exception as exc:
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
+        return JSONResponse(status_code=500, content=error_response(error))
+
+
+def _random_forest_model() -> RandomForestDiagnosticModel:
+    model = runtime_assembly.coordinator.pipeline.fallback
+    if not isinstance(model, RandomForestDiagnosticModel):
+        raise RuntimeError("edge runtime is not configured with random forest")
+    return model
+
+
+def _packet_task_from_perception(payload: Any) -> PacketInferenceTask:
+    validate_model_input(payload)
+    return PacketInferenceTask(
+        request_id="rf-http:%s" % payload["packet_id"],
+        device_id=payload["device_id"],
+        bearing_id=payload["bearing_id"],
+        task_id=payload["task_id"],
+        packet_id=payload["packet_id"],
+        sender_id=payload["sender_id"],
+        sequence_number=payload["sequence_number"],
+        perception=payload,
+    )
+
+
+def public_rf_result(
+    task: PacketInferenceTask, edge: EdgeResult, *, edge_latency_ms: float
+) -> dict[str, Any]:
+    model = _random_forest_model()
+    if edge.edge_result not in {"normal", "fault"}:
+        raise ValueError("RF result must be normal or fault")
+    return {
+        "task_id": task.task_id,
+        "node_id": EDGE_NODE_ID,
+        "model_name": edge.model_version,
+        "label": "abnormal" if edge.edge_result == "fault" else "normal",
+        "confidence": edge.confidence,
+        "risk_level": edge.edge_risk_level,
+        "edge_latency_ms": round(edge_latency_ms, 2),
+        "need_cloud": model.deployment_status == "evaluation_only",
+        "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
+        "feature_schema_version": model.feature_schema_version,
+        "model_input_schema_version": model.model_input_schema_version,
+    }
 
 
 @app.post("/edge/tasks", response_model=None)

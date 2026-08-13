@@ -93,8 +93,8 @@
     }
   },
   "model_sha256": "bcfa4792e041be6178f9ee191f89418beee8bf4f7953766ca30ce58f6a9bef53",
-  "feature_schema_sha256": "0febce578e359f9aff37074337a5cf227523e3a0e40a75943c5f4f82cc0125d8",
-  "label_mapping_sha256": "a7b66378ac21fe2ebcc4b2a9eae9858a4bf1cd8b86b6eb8b1983896cd84e77f6",
+  "feature_schema_sha256": "829003dfee68b86736286028205fbf36491c3b1d13b0072e4a86fdbacbd0398e",
+  "label_mapping_sha256": "4641c020826760d08d0d2c7b536a1f8867a2d8def9f51b8738603f4111b7dadc",
   "training_features_sha256": "33bc3c5496a62446f78a06422d3e315c76183a0b6b5f320b23c6119311a1990d",
   "runtime": {
     "python": "3.12.13",

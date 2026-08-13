@@ -45,7 +45,7 @@ Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_
 
 Expected: all tests pass.
 
-### Task 2: Route synchronous edge inference through the real RF and adapt its public label
+### Task 2: Serve complete PerceptionResult input through the real RF and adapt its public label
 
 **Files:**
 - Modify: `cloud_edge_project/edge_service/app.py`
@@ -53,54 +53,53 @@ Expected: all tests pass.
 - Test: `cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py`
 
 **Interfaces:**
-- Consumes: V0.1 `/edge/infer` payload and `RandomForestDiagnosticModel.run(PacketInferenceTask)`.
-- Produces: V0.1-compatible `label`, `confidence`, `risk_level`, `need_cloud`, and RF model version.
+- Consumes: exact `edge-model-input/1.1` input and `RandomForestDiagnosticModel.run(PacketInferenceTask)`.
+- Produces: `/edge/rf/infer` output with public `normal|abnormal` label, confidence, risk level, model version, and `need_cloud=true` while evaluation-only.
 
-- [ ] **Step 1: Add a failing HTTP test using a real V0.1 request**
+- [ ] **Step 1: Add a failing HTTP test using a real PerceptionResult**
 
-Assert `POST /edge/infer` returns `model_version == "bearing-rf-a2-evaluation-v1"` and maps RF `fault` to public `abnormal`.
+Assert `POST /edge/rf/infer` returns `model_name == "bearing-rf-a2-evaluation-v1"` and maps RF `fault` to public `abnormal`.
 
 - [ ] **Step 2: Run the test as RED**
 
 Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py -q`
 
-Expected: failure because `/edge/infer` still calls the legacy synchronous model.
+Expected: failure because `/edge/rf/infer` does not exist.
 
 - [ ] **Step 3: Implement the smallest shared RF-to-public adapter**
 
-Build a packet task from a validated V0.1 payload, invoke the RF model, map `fault` to `abnormal`, retain `normal`, copy confidence/risk level/model version, and derive `need_cloud` from the existing confidence policy.
+Build a packet task from validated model input, invoke the RF model, map `fault` to `abnormal`, retain `normal`, copy confidence/risk level/model version, and require cloud review because the artifact is evaluation-only. Keep the four-sensor V0.1 `/edge/infer` contract unchanged.
 
 - [ ] **Step 4: Verify GREEN**
 
-Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py cloud_edge_project/edge_service/tests/unit/test_task_http.py -q`
+Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py -q`
 
 Expected: all tests pass.
 
-### Task 3: Carry feature-version provenance alongside RF packet results
+### Task 3: Expose feature-version provenance through RF diagnostics
 
 **Files:**
-- Modify: `cloud_edge_project/edge_service/src/edge_model/contracts.py`
-- Modify: `cloud_edge_project/edge_service/src/edge_model/pipeline.py`
-- Modify: `cloud_edge_project/edge_service/src/edge_runtime/coordinator.py`
+- Modify: `cloud_edge_project/edge_service/app.py`
+- Modify: `cloud_edge_project/edge_service/src/edge_diagnosis/random_forest_model.py`
 - Test: `cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py`
 
 **Interfaces:**
-- Consumes: runtime `PerceptionConfig.feature_extractor_version`, RF feature schema version, and completed `PacketResult`.
-- Produces: packet output with `feature_extractor_version`, `feature_schema_version`, and `model_input_schema_version` while preserving the existing RF fields.
+- Consumes: runtime `PerceptionConfig.feature_extractor_version`, RF feature schema version, and model input schema version.
+- Produces: `/health` and `/edge/rf/infer` fields for `feature_extractor_version`, `feature_schema_version`, and `model_input_schema_version` without changing the frozen packet-routing output contract.
 
-- [ ] **Step 1: Add a failing local-pipeline provenance test**
+- [ ] **Step 1: Add a failing health provenance test**
 
-Assert a completed local RF packet result includes `edge-perception-v1`, `bearing-rf-features/1.0`, and `edge-model-input/1.1`.
+Assert `/health` includes `edge-perception-v1`, `bearing-rf-features/1.0`, and `edge-model-input/1.1`.
 
 - [ ] **Step 2: Run the test as RED**
 
 Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py -q`
 
-Expected: failure because packet output currently has no feature-version fields.
+Expected: failure because the health response currently has no feature-version fields.
 
-- [ ] **Step 3: Add immutable provenance fields at the `EdgeResult` boundary**
+- [ ] **Step 3: Read immutable schema versions from the artifact and expose them at diagnostics boundaries**
 
-Load schema versions with the RF artifact, place them on `EdgeResult`, and preserve them through `PacketResult` and task-completion persistence.
+Load schema versions with the RF artifact, then expose them from `/health` and `/edge/rf/infer`.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -108,32 +107,31 @@ Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_
 
 Expected: all tests pass.
 
-### Task 4: Preserve HTTP-mode regression coverage and remove optional performance imports from collection
+### Task 4: Declare the HTTP test dependency
 
 **Files:**
-- Modify: `cloud_edge_project/edge_service/tests/unit/test_edge_model.py`
-- Modify: `cloud_edge_project/edge_service/tests/performance/functional_test.py`
-- Test: `cloud_edge_project/edge_service/tests/unit/test_edge_model.py`
+- Modify: `cloud_edge_project/requirements-dev.txt`
+- Test: `cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py`
 
 **Interfaces:**
-- Consumes: explicit `EdgeModelConfig(diagnostic_backend="http")` test harness configuration.
-- Produces: HTTP queue/circuit-breaker tests independent of the RF local default, and a manually invoked performance script that does not break pytest collection without PyTorch.
+- Consumes: FastAPI's `TestClient`.
+- Produces: a reproducible development environment for existing and new HTTP regression tests.
 
-- [ ] **Step 1: Run existing edge tests as RED**
+- [ ] **Step 1: Run the RF HTTP test as RED**
 
-Run: `python -m pytest cloud_edge_project/edge_service -q`
+Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py -q`
 
-Expected: collection fails on optional `torch`; excluding it reveals HTTP tests use the changed local default.
+Expected: collection fails because `TestClient` has no `httpx` implementation.
 
-- [ ] **Step 2: Make test intent explicit and defer optional imports**
+- [ ] **Step 2: Declare the supported TestClient transport dependency**
 
-Set the legacy fake-client harness to `diagnostic_backend="http"`; move PyTorch/Transformers imports into the performance script entrypoint and declare it non-test code.
+Add `httpx==0.28.1` to `requirements-dev.txt`, matching the existing repository development dependency convention.
 
 - [ ] **Step 3: Verify GREEN**
 
-Run: `python -m pytest cloud_edge_project/edge_service -q`
+Run: `python -m pytest cloud_edge_project/edge_service/verification/test_random_forest_diagnosis.py -q`
 
-Expected: all edge-service tests pass without installing PyTorch.
+Expected: all RF verification tests pass with the declared development dependency.
 
 ### Task 5: Run full regression, commit, integrate, and push
 
