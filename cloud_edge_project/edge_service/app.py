@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import atexit
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -55,6 +54,7 @@ from edge_runtime import (  # noqa: E402
     ControlServerConfig,
     EdgeRuntimeConfig,
     MqttConfig,
+    PacketRouteErrorRecorder,
     SchedulerConfig,
     WindowTransferConfig,
     build_edge_runtime,
@@ -86,6 +86,7 @@ edge_status_integration = build_edge_status_integration(
     default_model_version=runtime_model_version,
 )
 runtime_assembly = None
+cloud_review_cleanup = None
 EDGE_FEATURE_EXTRACTOR_VERSION = "edge-perception-v1"
 rf_evaluation_model = None
 
@@ -94,12 +95,16 @@ rf_evaluation_model = None
 async def _lifespan(app: FastAPI):
     if runtime_assembly is not None:
         runtime_assembly.service.start()
+    if cloud_review_cleanup is not None:
+        cloud_review_cleanup.start()
     try:
         async with edge_status_integration.lifespan(app):
             yield
     finally:
         if runtime_assembly is not None:
             runtime_assembly.service.stop()
+        if cloud_review_cleanup is not None:
+            cloud_review_cleanup.stop()
 
 
 app = FastAPI(title="edge_service", lifespan=_lifespan)
@@ -127,7 +132,7 @@ def _create_task_ingress() -> EdgeTaskIngress:
 task_ingress = _create_task_ingress()
 
 
-def _build_runtime():
+def _build_runtime(review_store: CloudReviewStore):
     fir = EDGE_RUNTIME_SRC / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
     source = "development_test"
     perception = EdgePerception(
@@ -223,22 +228,30 @@ def _build_runtime():
         ),
         cloud_node_urls={"cloud_01": cloud_base},
     )
+    packet_route_error_recorder = PacketRouteErrorRecorder(
+        os.getenv(
+            "EDGE_PACKET_ROUTE_ERROR_LOG",
+            str(Path(__file__).resolve().parents[1] / "data" / "edge_packet_route_errors.jsonl"),
+        )
+    )
     return build_edge_runtime(
         config=runtime_config,
         ingress=task_ingress,
         cache=task_ingress.validation_cache,
         perception=perception,
         pipeline=pipeline,
+        cloud_review_store=review_store,
+        on_packet_route_error=packet_route_error_recorder,
         enable_heartbeat=False,
     )
 
 
-runtime_assembly = _build_runtime()
 cloud_review_config = load_cloud_review_config()
 cloud_review_store = CloudReviewStore(
     cloud_review_config.cache_directory,
     retention_ns=cloud_review_config.retention_ns,
 )
+runtime_assembly = _build_runtime(cloud_review_store)
 cloud_review_service = CloudReviewService(
     cloud_review_store,
     cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
@@ -249,8 +262,6 @@ cloud_review_cleanup = CloudReviewCleanupWorker(
     cloud_review_store,
     interval_seconds=cloud_review_config.cleanup_interval_seconds,
 )
-cloud_review_cleanup.start()
-atexit.register(cloud_review_cleanup.stop)
 
 @app.get("/health")
 def health() -> dict[str, object]:

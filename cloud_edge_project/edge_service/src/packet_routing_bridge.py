@@ -1,75 +1,160 @@
-"""Adapt the legacy simple edge packet to the current packet-routing contract."""
-# 该模块将旧版边缘数据包适配为当前的数据包路由契约。
+"""Persist real packet completion events before requesting scheduler routing."""
+
 from __future__ import annotations
 
+from statistics import fmean, pstdev
 from typing import Any, Callable, Mapping
 
+import numpy as np
+
 from cloud_review import CloudReviewStore
+from edge_model.contracts import PacketExecutionCompleted
 
 
 class PacketRoutingBridge:
-    def __init__(self, *, edge_node_id: str, store: CloudReviewStore,
-                 post: Callable[[str, Mapping[str, Any]], dict[str, Any]]):
+    def __init__(
+        self,
+        *,
+        edge_node_id: str,
+        store: CloudReviewStore,
+        post: Callable[[str, Mapping[str, Any]], dict[str, Any]],
+    ) -> None:
         self.edge_node_id = edge_node_id
         self.store = store
         self.post = post
 
-    def route(self, raw_packet: Mapping[str, Any], simple_result: Mapping[str, Any]) -> dict[str, Any]:
-        raw = dict(raw_packet)
-        identity = self._identity(raw)
-        output = self._output(simple_result)
-        persisted_result = {**identity, **output}
-        self.store.save(raw, persisted_result)
-        payload = {
-            "device_id": identity["device_id"],
-            "task_id": identity["task_id"],
-            "bearing_id": identity["bearing_id"],
+    def route(
+        self,
+        raw_packet: Mapping[str, Any],
+        completion: PacketExecutionCompleted,
+    ) -> dict[str, Any]:
+        raw = _json_value(dict(raw_packet))
+        identity = self._identity(raw, completion)
+        payload: dict[str, Any] = {
+            "device_id": completion.device_id,
+            "task_id": completion.task_id,
+            "bearing_id": completion.bearing_id,
             "edge_node_id": self.edge_node_id,
             "input_ref": {
-                "device_id": identity["device_id"],
-                "bearing_id": identity["bearing_id"],
-                "sender_id": identity["sender_id"],
-                "packet_id": identity["packet_id"],
-                "sequence_number": identity["sequence_number"],
+                "device_id": completion.device_id,
+                "bearing_id": completion.bearing_id,
+                "sender_id": completion.sender_id,
+                "packet_id": completion.packet_id,
+                "sequence_number": completion.sequence_number,
             },
-            "status": "SUCCEEDED",
-            "started_at_ns": int(raw["start_timestamp_ns"]),
-            "finished_at_ns": int(raw["end_timestamp_ns"]),
-            "error": None,
-            "output": output,
+            "status": completion.status,
+            "started_at_ns": completion.started_at_ns,
+            "finished_at_ns": completion.finished_at_ns,
+            "error": completion.error_code,
         }
+        persisted = self._edge_perception_result(raw, completion, identity)
+        if completion.status == "SUCCEEDED":
+            if completion.edge is None:
+                raise ValueError("successful packet completion requires edge output")
+            confidence = float(completion.edge.confidence)
+            output = {
+                **completion.edge.as_dict(),
+                "task_complexity": round(1.0 - confidence, 6),
+            }
+            payload["output"] = output
+            persisted["edge_inference"] = completion.edge.as_dict()
+            persisted["edge_model_version"] = completion.edge.model_version
+        elif completion.status not in {"FAILED", "TIMEOUT"}:
+            raise ValueError("unsupported packet completion status")
+        elif not completion.error_code:
+            raise ValueError("failed packet completion requires error_code")
+
+        self.store.save(raw, persisted)
         return self.post("/scheduler/packet-route", payload)
 
     @staticmethod
-    def _identity(raw: Mapping[str, Any]) -> dict[str, Any]:
-        fields = ("device_id", "task_id", "bearing_id", "sender_id", "packet_id")
-        result = {field: raw.get(field) for field in fields}
-        if any(not isinstance(value, str) or not value.strip() for value in result.values()):
-            raise ValueError("formal edge packet requires complete task identity")
-        sequence = raw.get("sequence_number")
-        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
-            raise ValueError("sequence_number must be a positive integer")
-        result["sequence_number"] = sequence
-        return result
+    def _edge_perception_result(
+        raw: Mapping[str, Any],
+        completion: PacketExecutionCompleted,
+        identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        perception = completion.perception
+        if isinstance(perception, Mapping):
+            result = _json_value(dict(perception))
+            for field, value in identity.items():
+                if result.get(field) != value:
+                    raise ValueError(f"perception conflicts with completion {field}")
+            result.update(
+                {
+                    "edge_inference": None,
+                    "edge_model_version": None,
+                    "execution_status": completion.status,
+                    "error_code": completion.error_code,
+                }
+            )
+            return result
+
+        data = raw.get("data") if isinstance(raw.get("data"), Mapping) else {}
+        end_ns = int(raw.get("end_generate_timestamp_ns") or completion.started_at_ns)
+        operating_context = {
+            name: _series_statistics(data.get(name))
+            for name in (
+                "shaft_speed_rpm",
+                "load_torque_nm",
+                "bearing_radial_load_n",
+            )
+        }
+        temperature = data.get("bearing_module_temperature_c", 0.0)
+        operating_context["bearing_module_temperature_c"] = float(temperature)
+        quality_good = completion.data_quality_score >= 1.0
+        return {
+            **identity,
+            "end_generate_timestamp_ns": end_ns,
+            "feature_generated_at_ns": max(end_ns, completion.finished_at_ns),
+            "features": {"operating_context": operating_context},
+            "perception_quality": {
+                "status": "good" if quality_good else "warning",
+                "flags": [] if quality_good else ["EDGE_DATA_QUALITY_DEGRADED"],
+            },
+            "edge_inference": None,
+            "edge_model_version": None,
+            "execution_status": completion.status,
+            "error_code": completion.error_code,
+        }
 
     @staticmethod
-    def _output(result: Mapping[str, Any]) -> dict[str, Any]:
-        confidence = result.get("confidence")
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
-            raise ValueError("confidence must be within [0, 1]")
-        label = result.get("label")
-        if label not in {"normal", "abnormal"}:
-            raise ValueError("legacy edge label must be normal or abnormal")
-        risk = result.get("risk_level")
-        if risk not in {"low", "medium", "high"}:
-            raise ValueError("invalid risk_level")
-        normalized = float(confidence)
-        return {
-            "edge_result": "normal" if label == "normal" else "fault",
-            "confidence": normalized,
-            "task_complexity": round(1.0 - normalized, 6),
-            "edge_risk_level": risk,
-            "model_version": str(
-                result.get("model_name") or "edge_bearing_legacy_rule"
-            ),
+    def _identity(
+        raw: Mapping[str, Any], completion: PacketExecutionCompleted
+    ) -> dict[str, Any]:
+        identity = {
+            "device_id": completion.device_id,
+            "task_id": completion.task_id,
+            "bearing_id": completion.bearing_id,
+            "sender_id": completion.sender_id,
+            "packet_id": completion.packet_id,
+            "sequence_number": completion.sequence_number,
         }
+        for field, value in identity.items():
+            if raw.get(field) != value:
+                raise ValueError(f"raw packet conflicts with completion {field}")
+        return identity
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _series_statistics(value: Any) -> dict[str, float]:
+    source = value if isinstance(value, Mapping) else {}
+    values = source.get("values")
+    numbers = [float(item) for item in values] if isinstance(values, list) and values else [0.0]
+    return {
+        "mean": fmean(numbers),
+        "last": numbers[-1],
+        "minimum": min(numbers),
+        "maximum": max(numbers),
+        "standard_deviation": pstdev(numbers),
+    }

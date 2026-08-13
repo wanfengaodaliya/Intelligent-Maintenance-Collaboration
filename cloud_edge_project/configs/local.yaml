@@ -37,6 +37,23 @@ bearing_window_transfer:
   # 本链路只做轴承级 20 包复核，不以前置单包云复核阻塞窗口落盘。
   packet_cloud_confidence_threshold: 0.0
 
+packet_routing:
+  confidence_threshold: 0.80
+
+cloud_node:
+  max_queue_length: 5
+  status_ttl_seconds: 5
+
+cloud_network:
+  min_uplink_mbps: 2.0
+  max_rtt_p95_ms: 100.0
+  max_loss_rate: 0.10
+
+deferred_cloud_review:
+  retention_hours: 24
+  dispatcher_interval_seconds: 1.0
+  cleanup_interval_seconds: 60.0
+
 log:
   path: "logs/task_trace.jsonl"
 

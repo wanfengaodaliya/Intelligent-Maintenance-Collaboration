@@ -25,6 +25,12 @@ class PacketRoutingService:
     def route(self, request: Mapping[str, Any]) -> dict[str, Any]:
         decision = self.router.decide(request)
         if decision["needs_cloud_review"]:
+            persisted = self.repository.routing_decision(
+                decision["decision_id"],
+                request,
+            )
+            if persisted is not None:
+                return persisted
             edge_node_id = str(request["edge_node_id"])
             task = {
                 "decision_id": decision["decision_id"],
@@ -53,7 +59,17 @@ class PacketRoutingService:
                 "created_at_ns": decision["created_at_ns"],
                 "expires_at_ns": decision["created_at_ns"] + DAY_NS,
             }
-            self.repository.create(task)
+            self.repository.create(
+                task,
+                packet_request=request,
+                routing_decision=decision,
+            )
+            persisted = self.repository.routing_decision(
+                decision["decision_id"],
+                request,
+            )
+            if persisted is not None:
+                return persisted
         return decision
 
     def save_upload_result(self, request: Mapping[str, Any]) -> dict[str, Any]:

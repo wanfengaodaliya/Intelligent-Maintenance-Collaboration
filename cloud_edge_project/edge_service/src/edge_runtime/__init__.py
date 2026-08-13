@@ -10,6 +10,7 @@ from .config import (
 )
 from .contracts import action_level_for
 from .coordinator import EdgeRuntimeCoordinator
+from .error_log import PacketRouteErrorRecorder
 from .factory import EdgeRuntimeAssembly, build_edge_runtime
 from .service import EdgeRuntimeService
 
@@ -20,6 +21,7 @@ __all__ = [
     "EdgeRuntimeAssembly",
     "EdgeRuntimeService",
     "MqttConfig",
+    "PacketRouteErrorRecorder",
     "WindowTransferConfig",
     "SchedulerConfig",
     "action_level_for",

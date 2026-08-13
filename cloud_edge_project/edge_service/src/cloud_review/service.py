@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -82,9 +83,16 @@ class CloudReviewService:
         self.scheduler_reporter = scheduler_reporter
         self.edge_node_id = edge_node_id
         self.clock_ns = clock_ns
+        self._decision_locks_guard = threading.Lock()
+        self._decision_locks: dict[str, threading.Lock] = {}
 
     def handle(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         control = validate_control(payload)
+        lock = self._decision_lock(control["decision_id"])
+        with lock:
+            return self._handle_control(control)
+
+    def _handle_control(self, control: Mapping[str, Any]) -> dict[str, Any]:
         checkpoint = self.store.get_decision(control["decision_id"])
         if checkpoint is not None:
             if checkpoint["control"] != control:
@@ -134,6 +142,10 @@ class CloudReviewService:
             response=response,
         )
         return response
+
+    def _decision_lock(self, decision_id: str) -> threading.Lock:
+        with self._decision_locks_guard:
+            return self._decision_locks.setdefault(decision_id, threading.Lock())
 
     def _report_failure(self, control: Mapping[str, Any], error: CloudUploadError) -> dict[str, Any]:
         status = "RETRYABLE_FAILED" if error.retryable else "PERMANENT_FAILED"

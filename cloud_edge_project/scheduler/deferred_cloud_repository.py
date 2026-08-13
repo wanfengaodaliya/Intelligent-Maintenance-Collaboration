@@ -35,12 +35,24 @@ class DeferredCloudRepository:
         self._initialize()
 
     def create(
-        self, payload: Mapping[str, Any], *, initial_state: str = "PENDING"
+        self,
+        payload: Mapping[str, Any],
+        *,
+        initial_state: str = "PENDING",
+        packet_request: Mapping[str, Any] | None = None,
+        routing_decision: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         item = _validate_task(payload)
         if initial_state not in {"PENDING", "WAITING_RESULT"}:
             raise DeferredCloudError("INVALID_DEFERRED_TASK", "initial_state is invalid")
         canonical = _canonical(item)
+        request_json = _canonical(dict(packet_request)) if packet_request is not None else None
+        decision_json = _canonical(dict(routing_decision)) if routing_decision is not None else None
+        if (request_json is None) != (decision_json is None):
+            raise DeferredCloudError(
+                "INVALID_DEFERRED_TASK",
+                "packet_request and routing_decision must be stored together",
+            )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -48,6 +60,8 @@ class DeferredCloudRepository:
                 (item["decision_id"],),
             ).fetchone()
             if existing is not None:
+                if request_json is not None and existing["packet_request_json"] == request_json:
+                    return _row(existing)
                 if existing["task_payload_json"] != canonical:
                     raise DeferredCloudError(
                         "DEFERRED_TASK_CONFLICT",
@@ -62,8 +76,9 @@ class DeferredCloudRepository:
                 "cloud_status_message_id,network_snapshot_id,raw_data_ref,context_ref,"
                 "cloud_node_id,endpoint,state,attempt_count,next_retry_at_ns,"
                 "lease_expires_at_ns,created_at_ns,updated_at_ns,expires_at_ns,"
-                "review_id,last_reason_code,upload_result_json,task_payload_json"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,NULL,NULL,NULL,?)",
+                "review_id,last_reason_code,upload_result_json,task_payload_json,"
+                "packet_request_json,routing_decision_json"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,NULL,NULL,NULL,?,?,?)",
                 (
                     item["decision_id"], item["cloud_task_id"], item["device_id"],
                     item["task_id"], item["bearing_id"], item["packet_id"],
@@ -74,7 +89,7 @@ class DeferredCloudRepository:
                     item["endpoint"], initial_state,
                     1 if initial_state == "WAITING_RESULT" else 0,
                     item["created_at_ns"], item["created_at_ns"], item["created_at_ns"],
-                    item["expires_at_ns"], canonical,
+                    item["expires_at_ns"], canonical, request_json, decision_json,
                 ),
             )
             saved = connection.execute(
@@ -89,6 +104,37 @@ class DeferredCloudRepository:
                 "SELECT * FROM deferred_cloud_task WHERE decision_id=?", (decision_id,)
             ).fetchone()
         return _row(row) if row is not None else None
+
+    def routing_decision(
+        self,
+        decision_id: str,
+        packet_request: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        request_json = _canonical(dict(packet_request))
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT packet_request_json,routing_decision_json "
+                "FROM deferred_cloud_task WHERE decision_id=?",
+                (decision_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["packet_request_json"] != request_json:
+            raise DeferredCloudError(
+                "DEFERRED_TASK_CONFLICT",
+                "decision_id already refers to another packet request",
+                409,
+            )
+        if row["routing_decision_json"] is None:
+            return None
+        value = json.loads(row["routing_decision_json"])
+        if not isinstance(value, dict):
+            raise DeferredCloudError(
+                "DEFERRED_TASK_CORRUPT",
+                "stored routing decision is invalid",
+                500,
+            )
+        return value
 
     def claim_due(
         self, *, now_ns: int | None = None, lease_ns: int = DEFAULT_LEASE_NS
@@ -239,6 +285,7 @@ class DeferredCloudRepository:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS deferred_cloud_task("
                 "decision_id TEXT PRIMARY KEY,cloud_task_id TEXT NOT NULL UNIQUE,"
@@ -253,13 +300,25 @@ class DeferredCloudRepository:
                 "expires_at_ns INTEGER NOT NULL,review_id TEXT,last_reason_code TEXT,"
                 "upload_result_json TEXT,task_payload_json TEXT NOT NULL)"
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(deferred_cloud_task)")
+            }
+            if "packet_request_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE deferred_cloud_task ADD COLUMN packet_request_json TEXT"
+                )
+            if "routing_decision_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE deferred_cloud_task ADD COLUMN routing_decision_json TEXT"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deferred_due "
                 "ON deferred_cloud_task(state,next_retry_at_ns)"
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=0.2)
+        connection = sqlite3.connect(self.database_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -353,6 +412,8 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
     result["reason_codes"] = json.loads(result.pop("reason_codes_json"))
     result.pop("task_payload_json", None)
     result.pop("upload_result_json", None)
+    result.pop("packet_request_json", None)
+    result.pop("routing_decision_json", None)
     return result
 
 

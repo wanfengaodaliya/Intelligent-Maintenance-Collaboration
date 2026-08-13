@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Optional
 
+from cloud_review import CloudReviewStore
 from edge_model.pipeline import EdgeModelPipeline
 from edge_perception import EdgePerception
 from edge_task_ingress import EdgeTaskIngress
@@ -26,6 +28,8 @@ from .http import (
 )
 from .mqtt import MqttIngress, MqttJsonPublisher
 from .service import EdgeRuntimeService
+from .packet_route_reporter import PacketRouteReporter
+from packet_routing_bridge import PacketRoutingBridge
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,8 @@ def build_edge_runtime(
     cache: EdgeValidationCache,
     perception: EdgePerception,
     pipeline: EdgeModelPipeline,
+    cloud_review_store: Optional[CloudReviewStore] = None,
+    on_packet_route_error: Optional[Callable[[dict], None]] = None,
     enable_heartbeat: bool = True,
 ) -> EdgeRuntimeAssembly:
     """把现有边缘计算模块装配为可启动的协议运行时。"""
@@ -58,6 +64,8 @@ def build_edge_runtime(
         ),
         status_path=config.scheduler.status_path,
     )
+    scheduler_client = scheduler.client
+    packet_route_reporter = PacketRouteReporter(scheduler_client.post)
     mqtt_ingress = MqttIngress(config.mqtt, lambda _: None)
     device_result_publisher = MqttJsonPublisher(
         mqtt_ingress.client,
@@ -98,6 +106,16 @@ def build_edge_runtime(
         aggregation_workflow=aggregation_workflow,
         device_result_publisher=device_result_publisher,
         window_review_store=window_review_store,
+        packet_router=(
+            PacketRoutingBridge(
+                edge_node_id=config.edge_node_id,
+                store=cloud_review_store,
+                post=lambda _, payload: packet_route_reporter.report(payload),
+            )
+            if cloud_review_store is not None
+            else None
+        ),
+        on_packet_route_error=on_packet_route_error,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     control_application = EdgeControlApplication(ingress)

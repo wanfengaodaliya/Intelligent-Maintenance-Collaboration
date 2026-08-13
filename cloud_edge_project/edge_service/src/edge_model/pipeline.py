@@ -165,6 +165,7 @@ class EdgeModelPipeline:
                 finished_at_ns=self._clock_ns(),
                 edge=None,
                 data_quality_score=0.0,
+                perception=copy.deepcopy(task.perception),
             ))
 
     def _run_local(self, task: PacketInferenceTask) -> None:
@@ -208,6 +209,7 @@ class EdgeModelPipeline:
                 finished_at_ns=self._clock_ns(),
                 edge=None,
                 data_quality_score=0.0,
+                perception=copy.deepcopy(task.perception),
             ))
 
     def _on_model(self, task: PacketInferenceTask, edge: EdgeResult,
@@ -275,6 +277,7 @@ class EdgeModelPipeline:
             finished_at_ns=self._clock_ns(),
             edge=edge,
             data_quality_score=_quality_score(task.perception),
+            perception=copy.deepcopy(task.perception),
         ))
 
 
