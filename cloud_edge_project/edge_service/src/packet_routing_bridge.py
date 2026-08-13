@@ -69,5 +69,7 @@ class PacketRoutingBridge:
             "confidence": normalized,
             "task_complexity": round(1.0 - normalized, 6),
             "edge_risk_level": risk,
-            "model_version": "edge_bearing_mock",
+            "model_version": str(
+                result.get("model_name") or "edge_bearing_legacy_rule"
+            ),
         }

@@ -1,0 +1,12 @@
+{
+  "schema_version": "bearing-rf-labels/2.0",
+  "labels": {
+    "normal": 0,
+    "fault": 1
+  },
+  "source_label_mapping": {
+    "healthy": "normal",
+    "outer_ring_damage": "fault",
+    "inner_ring_damage": "fault"
+  }
+}

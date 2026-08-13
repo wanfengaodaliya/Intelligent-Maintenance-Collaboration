@@ -1,4 +1,4 @@
-"""Mock edge bearing model for the first-stage demo."""
+"""Legacy synchronous demo contract retained for backward compatibility."""
 # 该模块提供轴承初检演示使用的模拟边缘模型。
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def load_edge_node_id(environ: Mapping[str, str] | None = None) -> str:
 
 
 EDGE_NODE_ID = load_edge_node_id()
-MODEL_NAME = "edge_bearing_mock"
+MODEL_NAME = "edge_bearing_legacy_rule"
 V01_MODEL_NAME = "edge_small_model"
 
 

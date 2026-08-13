@@ -44,13 +44,13 @@ class ModelClientConfig:
 
 @dataclass
 class FallbackConfig:
-    rule_version: str = "bearing_diagnosis_mock_v1"
+    rule_version: str = "bearing-rf-a2-evaluation-v1"
     allow_test_rule: bool = True
 
 
 @dataclass
 class EdgeModelConfig:
-    diagnostic_backend: str = "mock"
+    diagnostic_backend: str = "local"
     queue: QueueConfig = field(default_factory=QueueConfig)
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
     breaker: BreakerConfig = field(default_factory=BreakerConfig)
@@ -59,8 +59,8 @@ class EdgeModelConfig:
 
     def validate(self) -> List[str]:
         errors: List[str] = []
-        if self.diagnostic_backend not in {"mock", "http"}:
-            errors.append("diagnostic_backend must be mock or http")
+        if self.diagnostic_backend not in {"local", "http"}:
+            errors.append("diagnostic_backend must be local or http")
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):
@@ -80,7 +80,7 @@ class EdgeModelConfig:
             errors.append("breaker.recovery_probe_interval_s 必须为正数")
         if not self.fallback.rule_version:
             errors.append("fallback.rule_version 不能为空")
-        if self.fallback.rule_version.startswith(("edge_rule_test", "bearing_diagnosis_mock")) and not self.fallback.allow_test_rule:
+        if self.fallback.rule_version.startswith("edge_rule_test") and not self.fallback.allow_test_rule:
             errors.append("fallback.rule_version 是测试规则但 fallback.allow_test_rule 未开启")
         return errors
 

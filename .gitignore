@@ -3,3 +3,7 @@
 
 # 本地 Python 虚拟环境。
 .venv/
+
+# Bearing-model source data and regenerated training outputs stay local.
+cloud_edge_project/edge_service/model_training/bearing_random_forest/data/
+cloud_edge_project/edge_service/model_training/bearing_random_forest/generated/

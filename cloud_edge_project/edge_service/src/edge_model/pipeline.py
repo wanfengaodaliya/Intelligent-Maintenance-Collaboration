@@ -58,7 +58,7 @@ class EdgeModelPipeline:
         errors = self.cfg.validate()
         if errors:
             raise ValueError("边缘模型配置校验失败: " + "; ".join(errors))
-        if self.cfg.diagnostic_backend == "mock":
+        if self.cfg.diagnostic_backend == "local":
             self.started = True
             return
         url = (self.cfg.model_client.base_url or "").strip()
@@ -89,9 +89,9 @@ class EdgeModelPipeline:
         if not self.started:
             raise RuntimeError("边缘模型管线未启动")
         task = self._make_task(sender_id, perception)
-        if self.cfg.diagnostic_backend == "mock":
+        if self.cfg.diagnostic_backend == "local":
             task.submit_ts = self._clock()
-            self._run_fallback(task, None)
+            self._run_local(task)
             return task.request_id
         result = self.queue.submit(task)
         for fallback_task, reason in result.fallback_tasks:
@@ -150,6 +150,49 @@ class EdgeModelPipeline:
                 output_valid=False,
                 breaker_state=breaker_state,
                 note="model_route_reason=%s; fallback_error=%r" % (reason, exc),
+            ))
+            self.on_packet_completed(PacketExecutionCompleted(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                status="FAILED",
+                error_code=REASON_CODE_FALLBACK_FAILED,
+                started_at_ns=task.started_at_ns or self._clock_ns(),
+                finished_at_ns=self._clock_ns(),
+                edge=None,
+                data_quality_score=0.0,
+            ))
+
+    def _run_local(self, task: PacketInferenceTask) -> None:
+        try:
+            edge = self.fallback.run(task)
+            self._emit_result(
+                task,
+                edge,
+                EXECUTION_LOCAL_MODEL,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.on_run_record(RunRecord(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                execution_mode=EXECUTION_LOCAL_MODEL,
+                fallback_reason=REASON_CODE_FALLBACK_FAILED,
+                output_valid=False,
+                note="local_model_error=%r" % (exc,),
             ))
             self.on_packet_completed(PacketExecutionCompleted(
                 request_id=task.request_id,

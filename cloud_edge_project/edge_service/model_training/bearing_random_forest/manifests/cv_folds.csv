@@ -1,0 +1,15 @@
+bearing_id,label,validation_fold
+K001,healthy,1
+K005,healthy,1
+KA04,outer_ring_damage,1
+KI04,inner_ring_damage,1
+K002,healthy,2
+KA15,outer_ring_damage,2
+KI14,inner_ring_damage,2
+KI21,inner_ring_damage,2
+K003,healthy,3
+KA16,outer_ring_damage,3
+KI16,inner_ring_damage,3
+K004,healthy,4
+KA22,outer_ring_damage,4
+KI18,inner_ring_damage,4

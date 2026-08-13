@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from common.config import load_config, service_url
 from common.schemas import ContractError, error_response, is_v01_task_request
-from edge_service.model import EDGE_NODE_ID, MODEL_NAME, infer_edge, infer_edge_v01
+from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
 
 EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
@@ -34,7 +34,11 @@ from edge_validation_cache import (  # noqa: E402
     ValidationCacheConfig,
 )
 from edge_aggregation import WindowTransferError  # noqa: E402
-from edge_diagnosis import MockDiagnosticModel  # noqa: E402
+from edge_diagnosis import (  # noqa: E402
+    DEFAULT_MODEL_DIR,
+    RUNTIME_MODEL_VERSION,
+    RandomForestDiagnosticModel,
+)
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
@@ -67,7 +71,7 @@ from edge_status_reporter import build_edge_status_integration  # noqa: E402
 config = load_config()
 edge_status_integration = build_edge_status_integration(
     edge_node_id=EDGE_NODE_ID,
-    default_model_version=MODEL_NAME,
+    default_model_version=RUNTIME_MODEL_VERSION,
 )
 runtime_assembly = None
 
@@ -144,7 +148,9 @@ def _build_runtime():
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
-        MockDiagnosticModel(model_config.fallback.rule_version),
+        RandomForestDiagnosticModel(
+            os.getenv("EDGE_RF_MODEL_DIR", str(DEFAULT_MODEL_DIR))
+        ),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
     )
@@ -233,6 +239,10 @@ def health() -> dict[str, object]:
         "status": "ok",
         "port": config["services"]["edge"]["port"],
         "model_backend": config["model"]["edge_backend"],
+        "model_version": runtime_assembly.coordinator.pipeline.fallback.model_version,
+        "model_deployment_status": (
+            runtime_assembly.coordinator.pipeline.fallback.deployment_status
+        ),
         "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
         "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,

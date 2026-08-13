@@ -1,0 +1,2306 @@
+{
+  "schema_version": "bearing-rf-cross-validation/2.0",
+  "task": "binary_fault_detection",
+  "random_seed": 20260811,
+  "experiments": [
+    {
+      "experiment": "A1",
+      "include_artificial": false,
+      "feature_set": "vibration_6",
+      "feature_columns": [
+        "vibration.rms",
+        "vibration.absolute_peak",
+        "vibration.kurtosis",
+        "vibration.dominant_frequency_hz",
+        "vibration.band_power_ratio_500_2000",
+        "vibration.spectral_entropy"
+      ],
+      "feature_count": 6,
+      "model_bytes": 172289245,
+      "folds": [
+        {
+          "fold": 1,
+          "train_bearing_ids": [
+            "K002",
+            "K003",
+            "K004",
+            "KA15",
+            "KA16",
+            "KA22",
+            "KI14",
+            "KI16",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K001",
+            "K005",
+            "KA04",
+            "KI04"
+          ],
+          "training_rows": 63950,
+          "validation_rows": 25599,
+          "fit_seconds": 4.636060400051065,
+          "inference_milliseconds_per_window": 0.0062834524780819205,
+          "model_bytes": 84573901,
+          "window_macro_f1": 0.7092176325428243,
+          "class_recall": {
+            "normal": 0.495859375,
+            "fault": 0.9529650753965153
+          },
+          "class_precision": {
+            "normal": 0.9133688300474888,
+            "fault": 0.6539946380697051
+          },
+          "confusion_matrix": [
+            [
+              6347,
+              6453
+            ],
+            [
+              602,
+              12197
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K001": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "K005": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K001": 0.93328125,
+            "K005": 0.0584375,
+            "KA04": 0.9989060790748554,
+            "KI04": 0.90703125
+          },
+          "worst_bearing_accuracy": 0.0584375,
+          "multiclass_log_loss": 2.118011760022209,
+          "multiclass_brier_score": 0.48878235817997323,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 2,
+          "train_bearing_ids": [
+            "K001",
+            "K003",
+            "K004",
+            "K005",
+            "KA04",
+            "KA16",
+            "KA22",
+            "KI04",
+            "KI16",
+            "KI18"
+          ],
+          "validation_bearing_ids": [
+            "K002",
+            "KA15",
+            "KI14",
+            "KI21"
+          ],
+          "training_rows": 63950,
+          "validation_rows": 25593,
+          "fit_seconds": 3.8243134999647737,
+          "inference_milliseconds_per_window": 0.006184261318601722,
+          "model_bytes": 78176941,
+          "window_macro_f1": 0.16694261619270087,
+          "class_recall": {
+            "normal": 0.14660831509846828,
+            "fault": 0.18536077103412346
+          },
+          "class_precision": {
+            "normal": 0.05659125188536953,
+            "fault": 0.39454424484364603
+          },
+          "confusion_matrix": [
+            [
+              938,
+              5460
+            ],
+            [
+              15637,
+              3558
+            ]
+          ],
+          "bearing_majority_accuracy": 0.0,
+          "bearing_predictions": {
+            "K002": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA15": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            },
+            "KI14": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            },
+            "KI21": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            }
+          },
+          "bearing_window_accuracy": {
+            "K002": 0.14660831509846828,
+            "KA15": 0.036267000156323274,
+            "KI14": 0.04265625,
+            "KI21": 0.4771803688652704
+          },
+          "worst_bearing_accuracy": 0.036267000156323274,
+          "multiclass_log_loss": 2.774633001727867,
+          "multiclass_brier_score": 1.2798054485038934,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 3,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K004",
+            "K005",
+            "KA04",
+            "KA15",
+            "KA22",
+            "KI04",
+            "KI14",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K003",
+            "KA16",
+            "KI16"
+          ],
+          "training_rows": 70345,
+          "validation_rows": 19198,
+          "fit_seconds": 5.508587500080466,
+          "inference_milliseconds_per_window": 0.007129180117661906,
+          "model_bytes": 172289245,
+          "window_macro_f1": 0.9753158459928767,
+          "class_recall": {
+            "normal": 0.9753125,
+            "fault": 0.9792936396311924
+          },
+          "class_precision": {
+            "normal": 0.9592746273244198,
+            "fault": 0.9875502324481916
+          },
+          "confusion_matrix": [
+            [
+              6242,
+              158
+            ],
+            [
+              265,
+              12533
+            ]
+          ],
+          "bearing_majority_accuracy": 1.0,
+          "bearing_predictions": {
+            "K003": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "KA16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K003": 0.9753125,
+            "KA16": 1.0,
+            "KI16": 0.9585872792623847
+          },
+          "worst_bearing_accuracy": 0.9585872792623847,
+          "multiclass_log_loss": 0.07517309523303949,
+          "multiclass_brier_score": 0.03610466369823038,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 4,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K003",
+            "K005",
+            "KA04",
+            "KA15",
+            "KA16",
+            "KI04",
+            "KI14",
+            "KI16",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K004",
+            "KA22",
+            "KI18"
+          ],
+          "training_rows": 70367,
+          "validation_rows": 19192,
+          "fit_seconds": 5.240337199997157,
+          "inference_milliseconds_per_window": 0.008247816796055846,
+          "model_bytes": 97365687,
+          "window_macro_f1": 0.478900189130401,
+          "class_recall": {
+            "normal": 0.29875,
+            "fault": 0.6593183239524703
+          },
+          "class_precision": {
+            "normal": 0.30494417862838913,
+            "fault": 0.6526853428261878
+          },
+          "confusion_matrix": [
+            [
+              1912,
+              4488
+            ],
+            [
+              4358,
+              8434
+            ]
+          ],
+          "bearing_majority_accuracy": 0.3333333333333333,
+          "bearing_predictions": {
+            "K004": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA22": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            },
+            "KI18": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K004": 0.29875,
+            "KA22": 0.34261141516810006,
+            "KI18": 0.975926215413475
+          },
+          "worst_bearing_accuracy": 0.29875,
+          "multiclass_log_loss": 1.9055867450588273,
+          "multiclass_brier_score": 0.6936187695848008,
+          "probability_note": "随机森林原始概率，未进行校准"
+        }
+      ],
+      "window_macro_f1": 0.5572818399557462,
+      "class_recall": {
+        "normal": 0.4824989061816364,
+        "fault": 0.6377118644067796
+      },
+      "class_precision": {
+        "normal": 0.42530508801410427,
+        "fault": 0.6892137910324506
+      },
+      "confusion_matrix": [
+        [
+          15439,
+          16559
+        ],
+        [
+          20862,
+          36722
+        ]
+      ],
+      "bearing_majority_accuracy": 0.5,
+      "bearing_predictions": {
+        "K001": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "K005": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K002": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA15": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "KI14": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "KI21": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "K003": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "KA16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K004": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA22": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "KI18": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        }
+      },
+      "bearing_window_accuracy": {
+        "K001": 0.93328125,
+        "K005": 0.0584375,
+        "KA04": 0.9989060790748554,
+        "KI04": 0.90703125,
+        "K002": 0.14660831509846828,
+        "KA15": 0.036267000156323274,
+        "KI14": 0.04265625,
+        "KI21": 0.4771803688652704,
+        "K003": 0.9753125,
+        "KA16": 1.0,
+        "KI16": 0.9585872792623847,
+        "K004": 0.29875,
+        "KA22": 0.34261141516810006,
+        "KI18": 0.975926215413475
+      },
+      "worst_bearing_accuracy": 0.036267000156323274
+    },
+    {
+      "experiment": "A2",
+      "include_artificial": false,
+      "feature_set": "full_27",
+      "feature_columns": [
+        "vibration.rms",
+        "vibration.absolute_peak",
+        "vibration.kurtosis",
+        "vibration.dominant_frequency_hz",
+        "vibration.band_power_ratio_500_2000",
+        "vibration.spectral_entropy",
+        "phase_current_1.rms_a",
+        "phase_current_1.absolute_peak_a",
+        "phase_current_2.rms_a",
+        "phase_current_2.absolute_peak_a",
+        "current_relationship.current_imbalance_ratio",
+        "operating_context.shaft_speed_rpm.mean",
+        "operating_context.shaft_speed_rpm.last",
+        "operating_context.shaft_speed_rpm.minimum",
+        "operating_context.shaft_speed_rpm.maximum",
+        "operating_context.shaft_speed_rpm.standard_deviation",
+        "operating_context.load_torque_nm.mean",
+        "operating_context.load_torque_nm.last",
+        "operating_context.load_torque_nm.minimum",
+        "operating_context.load_torque_nm.maximum",
+        "operating_context.load_torque_nm.standard_deviation",
+        "operating_context.bearing_radial_load_n.mean",
+        "operating_context.bearing_radial_load_n.last",
+        "operating_context.bearing_radial_load_n.minimum",
+        "operating_context.bearing_radial_load_n.maximum",
+        "operating_context.bearing_radial_load_n.standard_deviation",
+        "operating_context.bearing_module_temperature_c"
+      ],
+      "feature_count": 27,
+      "model_bytes": 15321879,
+      "folds": [
+        {
+          "fold": 1,
+          "train_bearing_ids": [
+            "K002",
+            "K003",
+            "K004",
+            "KA15",
+            "KA16",
+            "KA22",
+            "KI14",
+            "KI16",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K001",
+            "K005",
+            "KA04",
+            "KI04"
+          ],
+          "training_rows": 63950,
+          "validation_rows": 25599,
+          "fit_seconds": 9.303591500036418,
+          "inference_milliseconds_per_window": 0.004342169613450855,
+          "model_bytes": 10971015,
+          "window_macro_f1": 0.7464082629690998,
+          "class_recall": {
+            "normal": 0.561796875,
+            "fault": 0.9501523556527853
+          },
+          "class_precision": {
+            "normal": 0.9185081108698429,
+            "fault": 0.6843556555993247
+          },
+          "confusion_matrix": [
+            [
+              7191,
+              5609
+            ],
+            [
+              638,
+              12161
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K001": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "K005": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K001": 0.985,
+            "K005": 0.13859375,
+            "KA04": 1.0,
+            "KI04": 0.9003125
+          },
+          "worst_bearing_accuracy": 0.13859375,
+          "multiclass_log_loss": 0.5216381781012253,
+          "multiclass_brier_score": 0.345272006421625,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 2,
+          "train_bearing_ids": [
+            "K001",
+            "K003",
+            "K004",
+            "K005",
+            "KA04",
+            "KA16",
+            "KA22",
+            "KI04",
+            "KI16",
+            "KI18"
+          ],
+          "validation_bearing_ids": [
+            "K002",
+            "KA15",
+            "KI14",
+            "KI21"
+          ],
+          "training_rows": 63950,
+          "validation_rows": 25593,
+          "fit_seconds": 8.2933452000143,
+          "inference_milliseconds_per_window": 0.0042651857923777,
+          "model_bytes": 11734683,
+          "window_macro_f1": 0.36591149049132576,
+          "class_recall": {
+            "normal": 0.5418880900281338,
+            "fault": 0.31596769992185464
+          },
+          "class_precision": {
+            "normal": 0.20889317346508404,
+            "fault": 0.674188528234771
+          },
+          "confusion_matrix": [
+            [
+              3467,
+              2931
+            ],
+            [
+              13130,
+              6065
+            ]
+          ],
+          "bearing_majority_accuracy": 0.25,
+          "bearing_predictions": {
+            "K002": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "KA15": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            },
+            "KI14": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            },
+            "KI21": {
+              "true": "fault",
+              "predicted": "normal",
+              "correct": false
+            }
+          },
+          "bearing_window_accuracy": {
+            "K002": 0.5418880900281338,
+            "KA15": 0.3656401438174144,
+            "KI14": 0.26703125,
+            "KI21": 0.31525476711472333
+          },
+          "worst_bearing_accuracy": 0.26703125,
+          "multiclass_log_loss": 0.8535886076497625,
+          "multiclass_brier_score": 0.6406613061671582,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 3,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K004",
+            "K005",
+            "KA04",
+            "KA15",
+            "KA22",
+            "KI04",
+            "KI14",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K003",
+            "KA16",
+            "KI16"
+          ],
+          "training_rows": 70345,
+          "validation_rows": 19198,
+          "fit_seconds": 10.353279900038615,
+          "inference_milliseconds_per_window": 0.005059532238507562,
+          "model_bytes": 15321879,
+          "window_macro_f1": 0.8132746322465578,
+          "class_recall": {
+            "normal": 0.56984375,
+            "fault": 0.9983591186122832
+          },
+          "class_precision": {
+            "normal": 0.9942748091603053,
+            "fault": 0.822730199613651
+          },
+          "confusion_matrix": [
+            [
+              3647,
+              2753
+            ],
+            [
+              21,
+              12777
+            ]
+          ],
+          "bearing_majority_accuracy": 1.0,
+          "bearing_predictions": {
+            "K003": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "KA16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K003": 0.56984375,
+            "KA16": 1.0,
+            "KI16": 0.9967182372245663
+          },
+          "worst_bearing_accuracy": 0.56984375,
+          "multiclass_log_loss": 0.33659116480717616,
+          "multiclass_brier_score": 0.19792205399239743,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 4,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K003",
+            "K005",
+            "KA04",
+            "KA15",
+            "KA16",
+            "KI04",
+            "KI14",
+            "KI16",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K004",
+            "KA22",
+            "KI18"
+          ],
+          "training_rows": 70367,
+          "validation_rows": 19192,
+          "fit_seconds": 9.778891000081785,
+          "inference_milliseconds_per_window": 0.005042205082614436,
+          "model_bytes": 15090172,
+          "window_macro_f1": 0.5411445394243596,
+          "class_recall": {
+            "normal": 0.25015625,
+            "fault": 0.8453721075672295
+          },
+          "class_precision": {
+            "normal": 0.44733165688739873,
+            "fault": 0.6926279382565811
+          },
+          "confusion_matrix": [
+            [
+              1601,
+              4799
+            ],
+            [
+              1978,
+              10814
+            ]
+          ],
+          "bearing_majority_accuracy": 0.6666666666666666,
+          "bearing_predictions": {
+            "K004": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA22": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI18": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K004": 0.25015625,
+            "KA22": 0.6906958561376075,
+            "KI18": 1.0
+          },
+          "worst_bearing_accuracy": 0.25015625,
+          "multiclass_log_loss": 0.6570680054172245,
+          "multiclass_brier_score": 0.4653146841883866,
+          "probability_note": "随机森林原始概率，未进行校准"
+        }
+      ],
+      "window_macro_f1": 0.6118893495108423,
+      "class_recall": {
+        "normal": 0.49709356834802176,
+        "fault": 0.726191303139761
+      },
+      "class_precision": {
+        "normal": 0.5021942979825088,
+        "fault": 0.7221157333057038
+      },
+      "confusion_matrix": [
+        [
+          15906,
+          16092
+        ],
+        [
+          15767,
+          41817
+        ]
+      ],
+      "bearing_majority_accuracy": 0.6428571428571429,
+      "bearing_predictions": {
+        "K001": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "K005": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K002": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "KA15": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "KI14": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "KI21": {
+          "true": "fault",
+          "predicted": "normal",
+          "correct": false
+        },
+        "K003": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "KA16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K004": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA22": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI18": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        }
+      },
+      "bearing_window_accuracy": {
+        "K001": 0.985,
+        "K005": 0.13859375,
+        "KA04": 1.0,
+        "KI04": 0.9003125,
+        "K002": 0.5418880900281338,
+        "KA15": 0.3656401438174144,
+        "KI14": 0.26703125,
+        "KI21": 0.31525476711472333,
+        "K003": 0.56984375,
+        "KA16": 1.0,
+        "KI16": 0.9967182372245663,
+        "K004": 0.25015625,
+        "KA22": 0.6906958561376075,
+        "KI18": 1.0
+      },
+      "worst_bearing_accuracy": 0.13859375
+    },
+    {
+      "experiment": "B1",
+      "include_artificial": true,
+      "feature_set": "vibration_6",
+      "feature_columns": [
+        "vibration.rms",
+        "vibration.absolute_peak",
+        "vibration.kurtosis",
+        "vibration.dominant_frequency_hz",
+        "vibration.band_power_ratio_500_2000",
+        "vibration.spectral_entropy"
+      ],
+      "feature_count": 6,
+      "model_bytes": 336696605,
+      "folds": [
+        {
+          "fold": 1,
+          "train_bearing_ids": [
+            "K002",
+            "K003",
+            "K004",
+            "KA01",
+            "KA03",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA16",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI16",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K001",
+            "K005",
+            "KA04",
+            "KI04"
+          ],
+          "training_rows": 138996,
+          "validation_rows": 25599,
+          "fit_seconds": 11.290488100028597,
+          "inference_milliseconds_per_window": 0.005767069027323179,
+          "model_bytes": 225982205,
+          "window_macro_f1": 0.6541026509390215,
+          "class_recall": {
+            "normal": 0.380546875,
+            "fault": 0.9924212829127276
+          },
+          "class_precision": {
+            "normal": 0.980475040257649,
+            "fault": 0.6156754398720372
+          },
+          "confusion_matrix": [
+            [
+              4871,
+              7929
+            ],
+            [
+              97,
+              12702
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K001": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "K005": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K001": 0.7265625,
+            "K005": 0.03453125,
+            "KA04": 0.9998437255821222,
+            "KI04": 0.985
+          },
+          "worst_bearing_accuracy": 0.03453125,
+          "multiclass_log_loss": 3.0101748430013604,
+          "multiclass_brier_score": 0.5545069770669255,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 2,
+          "train_bearing_ids": [
+            "K001",
+            "K003",
+            "K004",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA16",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI16",
+            "KI18"
+          ],
+          "validation_bearing_ids": [
+            "K002",
+            "KA15",
+            "KI14",
+            "KI21"
+          ],
+          "training_rows": 138996,
+          "validation_rows": 25593,
+          "fit_seconds": 10.815765399951488,
+          "inference_milliseconds_per_window": 0.0070000507951103585,
+          "model_bytes": 185363165,
+          "window_macro_f1": 0.3553617119802549,
+          "class_recall": {
+            "normal": 0.0009377930603313535,
+            "fault": 0.7331596769992186
+          },
+          "class_precision": {
+            "normal": 0.001170046801872075,
+            "fault": 0.6876618617151233
+          },
+          "confusion_matrix": [
+            [
+              6,
+              6392
+            ],
+            [
+              5122,
+              14073
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K002": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA15": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI14": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI21": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K002": 0.0009377930603313535,
+            "KA15": 0.5399405971549164,
+            "KI14": 0.6853125,
+            "KI21": 0.9742106908408877
+          },
+          "worst_bearing_accuracy": 0.0009377930603313535,
+          "multiclass_log_loss": 4.890381483983108,
+          "multiclass_brier_score": 0.7786588167196187,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 3,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K004",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K003",
+            "KA16",
+            "KI16"
+          ],
+          "training_rows": 145314,
+          "validation_rows": 19198,
+          "fit_seconds": 12.104795899940655,
+          "inference_milliseconds_per_window": 0.005920981352180336,
+          "model_bytes": 336696605,
+          "window_macro_f1": 0.8506080014734407,
+          "class_recall": {
+            "normal": 0.66453125,
+            "fault": 0.9862478512267542
+          },
+          "class_precision": {
+            "normal": 0.9602619101377287,
+            "fault": 0.8546279368948473
+          },
+          "confusion_matrix": [
+            [
+              4253,
+              2147
+            ],
+            [
+              176,
+              12622
+            ]
+          ],
+          "bearing_majority_accuracy": 1.0,
+          "bearing_predictions": {
+            "K003": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "KA16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K003": 0.66453125,
+            "KA16": 1.0,
+            "KI16": 0.9724957024535084
+          },
+          "worst_bearing_accuracy": 0.66453125,
+          "multiclass_log_loss": 0.2657683854994518,
+          "multiclass_brier_score": 0.16314126347021102,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 4,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K003",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA16",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI16",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K004",
+            "KA22",
+            "KI18"
+          ],
+          "training_rows": 145314,
+          "validation_rows": 19192,
+          "fit_seconds": 11.494785199989565,
+          "inference_milliseconds_per_window": 0.008235129218342007,
+          "model_bytes": 281025885,
+          "window_macro_f1": 0.42622188472069655,
+          "class_recall": {
+            "normal": 0.124375,
+            "fault": 0.767432770481551
+          },
+          "class_precision": {
+            "normal": 0.21108459294616813,
+            "fault": 0.6365994423189157
+          },
+          "confusion_matrix": [
+            [
+              796,
+              5604
+            ],
+            [
+              2975,
+              9817
+            ]
+          ],
+          "bearing_majority_accuracy": 0.6666666666666666,
+          "bearing_predictions": {
+            "K004": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA22": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI18": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K004": 0.124375,
+            "KA22": 0.5387021110242377,
+            "KI18": 0.9960919180866031
+          },
+          "worst_bearing_accuracy": 0.124375,
+          "multiclass_log_loss": 0.9014209116874426,
+          "multiclass_brier_score": 0.6035538578468571,
+          "probability_note": "随机森林原始概率，未进行校准"
+        }
+      ],
+      "window_macro_f1": 0.579248251058973,
+      "class_recall": {
+        "normal": 0.31020688793049567,
+        "fault": 0.854647124201167
+      },
+      "class_precision": {
+        "normal": 0.5425229558373414,
+        "fault": 0.6903739864770081
+      },
+      "confusion_matrix": [
+        [
+          9926,
+          22072
+        ],
+        [
+          8370,
+          49214
+        ]
+      ],
+      "bearing_majority_accuracy": 0.7857142857142857,
+      "bearing_predictions": {
+        "K001": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "K005": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K002": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA15": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI14": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI21": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K003": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "KA16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K004": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA22": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI18": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        }
+      },
+      "bearing_window_accuracy": {
+        "K001": 0.7265625,
+        "K005": 0.03453125,
+        "KA04": 0.9998437255821222,
+        "KI04": 0.985,
+        "K002": 0.0009377930603313535,
+        "KA15": 0.5399405971549164,
+        "KI14": 0.6853125,
+        "KI21": 0.9742106908408877,
+        "K003": 0.66453125,
+        "KA16": 1.0,
+        "KI16": 0.9724957024535084,
+        "K004": 0.124375,
+        "KA22": 0.5387021110242377,
+        "KI18": 0.9960919180866031
+      },
+      "worst_bearing_accuracy": 0.0009377930603313535
+    },
+    {
+      "experiment": "B2",
+      "include_artificial": true,
+      "feature_set": "full_27",
+      "feature_columns": [
+        "vibration.rms",
+        "vibration.absolute_peak",
+        "vibration.kurtosis",
+        "vibration.dominant_frequency_hz",
+        "vibration.band_power_ratio_500_2000",
+        "vibration.spectral_entropy",
+        "phase_current_1.rms_a",
+        "phase_current_1.absolute_peak_a",
+        "phase_current_2.rms_a",
+        "phase_current_2.absolute_peak_a",
+        "current_relationship.current_imbalance_ratio",
+        "operating_context.shaft_speed_rpm.mean",
+        "operating_context.shaft_speed_rpm.last",
+        "operating_context.shaft_speed_rpm.minimum",
+        "operating_context.shaft_speed_rpm.maximum",
+        "operating_context.shaft_speed_rpm.standard_deviation",
+        "operating_context.load_torque_nm.mean",
+        "operating_context.load_torque_nm.last",
+        "operating_context.load_torque_nm.minimum",
+        "operating_context.load_torque_nm.maximum",
+        "operating_context.load_torque_nm.standard_deviation",
+        "operating_context.bearing_radial_load_n.mean",
+        "operating_context.bearing_radial_load_n.last",
+        "operating_context.bearing_radial_load_n.minimum",
+        "operating_context.bearing_radial_load_n.maximum",
+        "operating_context.bearing_radial_load_n.standard_deviation",
+        "operating_context.bearing_module_temperature_c"
+      ],
+      "feature_count": 27,
+      "model_bytes": 34832577,
+      "folds": [
+        {
+          "fold": 1,
+          "train_bearing_ids": [
+            "K002",
+            "K003",
+            "K004",
+            "KA01",
+            "KA03",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA16",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI16",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K001",
+            "K005",
+            "KA04",
+            "KI04"
+          ],
+          "training_rows": 138996,
+          "validation_rows": 25599,
+          "fit_seconds": 20.26548340008594,
+          "inference_milliseconds_per_window": 0.0038570998832970524,
+          "model_bytes": 21882432,
+          "window_macro_f1": 0.5696027648870217,
+          "class_recall": {
+            "normal": 0.2578125,
+            "fault": 0.9999218688960075
+          },
+          "class_precision": {
+            "normal": 0.9996970614965162,
+            "fault": 0.5739528208807965
+          },
+          "confusion_matrix": [
+            [
+              3300,
+              9500
+            ],
+            [
+              1,
+              12798
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K001": {
+              "true": "normal",
+              "predicted": "normal",
+              "correct": true
+            },
+            "K005": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI04": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K001": 0.50875,
+            "K005": 0.006875,
+            "KA04": 1.0,
+            "KI04": 0.99984375
+          },
+          "worst_bearing_accuracy": 0.006875,
+          "multiclass_log_loss": 1.4691184471016334,
+          "multiclass_brier_score": 0.627281976237476,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 2,
+          "train_bearing_ids": [
+            "K001",
+            "K003",
+            "K004",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA16",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI16",
+            "KI18"
+          ],
+          "validation_bearing_ids": [
+            "K002",
+            "KA15",
+            "KI14",
+            "KI21"
+          ],
+          "training_rows": 138996,
+          "validation_rows": 25593,
+          "fit_seconds": 21.91091959993355,
+          "inference_milliseconds_per_window": 0.00466911264814258,
+          "model_bytes": 29645217,
+          "window_macro_f1": 0.42908338742717805,
+          "class_recall": {
+            "normal": 0.0006251953735542357,
+            "fault": 0.9993748371971868
+          },
+          "class_precision": {
+            "normal": 0.25,
+            "fault": 0.7500097744066935
+          },
+          "confusion_matrix": [
+            [
+              4,
+              6394
+            ],
+            [
+              12,
+              19183
+            ]
+          ],
+          "bearing_majority_accuracy": 0.75,
+          "bearing_predictions": {
+            "K002": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA15": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI14": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI21": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K002": 0.0006251953735542357,
+            "KA15": 1.0,
+            "KI14": 0.9984375,
+            "KI21": 0.9996874023132228
+          },
+          "worst_bearing_accuracy": 0.0006251953735542357,
+          "multiclass_log_loss": 0.8545172251369337,
+          "multiclass_brier_score": 0.4501579395616086,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 3,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K004",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA22",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI18",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K003",
+            "KA16",
+            "KI16"
+          ],
+          "training_rows": 145314,
+          "validation_rows": 19198,
+          "fit_seconds": 22.636942000011913,
+          "inference_milliseconds_per_window": 0.005021533496429109,
+          "model_bytes": 28039137,
+          "window_macro_f1": 0.40184085958831656,
+          "class_recall": {
+            "normal": 0.00171875,
+            "fault": 1.0
+          },
+          "class_precision": {
+            "normal": 1.0,
+            "fault": 0.6670141241465576
+          },
+          "confusion_matrix": [
+            [
+              11,
+              6389
+            ],
+            [
+              0,
+              12798
+            ]
+          ],
+          "bearing_majority_accuracy": 0.6666666666666666,
+          "bearing_predictions": {
+            "K003": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI16": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K003": 0.00171875,
+            "KA16": 1.0,
+            "KI16": 1.0
+          },
+          "worst_bearing_accuracy": 0.00171875,
+          "multiclass_log_loss": 0.8896842756823371,
+          "multiclass_brier_score": 0.5100971371039946,
+          "probability_note": "随机森林原始概率，未进行校准"
+        },
+        {
+          "fold": 4,
+          "train_bearing_ids": [
+            "K001",
+            "K002",
+            "K003",
+            "K005",
+            "KA01",
+            "KA03",
+            "KA04",
+            "KA05",
+            "KA06",
+            "KA07",
+            "KA08",
+            "KA09",
+            "KA15",
+            "KA16",
+            "KI01",
+            "KI03",
+            "KI04",
+            "KI05",
+            "KI07",
+            "KI08",
+            "KI14",
+            "KI16",
+            "KI21"
+          ],
+          "validation_bearing_ids": [
+            "K004",
+            "KA22",
+            "KI18"
+          ],
+          "training_rows": 145314,
+          "validation_rows": 19192,
+          "fit_seconds": 23.078351800097153,
+          "inference_milliseconds_per_window": 0.006178147147627794,
+          "model_bytes": 34832577,
+          "window_macro_f1": 0.40011870565728747,
+          "class_recall": {
+            "normal": 0.00015625,
+            "fault": 1.0
+          },
+          "class_precision": {
+            "normal": 1.0,
+            "fault": 0.666562451148976
+          },
+          "confusion_matrix": [
+            [
+              1,
+              6399
+            ],
+            [
+              0,
+              12792
+            ]
+          ],
+          "bearing_majority_accuracy": 0.6666666666666666,
+          "bearing_predictions": {
+            "K004": {
+              "true": "normal",
+              "predicted": "fault",
+              "correct": false
+            },
+            "KA22": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            },
+            "KI18": {
+              "true": "fault",
+              "predicted": "fault",
+              "correct": true
+            }
+          },
+          "bearing_window_accuracy": {
+            "K004": 0.00015625,
+            "KA22": 1.0,
+            "KI18": 1.0
+          },
+          "worst_bearing_accuracy": 0.00015625,
+          "multiclass_log_loss": 0.6042466625855827,
+          "multiclass_brier_score": 0.4227549602608262,
+          "probability_note": "随机森林原始概率，未进行校准"
+        }
+      ],
+      "window_macro_f1": 0.49411755538990465,
+      "class_recall": {
+        "normal": 0.10363147696731045,
+        "fault": 0.9997742428452348
+      },
+      "class_precision": {
+        "normal": 0.9960949234004205,
+        "fault": 0.6674666388415476
+      },
+      "confusion_matrix": [
+        [
+          3316,
+          28682
+        ],
+        [
+          13,
+          57571
+        ]
+      ],
+      "bearing_majority_accuracy": 0.7142857142857143,
+      "bearing_predictions": {
+        "K001": {
+          "true": "normal",
+          "predicted": "normal",
+          "correct": true
+        },
+        "K005": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI04": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K002": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA15": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI14": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI21": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K003": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI16": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "K004": {
+          "true": "normal",
+          "predicted": "fault",
+          "correct": false
+        },
+        "KA22": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        },
+        "KI18": {
+          "true": "fault",
+          "predicted": "fault",
+          "correct": true
+        }
+      },
+      "bearing_window_accuracy": {
+        "K001": 0.50875,
+        "K005": 0.006875,
+        "KA04": 1.0,
+        "KI04": 0.99984375,
+        "K002": 0.0006251953735542357,
+        "KA15": 1.0,
+        "KI14": 0.9984375,
+        "KI21": 0.9996874023132228,
+        "K003": 0.00171875,
+        "KA16": 1.0,
+        "KI16": 1.0,
+        "K004": 0.00015625,
+        "KA22": 1.0,
+        "KI18": 1.0
+      },
+      "worst_bearing_accuracy": 0.00015625
+    }
+  ],
+  "winner": {
+    "experiment": "A2",
+    "include_artificial": false,
+    "feature_set": "full_27",
+    "feature_columns": [
+      "vibration.rms",
+      "vibration.absolute_peak",
+      "vibration.kurtosis",
+      "vibration.dominant_frequency_hz",
+      "vibration.band_power_ratio_500_2000",
+      "vibration.spectral_entropy",
+      "phase_current_1.rms_a",
+      "phase_current_1.absolute_peak_a",
+      "phase_current_2.rms_a",
+      "phase_current_2.absolute_peak_a",
+      "current_relationship.current_imbalance_ratio",
+      "operating_context.shaft_speed_rpm.mean",
+      "operating_context.shaft_speed_rpm.last",
+      "operating_context.shaft_speed_rpm.minimum",
+      "operating_context.shaft_speed_rpm.maximum",
+      "operating_context.shaft_speed_rpm.standard_deviation",
+      "operating_context.load_torque_nm.mean",
+      "operating_context.load_torque_nm.last",
+      "operating_context.load_torque_nm.minimum",
+      "operating_context.load_torque_nm.maximum",
+      "operating_context.load_torque_nm.standard_deviation",
+      "operating_context.bearing_radial_load_n.mean",
+      "operating_context.bearing_radial_load_n.last",
+      "operating_context.bearing_radial_load_n.minimum",
+      "operating_context.bearing_radial_load_n.maximum",
+      "operating_context.bearing_radial_load_n.standard_deviation",
+      "operating_context.bearing_module_temperature_c"
+    ],
+    "feature_count": 27,
+    "model_bytes": 15321879,
+    "folds": [
+      {
+        "fold": 1,
+        "train_bearing_ids": [
+          "K002",
+          "K003",
+          "K004",
+          "KA15",
+          "KA16",
+          "KA22",
+          "KI14",
+          "KI16",
+          "KI18",
+          "KI21"
+        ],
+        "validation_bearing_ids": [
+          "K001",
+          "K005",
+          "KA04",
+          "KI04"
+        ],
+        "training_rows": 63950,
+        "validation_rows": 25599,
+        "fit_seconds": 9.303591500036418,
+        "inference_milliseconds_per_window": 0.004342169613450855,
+        "model_bytes": 10971015,
+        "window_macro_f1": 0.7464082629690998,
+        "class_recall": {
+          "normal": 0.561796875,
+          "fault": 0.9501523556527853
+        },
+        "class_precision": {
+          "normal": 0.9185081108698429,
+          "fault": 0.6843556555993247
+        },
+        "confusion_matrix": [
+          [
+            7191,
+            5609
+          ],
+          [
+            638,
+            12161
+          ]
+        ],
+        "bearing_majority_accuracy": 0.75,
+        "bearing_predictions": {
+          "K001": {
+            "true": "normal",
+            "predicted": "normal",
+            "correct": true
+          },
+          "K005": {
+            "true": "normal",
+            "predicted": "fault",
+            "correct": false
+          },
+          "KA04": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          },
+          "KI04": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          }
+        },
+        "bearing_window_accuracy": {
+          "K001": 0.985,
+          "K005": 0.13859375,
+          "KA04": 1.0,
+          "KI04": 0.9003125
+        },
+        "worst_bearing_accuracy": 0.13859375,
+        "multiclass_log_loss": 0.5216381781012253,
+        "multiclass_brier_score": 0.345272006421625,
+        "probability_note": "随机森林原始概率，未进行校准"
+      },
+      {
+        "fold": 2,
+        "train_bearing_ids": [
+          "K001",
+          "K003",
+          "K004",
+          "K005",
+          "KA04",
+          "KA16",
+          "KA22",
+          "KI04",
+          "KI16",
+          "KI18"
+        ],
+        "validation_bearing_ids": [
+          "K002",
+          "KA15",
+          "KI14",
+          "KI21"
+        ],
+        "training_rows": 63950,
+        "validation_rows": 25593,
+        "fit_seconds": 8.2933452000143,
+        "inference_milliseconds_per_window": 0.0042651857923777,
+        "model_bytes": 11734683,
+        "window_macro_f1": 0.36591149049132576,
+        "class_recall": {
+          "normal": 0.5418880900281338,
+          "fault": 0.31596769992185464
+        },
+        "class_precision": {
+          "normal": 0.20889317346508404,
+          "fault": 0.674188528234771
+        },
+        "confusion_matrix": [
+          [
+            3467,
+            2931
+          ],
+          [
+            13130,
+            6065
+          ]
+        ],
+        "bearing_majority_accuracy": 0.25,
+        "bearing_predictions": {
+          "K002": {
+            "true": "normal",
+            "predicted": "normal",
+            "correct": true
+          },
+          "KA15": {
+            "true": "fault",
+            "predicted": "normal",
+            "correct": false
+          },
+          "KI14": {
+            "true": "fault",
+            "predicted": "normal",
+            "correct": false
+          },
+          "KI21": {
+            "true": "fault",
+            "predicted": "normal",
+            "correct": false
+          }
+        },
+        "bearing_window_accuracy": {
+          "K002": 0.5418880900281338,
+          "KA15": 0.3656401438174144,
+          "KI14": 0.26703125,
+          "KI21": 0.31525476711472333
+        },
+        "worst_bearing_accuracy": 0.26703125,
+        "multiclass_log_loss": 0.8535886076497625,
+        "multiclass_brier_score": 0.6406613061671582,
+        "probability_note": "随机森林原始概率，未进行校准"
+      },
+      {
+        "fold": 3,
+        "train_bearing_ids": [
+          "K001",
+          "K002",
+          "K004",
+          "K005",
+          "KA04",
+          "KA15",
+          "KA22",
+          "KI04",
+          "KI14",
+          "KI18",
+          "KI21"
+        ],
+        "validation_bearing_ids": [
+          "K003",
+          "KA16",
+          "KI16"
+        ],
+        "training_rows": 70345,
+        "validation_rows": 19198,
+        "fit_seconds": 10.353279900038615,
+        "inference_milliseconds_per_window": 0.005059532238507562,
+        "model_bytes": 15321879,
+        "window_macro_f1": 0.8132746322465578,
+        "class_recall": {
+          "normal": 0.56984375,
+          "fault": 0.9983591186122832
+        },
+        "class_precision": {
+          "normal": 0.9942748091603053,
+          "fault": 0.822730199613651
+        },
+        "confusion_matrix": [
+          [
+            3647,
+            2753
+          ],
+          [
+            21,
+            12777
+          ]
+        ],
+        "bearing_majority_accuracy": 1.0,
+        "bearing_predictions": {
+          "K003": {
+            "true": "normal",
+            "predicted": "normal",
+            "correct": true
+          },
+          "KA16": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          },
+          "KI16": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          }
+        },
+        "bearing_window_accuracy": {
+          "K003": 0.56984375,
+          "KA16": 1.0,
+          "KI16": 0.9967182372245663
+        },
+        "worst_bearing_accuracy": 0.56984375,
+        "multiclass_log_loss": 0.33659116480717616,
+        "multiclass_brier_score": 0.19792205399239743,
+        "probability_note": "随机森林原始概率，未进行校准"
+      },
+      {
+        "fold": 4,
+        "train_bearing_ids": [
+          "K001",
+          "K002",
+          "K003",
+          "K005",
+          "KA04",
+          "KA15",
+          "KA16",
+          "KI04",
+          "KI14",
+          "KI16",
+          "KI21"
+        ],
+        "validation_bearing_ids": [
+          "K004",
+          "KA22",
+          "KI18"
+        ],
+        "training_rows": 70367,
+        "validation_rows": 19192,
+        "fit_seconds": 9.778891000081785,
+        "inference_milliseconds_per_window": 0.005042205082614436,
+        "model_bytes": 15090172,
+        "window_macro_f1": 0.5411445394243596,
+        "class_recall": {
+          "normal": 0.25015625,
+          "fault": 0.8453721075672295
+        },
+        "class_precision": {
+          "normal": 0.44733165688739873,
+          "fault": 0.6926279382565811
+        },
+        "confusion_matrix": [
+          [
+            1601,
+            4799
+          ],
+          [
+            1978,
+            10814
+          ]
+        ],
+        "bearing_majority_accuracy": 0.6666666666666666,
+        "bearing_predictions": {
+          "K004": {
+            "true": "normal",
+            "predicted": "fault",
+            "correct": false
+          },
+          "KA22": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          },
+          "KI18": {
+            "true": "fault",
+            "predicted": "fault",
+            "correct": true
+          }
+        },
+        "bearing_window_accuracy": {
+          "K004": 0.25015625,
+          "KA22": 0.6906958561376075,
+          "KI18": 1.0
+        },
+        "worst_bearing_accuracy": 0.25015625,
+        "multiclass_log_loss": 0.6570680054172245,
+        "multiclass_brier_score": 0.4653146841883866,
+        "probability_note": "随机森林原始概率，未进行校准"
+      }
+    ],
+    "window_macro_f1": 0.6118893495108423,
+    "class_recall": {
+      "normal": 0.49709356834802176,
+      "fault": 0.726191303139761
+    },
+    "class_precision": {
+      "normal": 0.5021942979825088,
+      "fault": 0.7221157333057038
+    },
+    "confusion_matrix": [
+      [
+        15906,
+        16092
+      ],
+      [
+        15767,
+        41817
+      ]
+    ],
+    "bearing_majority_accuracy": 0.6428571428571429,
+    "bearing_predictions": {
+      "K001": {
+        "true": "normal",
+        "predicted": "normal",
+        "correct": true
+      },
+      "K005": {
+        "true": "normal",
+        "predicted": "fault",
+        "correct": false
+      },
+      "KA04": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      },
+      "KI04": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      },
+      "K002": {
+        "true": "normal",
+        "predicted": "normal",
+        "correct": true
+      },
+      "KA15": {
+        "true": "fault",
+        "predicted": "normal",
+        "correct": false
+      },
+      "KI14": {
+        "true": "fault",
+        "predicted": "normal",
+        "correct": false
+      },
+      "KI21": {
+        "true": "fault",
+        "predicted": "normal",
+        "correct": false
+      },
+      "K003": {
+        "true": "normal",
+        "predicted": "normal",
+        "correct": true
+      },
+      "KA16": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      },
+      "KI16": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      },
+      "K004": {
+        "true": "normal",
+        "predicted": "fault",
+        "correct": false
+      },
+      "KA22": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      },
+      "KI18": {
+        "true": "fault",
+        "predicted": "fault",
+        "correct": true
+      }
+    },
+    "bearing_window_accuracy": {
+      "K001": 0.985,
+      "K005": 0.13859375,
+      "KA04": 1.0,
+      "KI04": 0.9003125,
+      "K002": 0.5418880900281338,
+      "KA15": 0.3656401438174144,
+      "KI14": 0.26703125,
+      "KI21": 0.31525476711472333,
+      "K003": 0.56984375,
+      "KA16": 1.0,
+      "KI16": 0.9967182372245663,
+      "K004": 0.25015625,
+      "KA22": 0.6906958561376075,
+      "KI18": 1.0
+    },
+    "worst_bearing_accuracy": 0.13859375
+  },
+  "cv_gate_passed": false,
+  "gates": {
+    "window_macro_f1_minimum": 0.9,
+    "each_class_recall_minimum": 0.85
+  },
+  "created_at_utc": "2026-08-12T02:36:25.388986+00:00",
+  "features_sha256": "33bc3c5496a62446f78a06422d3e315c76183a0b6b5f320b23c6119311a1990d",
+  "dataset_manifest_sha256": "fc61e0170165282814858329731899ed278accd585d19e1606ac8d04cb83d935",
+  "cv_folds_sha256": "9e6d1b7b77d4605089bad80407281d647b0bbd243fb5189e10631e3dc305daa3",
+  "experiments_config_sha256": "789dd48dd0d33d988b04b1463d4c8755e33f114fc6e3cf89327672b5ecc80cc9"
+}

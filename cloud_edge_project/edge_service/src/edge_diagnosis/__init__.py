@@ -1,5 +1,15 @@
-"""Temporary deterministic diagnostic model used until the trained model is ready."""
+"""Bearing diagnostic model implementations used by the edge runtime."""
 
-from .mock_model import MockDiagnosticModel, quality_score_from_perception
+from .random_forest_model import (
+    DEFAULT_MODEL_DIR,
+    RUNTIME_MODEL_VERSION,
+    ModelArtifactError,
+    RandomForestDiagnosticModel,
+)
 
-__all__ = ["MockDiagnosticModel", "quality_score_from_perception"]
+__all__ = [
+    "DEFAULT_MODEL_DIR",
+    "RUNTIME_MODEL_VERSION",
+    "ModelArtifactError",
+    "RandomForestDiagnosticModel",
+]

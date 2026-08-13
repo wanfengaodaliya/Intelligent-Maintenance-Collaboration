@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 .venv*/
 docs/*
+!docs/随机森林诊断模型.md
 !docs/Edge_Status_Reporter_执行开发文档_V6.md
 
 .claude/
