@@ -16,7 +16,7 @@ import numpy as np
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
-from common.config import load_config
+from common.config import load_config, service_url
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
@@ -175,7 +175,7 @@ def _build_runtime():
     )
     scheduler_base = os.getenv(
         "SCHEDULER_SERVICE_BASE_URL",
-        "http://127.0.0.1:18011",
+        service_url("scheduler", config),
     )
     cloud_base = os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
     runtime_config = EdgeRuntimeConfig(
