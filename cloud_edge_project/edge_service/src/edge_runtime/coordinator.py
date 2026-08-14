@@ -10,7 +10,10 @@ from edge_aggregation.workflow import BearingAggregationWorkflow
 from edge_aggregation.window_transfer import WindowReviewStore
 from edge_model.contracts import PacketExecutionCompleted
 from edge_model.pipeline import EdgeModelPipeline
-from edge_perception import EdgePerception, PerceptionInvocationContext
+from core.edge_perception_contracts import (
+    PerceptionHandler,
+    PerceptionInvocationContext,
+)
 from edge_task_ingress import INGRESS_ACCEPTED, EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from packet_routing_bridge import PacketRoutingBridge
@@ -32,7 +35,7 @@ class EdgeRuntimeCoordinator:
         edge_node_id: str,
         ingress: EdgeTaskIngress,
         cache: EdgeValidationCache,
-        perception: EdgePerception,
+        perception: PerceptionHandler,
         pipeline: EdgeModelPipeline,
         scheduler: SchedulerReporter,
         aggregation_workflow: Optional[BearingAggregationWorkflow] = None,

@@ -15,6 +15,27 @@ def test_default_config_enables_both_targets_with_project_ports() -> None:
     assert config.resource.mode == "system"
 
 
+def test_network_link_default_follows_edge_node_id() -> None:
+    config = EdgeStatusReporterConfig.from_env(
+        default_model_version="edge_bearing_mock",
+        edge_node_id="edge_02",
+        environ={},
+    )
+
+    assert config.network.url.endswith("/edge_02__to__scheduler__http")
+    assert config.scheduler.url.startswith("http://127.0.0.1:18051/")
+    assert config.cloud.url.startswith("http://127.0.0.1:18053/")
+
+
+@pytest.mark.parametrize("link_id", ["", "edge/01", "edge 01"])
+def test_network_link_id_rejects_invalid_values(link_id: str) -> None:
+    with pytest.raises(ValueError, match="EDGE_NETWORK_LINK_ID"):
+        EdgeStatusReporterConfig.from_env(
+            default_model_version="edge_bearing_mock",
+            environ={"EDGE_NETWORK_LINK_ID": link_id},
+        )
+
+
 def test_disabled_config_ignores_other_reporter_values() -> None:
     config = EdgeStatusReporterConfig.from_env(
         default_model_version="edge_bearing_mock",

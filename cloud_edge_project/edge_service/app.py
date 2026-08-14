@@ -10,19 +10,19 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-import numpy as np
-
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
+for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from common.config import load_config, service_url
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
-
-
-EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
-if str(EDGE_RUNTIME_SRC) not in sys.path:
-    sys.path.insert(0, str(EDGE_RUNTIME_SRC))
 
 from edge_task_ingress import (  # noqa: E402
     TASK_CONFLICT,
@@ -44,11 +44,10 @@ from edge_model.code_fallback import TestRuleRunner  # noqa: E402
 from edge_model.contracts import EdgeResult, PacketInferenceTask  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
-from edge_perception import (  # noqa: E402
-    ConstantDetectionConfig,
-    EdgePerception,
-    PerceptionConfig,
-    file_sha256,
+from edge_perception import PerceptionRegistry  # noqa: E402
+from scenarios.bearing.edge import (  # noqa: E402
+    BearingEdgePerceptionHandler,
+    build_bearing_perception_config,
 )
 from edge_runtime import (  # noqa: E402
     ControlServerConfig,
@@ -87,7 +86,11 @@ edge_status_integration = build_edge_status_integration(
 )
 runtime_assembly = None
 cloud_review_cleanup = None
-EDGE_FEATURE_EXTRACTOR_VERSION = "edge-perception-v1"
+EDGE_FEATURE_EXTRACTOR_VERSION = os.getenv(
+    "EDGE_PERCEPTION_FEATURE_EXTRACTOR_VERSION",
+    "edge-perception-v1",
+)
+EDGE_SCENARIO_TYPE = os.getenv("EDGE_SCENARIO_TYPE", "bearing")
 rf_evaluation_model = None
 
 
@@ -136,33 +139,12 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     if review_store is None:
         review_store = cloud_review_store
 
-    fir = EDGE_RUNTIME_SRC / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
-    source = "development_test"
-    perception = EdgePerception(
-        PerceptionConfig(
-            profile=source,
-            fir_coefficients_path=fir,
-            fir_sha256=file_sha256(fir),
-            fir_asset_source=source,
-            fir_asset_version="bundled-v1",
-            running_speed_threshold_rpm=100.0,
-            running_speed_threshold_source=source,
-            running_speed_threshold_version="runtime-v1",
-            constant_detection={
-                name: ConstantDetectionConfig(True, 1e-9, source, "runtime-v1")
-                for name in ("vibration", "phase_current_1_A", "phase_current_2_A")
-            },
-            feature_zero_rms_threshold=1e-10,
-            feature_zero_power_threshold=1e-20,
-            current_relationship_zero_rms_threshold=1e-10,
-            numerical_threshold_source=source,
-            numerical_threshold_version="runtime-v1",
-            feature_extractor_version=EDGE_FEATURE_EXTRACTOR_VERSION,
-            runtime_dependencies={"numpy": np.__version__},
-            absolute_tolerance=1e-12,
-            relative_tolerance=1e-9,
-        )
+    perception_registry = PerceptionRegistry()
+    perception_registry.register(
+        "bearing",
+        lambda: BearingEdgePerceptionHandler(build_bearing_perception_config()),
     )
+    perception = perception_registry.create(EDGE_SCENARIO_TYPE)
     model_config = EdgeModelConfig()
     model_client = ModelClient(
         ModelClientConfig(base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"))

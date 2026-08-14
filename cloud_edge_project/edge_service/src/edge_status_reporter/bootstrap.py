@@ -75,6 +75,7 @@ def build_edge_status_integration(
     try:
         config = EdgeStatusReporterConfig.from_env(
             default_model_version=default_model_version,
+            edge_node_id=edge_node_id,
             environ=environ,
         )
     except Exception:

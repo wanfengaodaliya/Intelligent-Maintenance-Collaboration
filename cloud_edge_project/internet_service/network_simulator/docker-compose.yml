@@ -37,7 +37,10 @@ services:
     ports:
       - "${NETWORK_BIND_ADDRESS:-127.0.0.1}:1883:1883"
     volumes:
-      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - type: bind
+        source: "${NETWORK_MOSQUITTO_CONFIG_PATH:-${NETWORK_CONFIG_HOST_DIR:-./config}/mosquitto.conf}"
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
     healthcheck:
       test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-t", "network-simulator/health", "-m", "ok"]
       interval: 5s
@@ -46,7 +49,7 @@ services:
       start_period: 3s
 
   scheduler:
-    image: network-simulator:3.0.0
+    image: network-simulator:3.1.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -62,7 +65,7 @@ services:
       start_period: 5s
 
   network-controller:
-    image: network-simulator:3.0.0
+    image: network-simulator:3.1.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -89,7 +92,10 @@ services:
     extra_hosts:
       - "host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}"
     volumes:
-      - ./config:/app/config:ro
+      - type: bind
+        source: "${NETWORK_CONFIG_HOST_DIR:-./config}"
+        target: /app/config
+        read_only: true
       - network-simulator-logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=2)); assert data['status'] == 'ok'"]

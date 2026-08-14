@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import urlparse
@@ -161,8 +162,23 @@ class EdgeStatusReporterConfig:
             raise ValueError("至少启用一个状态上报目标")
 
     @classmethod
-    def from_env(cls, *, default_model_version: str, environ: Mapping[str, str] | None = None) -> "EdgeStatusReporterConfig":
+    def from_env(
+        cls,
+        *,
+        default_model_version: str,
+        edge_node_id: str = "edge_01",
+        environ: Mapping[str, str] | None = None,
+    ) -> "EdgeStatusReporterConfig":
         env = os.environ if environ is None else environ
+        network_link_id = env.get(
+            "EDGE_NETWORK_LINK_ID",
+            f"{edge_node_id}__to__scheduler__http",
+        ).strip()
+        default_network_url = (
+            "http://127.0.0.1:8090/api/v1/network/links/"
+            f"{network_link_id}"
+        )
+        scheduler_default_url, cloud_default_url = _default_status_urls(edge_node_id)
         enabled = _boolean(env.get("EDGE_STATUS_REPORTER_ENABLED", "true"), "EDGE_STATUS_REPORTER_ENABLED")
         if not enabled:
             return cls(
@@ -173,7 +189,12 @@ class EdgeStatusReporterConfig:
                 cloud=StatusTargetConfig("cloud", False, "", 0.5, 1),
                 resource=ResourceConfig(),
                 accelerator=AcceleratorConfig(),
-                network=NetworkConfig("http://127.0.0.1:8090/api/v1/network/links/edge_01__to__scheduler__http"),
+                network=NetworkConfig(default_network_url),
+            )
+        if re.fullmatch(r"[A-Za-z0-9_-]+", network_link_id) is None:
+            raise ValueError(
+                "EDGE_NETWORK_LINK_ID may contain only letters, numbers, "
+                "underscores, and hyphens"
             )
         scheduler_enabled = _boolean(
             env.get("EDGE_STATUS_SCHEDULER_ENABLED", "true"),
@@ -183,7 +204,7 @@ class EdgeStatusReporterConfig:
             name="scheduler",
             enabled=scheduler_enabled,
             url=(
-                env.get("EDGE_STATUS_SCHEDULER_URL", "http://127.0.0.1:18011/scheduler/edge-nodes/status").strip()
+                env.get("EDGE_STATUS_SCHEDULER_URL", scheduler_default_url).strip()
                 if scheduler_enabled else ""
             ),
             timeout_seconds=(
@@ -203,7 +224,7 @@ class EdgeStatusReporterConfig:
             name="cloud",
             enabled=cloud_enabled,
             url=(
-                env.get("EDGE_STATUS_CLOUD_URL", "http://127.0.0.1:18021/cloud/edge-status").strip()
+                env.get("EDGE_STATUS_CLOUD_URL", cloud_default_url).strip()
                 if cloud_enabled else ""
             ),
             timeout_seconds=(
@@ -238,7 +259,7 @@ class EdgeStatusReporterConfig:
             network=NetworkConfig(
                 url=env.get(
                     "EDGE_NETWORK_STATUS_URL",
-                    "http://127.0.0.1:8090/api/v1/network/links/edge_01__to__scheduler__http",
+                    default_network_url,
                 ).strip(),
                 timeout_seconds=_positive_float(
                     env.get("EDGE_NETWORK_STATUS_TIMEOUT_SECONDS", "0.5"),
@@ -247,3 +268,21 @@ class EdgeStatusReporterConfig:
                 stale_after_seconds=float(env.get("EDGE_NETWORK_STATUS_STALE_SECONDS", "3.0")),
             ),
         )
+
+
+def _default_status_urls(edge_node_id: str) -> tuple[str, str]:
+    local_proxy_ports = {
+        "edge_01": (18011, 18021),
+        "edge_02": (18051, 18053),
+    }
+    ports = local_proxy_ports.get(edge_node_id)
+    if ports is None:
+        return (
+            "http://127.0.0.1:8003/scheduler/edge-nodes/status",
+            "http://127.0.0.1:8004/cloud/edge-status",
+        )
+    scheduler_port, cloud_port = ports
+    return (
+        f"http://127.0.0.1:{scheduler_port}/scheduler/edge-nodes/status",
+        f"http://127.0.0.1:{cloud_port}/cloud/edge-status",
+    )
