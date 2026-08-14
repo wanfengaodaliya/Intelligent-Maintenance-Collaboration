@@ -29,6 +29,7 @@ class V12DecisionFlow:
         device_rounds: DeviceDecisionRoundRepository,
         *,
         round_timeout_ns: int = 3_500_000_000,
+        on_bearing_result: Callable[[Any], None] | None = None,
         on_device_result: Callable[[DeviceDecisionResult], None] | None = None,
         on_device_conflict: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -38,6 +39,7 @@ class V12DecisionFlow:
         self.device_rounds = device_rounds
         self.round_timeout_ns = round_timeout_ns
         self._on_device_result = on_device_result or (lambda _: None)
+        self._on_bearing_result = on_bearing_result or (lambda _: None)
         self._on_device_conflict = on_device_conflict or (lambda _: None)
         self._revisions = DeviceDecisionRevisionService(
             device_rounds, lifecycle.repository
@@ -55,6 +57,7 @@ class V12DecisionFlow:
         bearing = self.lifecycle.apply_route(
             edge_result, route_decision, accepted_at_ns=accepted_at_ns
         )
+        self._emit_bearing_result(bearing)
         return bearing, self._close_if_complete(
             edge_result.device_id, edge_result.task_id, edge_result.decision_round_id, accepted_at_ns
         )
@@ -102,6 +105,7 @@ class V12DecisionFlow:
             )
             if device is not None:
                 self._emit_device_result(device)
+        self._emit_bearing_result(bearing)
         return bearing, device
 
     def promote_cloud_now_timeouts(
@@ -235,6 +239,12 @@ class V12DecisionFlow:
         self._on_device_result(result)
         if result.has_conflict and result.arbitration_id is None:
             self._on_device_conflict(self._arbitration_request(result))
+
+    def _emit_bearing_result(self, result: Any) -> None:
+        try:
+            self._on_bearing_result(result)
+        except Exception:
+            pass
 
     def apply_cloud_arbitration_result(
         self, payload: dict[str, Any], *, accepted_at_ns: int

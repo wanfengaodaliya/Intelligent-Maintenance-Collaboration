@@ -7,11 +7,12 @@ from contextlib import asynccontextmanager, suppress
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import BackgroundTasks, Body, FastAPI
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
@@ -41,6 +42,7 @@ from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusVal
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
 from cloud_service.raw_context.transport import RoutedRawContextTransport
+from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
@@ -130,6 +132,10 @@ async def _expire_raw_context_requests() -> None:
                     ),
                 ).dispatch_pending,
                 limit=20,
+            )
+            await asyncio.to_thread(
+                SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
+                now_ns=time.time_ns(),
             )
         except sqlite3.Error:
             pass
@@ -497,6 +503,31 @@ def device_decision_results(payload: dict) -> dict | JSONResponse:
             status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
             content={"error_code": str(error)},
         )
+
+
+@app.post("/cloud/raw-analysis-samples", response_model=None)
+async def raw_analysis_samples(
+    metadata: str = Form(...), payload: UploadFile = File(...)
+) -> dict | JSONResponse:
+    try:
+        result = RawAnalysisSampleService(load_cloud_settings().database_path).accept(
+            json.loads(metadata), await payload.read(), received_at_ns=time.time_ns()
+        )
+        return result
+    except (ValueError, json.JSONDecodeError) as error:
+        return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.get("/cloud/raw-analysis-samples/{sample_id}", response_model=None)
+def get_raw_analysis_sample(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_sample(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "RAW_SAMPLE_NOT_FOUND"})
+
+
+@app.get("/cloud/physical-evidence/{sample_id}", response_model=None)
+def get_physical_evidence(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_evidence(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "PHYSICAL_EVIDENCE_NOT_FOUND"})
 
 
 @app.post("/cloud/device-arbitration", response_model=None)

@@ -33,6 +33,15 @@ from .packet_route_reporter import DeviceArbitrationReporter, PacketRouteReporte
 from packet_routing_bridge import PacketRoutingBridge
 from device_decision import DeviceDecisionRoundRepository
 from result_lifecycle import BearingResultLifecycleManager, BearingResultRepository
+from result_uploader import ResultUploader
+from raw_sample_capture import (
+    RawSampleCapturePolicy,
+    RawSampleCaptureService,
+    RawSampleFreezer,
+    RawSampleRepository,
+    HttpRawSampleTransport,
+    RawAnalysisSampleUploader,
+)
 from .v12_flow import V12DecisionFlow
 
 
@@ -103,16 +112,63 @@ def build_edge_runtime(
             ),
         )
     v12_flow = None
+    raw_sample_capture = None
+    raw_sample_uploader = None
+    result_uploader = None
+    if config.raw_sample_capture.enabled:
+        raw_config = config.raw_sample_capture
+        raw_sample_capture = RawSampleCaptureService(
+            RawSampleCapturePolicy(
+                history_window_ms=raw_config.history_window_ms,
+                normal_sample_interval_seconds=raw_config.normal_sample_interval_seconds,
+            ),
+            RawSampleFreezer(),
+            RawSampleRepository(raw_config.directory),
+        )
+        raw_sample_uploader = RawAnalysisSampleUploader(
+            raw_sample_capture.repository,
+            HttpRawSampleTransport(
+                config.window_transfer.cloud_base_url,
+                timeout_seconds=config.scheduler.request_timeout_seconds,
+            ).upload,
+            batch_size=raw_config.upload_batch_size,
+        )
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
+        result_uploader = ResultUploader(config.v12.database_path, scheduler_client.post)
 
         def on_device_result(result):
             device_result_publisher.publish(result.as_dict())
+            try:
+                result_uploader.enqueue_device(result)
+            except Exception:
+                pass
+            if raw_sample_capture is not None and result.has_conflict:
+                for bearing in bearing_results.list_current_round(
+                    result.device_id, result.task_id, result.decision_round_id
+                ):
+                    try:
+                        raw_sample_capture.capture(
+                            {
+                                "device_id": bearing.device_id,
+                                "task_id": bearing.task_id,
+                                "bearing_id": bearing.bearing_id,
+                                "sender_id": bearing.sender_id,
+                                "decision_round_id": bearing.decision_round_id,
+                                "device_conflict": True,
+                                "edge_model_version": bearing.model_version,
+                                "cloud_corrected": bearing.lifecycle_state.value == "LATE_CLOUD_CORRECTED",
+                                "created_at_ns": bearing.created_at_ns,
+                            }
+                        )
+                    except Exception:
+                        continue
 
         v12_flow = V12DecisionFlow(
             BearingResultLifecycleManager(bearing_results),
             DeviceDecisionRoundRepository(config.v12.database_path),
             round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
+            on_bearing_result=result_uploader.enqueue_bearing,
             on_device_result=on_device_result,
             on_device_conflict=lambda payload: device_arbitration_reporter.report(
                 {**payload, "edge_node_id": config.edge_node_id}
@@ -138,6 +194,9 @@ def build_edge_runtime(
             else None
         ),
         v12_flow=v12_flow,
+        raw_sample_capture=raw_sample_capture,
+        raw_sample_uploader=raw_sample_uploader,
+        result_uploader=result_uploader,
         legacy_realtime_aggregation=config.v12.legacy_realtime_aggregation,
         cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,

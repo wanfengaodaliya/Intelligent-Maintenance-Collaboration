@@ -60,6 +60,17 @@ class V12RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class RawSampleCaptureConfig:
+    enabled: bool = True
+    directory: Path = Path("data/raw_analysis_samples")
+    history_window_ms: int = 1_000
+    normal_sample_interval_seconds: int = 60
+    local_retention_hours: int = 24
+    max_local_storage_mb: int = 2_048
+    upload_batch_size: int = 1
+
+
+@dataclass(frozen=True)
 class EdgeRuntimeConfig:
     edge_node_id: str = "edge_01"
     mqtt: MqttConfig = field(default_factory=MqttConfig)
@@ -67,6 +78,7 @@ class EdgeRuntimeConfig:
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
+    raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -113,6 +125,15 @@ class EdgeRuntimeConfig:
                 cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
                 round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
                 round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
+            ),
+            raw_sample_capture=RawSampleCaptureConfig(
+                enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
+                directory=Path(env.get("EDGE_RAW_SAMPLE_DIRECTORY", "data/raw_analysis_samples")),
+                history_window_ms=int(env.get("EDGE_RAW_SAMPLE_HISTORY_WINDOW_MS", "1000")),
+                normal_sample_interval_seconds=int(env.get("EDGE_RAW_SAMPLE_NORMAL_INTERVAL_SECONDS", "60")),
+                local_retention_hours=int(env.get("EDGE_RAW_SAMPLE_RETENTION_HOURS", "24")),
+                max_local_storage_mb=int(env.get("EDGE_RAW_SAMPLE_MAX_STORAGE_MB", "2048")),
+                upload_batch_size=int(env.get("EDGE_RAW_SAMPLE_UPLOAD_BATCH_SIZE", "1")),
             ),
             cloud_node_urls=cloud_node_urls,
         )
@@ -167,4 +188,13 @@ class EdgeRuntimeConfig:
             errors.append("v12 cloud-now timeout and finalize grace are invalid")
         if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:
             errors.append("v12.round_timeout_ms must cover cloud-now timeout plus finalize grace")
+        raw_capture = self.raw_sample_capture
+        if raw_capture.enabled and not str(raw_capture.directory).strip():
+            errors.append("raw_sample_capture.directory must be non-empty")
+        if raw_capture.history_window_ms <= 0 or raw_capture.normal_sample_interval_seconds <= 0:
+            errors.append("raw sample capture intervals must be positive")
+        if raw_capture.local_retention_hours <= 0 or raw_capture.max_local_storage_mb <= 0:
+            errors.append("raw sample capture retention and storage limits must be positive")
+        if raw_capture.upload_batch_size <= 0:
+            errors.append("raw_sample_capture.upload_batch_size must be positive")
         return errors

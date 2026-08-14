@@ -17,6 +17,9 @@ from edge_perception import EdgePerception, PerceptionInvocationContext
 from edge_task_ingress import INGRESS_ACCEPTED, EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from packet_routing_bridge import PacketRoutingBridge
+from raw_sample_capture import RawSampleCaptureService
+from raw_sample_capture.uploader import RawAnalysisSampleUploader
+from result_uploader import ResultUploader
 
 from .contracts import action_level_for
 from .http import SchedulerReporter
@@ -44,6 +47,9 @@ class EdgeRuntimeCoordinator:
         window_review_store: Optional[WindowReviewStore] = None,
         packet_router: Optional[PacketRoutingBridge] = None,
         v12_flow: Optional[V12DecisionFlow] = None,
+        raw_sample_capture: Optional[RawSampleCaptureService] = None,
+        raw_sample_uploader: Optional[RawAnalysisSampleUploader] = None,
+        result_uploader: Optional[ResultUploader] = None,
         legacy_realtime_aggregation: bool = False,
         cloud_now_timeout_ns: int = 3_000_000_000,
         round_timeout_ns: int = 3_500_000_000,
@@ -61,6 +67,9 @@ class EdgeRuntimeCoordinator:
         self.window_review_store = window_review_store
         self.packet_router = packet_router
         self.v12_flow = v12_flow
+        self.raw_sample_capture = raw_sample_capture
+        self.raw_sample_uploader = raw_sample_uploader
+        self.result_uploader = result_uploader
         self.legacy_realtime_aggregation = legacy_realtime_aggregation
         self.cloud_now_timeout_ns = cloud_now_timeout_ns
         self.round_timeout_ns = round_timeout_ns
@@ -81,6 +90,11 @@ class EdgeRuntimeCoordinator:
         self._last_task_activity_ns = max(self._last_task_activity_ns, result.received_at_ns)
         if result.status != INGRESS_ACCEPTED or result.validated_packet is None:
             return result.status != "REJECTED"
+        if self.raw_sample_capture is not None:
+            try:
+                self.raw_sample_capture.record_packet(result.validated_packet)
+            except Exception as error:
+                self._report_raw_sample_error(result.validated_packet, error)
         context = PerceptionInvocationContext(
             edge_node_id=self.edge_node_id,
             perception_received_at_ns=result.received_at_ns,
@@ -140,12 +154,14 @@ class EdgeRuntimeCoordinator:
                 raw_packet = self.cache.read(raw_ref) if raw_ref is not None else None
                 if raw_packet is None:
                     raise ValueError("completed packet raw data is unavailable")
-                self.v12_flow.apply_edge_result(
-                    _edge_bearing_result(completion, raw_packet),
+                edge_result = _edge_bearing_result(completion, raw_packet)
+                _, device = self.v12_flow.apply_edge_result(
+                    edge_result,
                     route_decision,
                     expected_bearing_ids=task.expected_bearing_ids,
                     accepted_at_ns=self._clock_ns(),
                 )
+                self._capture_bearing_result(edge_result, route_decision, device)
             except Exception as error:
                 self._report_v12_error(completion, error)
             if not self.legacy_realtime_aggregation:
@@ -195,6 +211,50 @@ class EdgeRuntimeCoordinator:
             "error_code": getattr(error, "code", type(error).__name__),
             "message": str(error),
             "action": "raw_packet_retained_for_replay",
+        }
+        try:
+            self.on_packet_route_error(record)
+        except Exception:
+            pass
+
+    def _capture_bearing_result(
+        self,
+        edge_result: EdgeBearingResult,
+        route_decision: Mapping[str, Any],
+        device_result: Any,
+    ) -> None:
+        if self.raw_sample_capture is None:
+            return
+        try:
+            self.raw_sample_capture.capture(
+                {
+                    "device_id": edge_result.device_id,
+                    "task_id": edge_result.task_id,
+                    "bearing_id": edge_result.bearing_id,
+                    "sender_id": edge_result.sender_id,
+                    "decision_round_id": edge_result.decision_round_id,
+                    "confidence": edge_result.confidence,
+                    "route": route_decision.get("route"),
+                    "bearing_state": edge_result.bearing_state,
+                    "risk_level": edge_result.risk_level,
+                    "device_conflict": bool(device_result is not None and device_result.has_conflict),
+                    "edge_model_version": edge_result.model_version,
+                    "created_at_ns": edge_result.window_end_ns,
+                }
+            )
+        except Exception as error:
+            self._report_raw_sample_error(edge_result.__dict__, error)
+
+    def _report_raw_sample_error(self, source: Mapping[str, Any], error: Exception) -> None:
+        record = {
+            "stage": "raw_sample_capture",
+            "device_id": source.get("device_id"),
+            "task_id": source.get("task_id"),
+            "bearing_id": source.get("bearing_id"),
+            "sender_id": source.get("sender_id"),
+            "error_code": type(error).__name__,
+            "message": str(error),
+            "action": "real_time_diagnosis_continues",
         }
         try:
             self.on_packet_route_error(record)
@@ -269,6 +329,10 @@ class EdgeRuntimeCoordinator:
 
     def report_node_status(self) -> None:
         self._flush_aggregation()
+        if self.raw_sample_uploader is not None:
+            self.raw_sample_uploader.run_once(self._clock_ns())
+        if self.result_uploader is not None:
+            self.result_uploader.run_once()
         if self.v12_flow is not None:
             now = self._clock_ns()
             self.v12_flow.promote_cloud_now_timeouts(
