@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 
 from cloud_review import CloudReviewStore
+from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from edge_model.contracts import PacketExecutionCompleted
 
 
@@ -30,11 +31,30 @@ class PacketRoutingBridge:
     ) -> dict[str, Any]:
         raw = _json_value(dict(raw_packet))
         identity = self._identity(raw, completion)
+        window_identity = {
+            "decision_round_id": build_decision_round_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                window_start_sequence=completion.sequence_number,
+                window_end_sequence=completion.sequence_number,
+            ),
+            "diagnosis_window_id": build_diagnosis_window_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                bearing_id=completion.bearing_id,
+                sender_id=completion.sender_id,
+                window_start_sequence=completion.sequence_number,
+                window_end_sequence=completion.sequence_number,
+            ),
+            "window_start_sequence": completion.sequence_number,
+            "window_end_sequence": completion.sequence_number,
+        }
         payload: dict[str, Any] = {
             "device_id": completion.device_id,
             "task_id": completion.task_id,
             "bearing_id": completion.bearing_id,
             "edge_node_id": self.edge_node_id,
+            **window_identity,
             "input_ref": {
                 "device_id": completion.device_id,
                 "bearing_id": completion.bearing_id,
