@@ -107,32 +107,35 @@ def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
     handler.run_enhanced_analysis(review_id)
 
 
-async def _expire_raw_context_requests() -> None:
+async def _run_background_workers() -> None:
     while True:
         try:
             settings = load_cloud_settings()
-            initialize_database(settings.database_path)
-            RawContextRequestRepository(
-                settings.database_path
-            ).expire_due()
-            await asyncio.to_thread(
-                WorkflowReviewService(settings.database_path).process_pending,
-                20,
-            )
-            await asyncio.to_thread(
-                ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
-                config_version="cloud-preprocess-v1",
-                limit=20,
-            )
-            await asyncio.to_thread(
-                AggregationReadyDispatcher(
-                    settings.database_path,
-                    handler=lambda payload: _run_enhanced_analysis(
-                        settings.database_path, payload["review_id"]
-                    ),
-                ).dispatch_pending,
-                limit=20,
-            )
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                initialize_database(settings.database_path)
+                RawContextRequestRepository(
+                    settings.database_path
+                ).expire_due()
+            if settings.legacy_bearing_window_review_enabled:
+                await asyncio.to_thread(
+                    WorkflowReviewService(settings.database_path).process_pending,
+                    20,
+                )
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                await asyncio.to_thread(
+                    ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
+                    config_version="cloud-preprocess-v1",
+                    limit=20,
+                )
+                await asyncio.to_thread(
+                    AggregationReadyDispatcher(
+                        settings.database_path,
+                        handler=lambda payload: _run_enhanced_analysis(
+                            settings.database_path, payload["review_id"]
+                        ),
+                    ).dispatch_pending,
+                    limit=20,
+                )
             await asyncio.to_thread(
                 SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
                 now_ns=time.time_ns(),
@@ -148,14 +151,14 @@ async def _lifespan(_: FastAPI):
     await asyncio.to_thread(
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
-    expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    worker_task = asyncio.create_task(_run_background_workers())
     status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        for task in (status_task, expiry_task):
+        for task in (status_task, worker_task):
             task.cancel()
-        for task in (status_task, expiry_task):
+        for task in (status_task, worker_task):
             with suppress(asyncio.CancelledError):
                 await task
 
@@ -219,6 +222,24 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _workflow_review_service() -> WorkflowReviewService:
     return WorkflowReviewService(load_cloud_settings().database_path)
+
+
+def _legacy_bearing_workflow_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_bearing_window_review_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_BEARING_WORKFLOW_DISABLED"},
+    )
+
+
+def _legacy_context_pipeline_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_context_enhanced_pipeline_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_CONTEXT_PIPELINE_DISABLED"},
+    )
 
 
 def _workflow_error_response(error: WorkflowReviewError) -> JSONResponse:
@@ -380,6 +401,8 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
 
 @app.post("/cloud/packet-reviews", response_model=None)
 def create_packet_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.submit("PACKET", payload)
@@ -399,6 +422,8 @@ def get_packet_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/bearing-window-reviews", response_model=None)
 def create_bearing_window_review(payload: dict) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         return _workflow_job_response(
             _workflow_review_service().submit("BEARING_WINDOW", payload), 202
@@ -411,6 +436,8 @@ def create_bearing_window_review(payload: dict) -> JSONResponse:
 def upload_bearing_window_raw(
     review_id: str, payload: dict, background_tasks: BackgroundTasks
 ) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.upload_window_raw(review_id, payload)
@@ -430,6 +457,8 @@ def get_bearing_window_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/device-reviews", response_model=None)
 def create_device_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.submit("DEVICE", payload)
@@ -449,6 +478,8 @@ def get_device_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/bearing-review", response_model=None)
 def create_bearing_review(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         return BearingReviewService(
             load_cloud_settings().database_path,
@@ -473,12 +504,16 @@ def get_bearing_review(bearing_review_id: str) -> dict | JSONResponse:
 
 @app.post("/cloud/bearing-task-results", response_model=None)
 def bearing_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try: return TaskResultService(load_cloud_settings().database_path).ingest_bearing(payload)
     except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
 
 
 @app.post("/cloud/device-task-results", response_model=None)
 def device_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try: return TaskResultService(load_cloud_settings().database_path).ingest_device(payload)
     except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
 
@@ -788,6 +823,13 @@ def raw_context_batches(
 ) -> dict[str, object] | JSONResponse:
     """Receive one edge raw-context batch and acknowledge each packet."""
 
+    disabled = (
+        _legacy_bearing_workflow_disabled()
+        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review"
+        else _legacy_context_pipeline_disabled()
+    )
+    if disabled:
+        return disabled
     try:
         if isinstance(payload, dict) and payload.get("review_type") == "bearing_review":
             return BearingRawContextReceiver(

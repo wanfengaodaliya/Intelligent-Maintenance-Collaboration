@@ -15,7 +15,9 @@ from cloud_service.global_analysis.physical_evidence_analyzer import analyze_phy
 from cloud_service.global_analysis.problem_detector import detect_problem_candidates
 from cloud_service.global_analysis.result_repository import GlobalAnalysisResultRepository
 from core.scenario_errors import UnsupportedScenarioError
-from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import analyze_bearing_aggregation
+from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import (
+    analyze_bearing_aggregation as analyze_cloud_bearing_review,
+)
 from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyze_bearing_risk
 from scenarios.bearing.cloud.global_analysis.config import DEFAULT_GLOBAL_ANALYSIS_CONFIG
 from scenarios.bearing.cloud.global_analysis.data_source import GlobalAnalysisDataSource
@@ -51,7 +53,7 @@ class GlobalAnalysisService:
             data["packet_review_pairs"], self.config,
             available=availability.get("packet_review_pairs", True),
         )
-        bearing_aggregation = analyze_bearing_aggregation(data["bearing_review_pairs"], self.config)
+        cloud_bearing_review = analyze_cloud_bearing_review(data["bearing_review_pairs"], self.config)
         device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
         physical_evidence = analyze_physical_evidence(
             data.get("physical_evidence", []),
@@ -61,7 +63,7 @@ class GlobalAnalysisService:
         previous = self.repository.get_recent(scenario, subject, 3)
         candidates = detect_problem_candidates(
             device_health=device_health, bearing_risk=bearing_risk,
-            packet_diagnosis=packet_diagnosis, bearing_aggregation=bearing_aggregation,
+            packet_diagnosis=packet_diagnosis, cloud_bearing_review=cloud_bearing_review,
             device_arbitration=device_arbitration, previous_analysis=previous, config=self.config,
         )
         result = {
@@ -74,11 +76,10 @@ class GlobalAnalysisService:
             "device_health_analysis": device_health,
             "bearing_risk_analysis": bearing_risk,
             "packet_diagnosis_analysis": packet_diagnosis,
-            "bearing_aggregation_analysis": bearing_aggregation,
             "device_arbitration_analysis": device_arbitration,
             "cloud_bearing_review_analysis": {
-                **bearing_aggregation,
-                "reviewed_bearing_count": bearing_aggregation["bearing_review_count"],
+                **cloud_bearing_review,
+                "reviewed_bearing_count": cloud_bearing_review["bearing_review_count"],
             },
             "physical_evidence_analysis": physical_evidence,
             "revision_deduplication": data.get("revision_deduplication", {}),

@@ -190,6 +190,8 @@ class EdgeRuntimeConfig:
             errors.append("window transfer reserve and interval are invalid")
         if self.v12.enabled and not str(self.v12.database_path).strip():
             errors.append("v12.database_path must be non-empty")
+        if self.v12.enabled and self.v12.legacy_realtime_aggregation:
+            errors.append("v12 and legacy realtime aggregation cannot both be enabled")
         if self.v12.cloud_now_timeout_ms <= 0 or self.v12.round_finalize_grace_ms < 0:
             errors.append("v12 cloud-now timeout and finalize grace are invalid")
         if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:

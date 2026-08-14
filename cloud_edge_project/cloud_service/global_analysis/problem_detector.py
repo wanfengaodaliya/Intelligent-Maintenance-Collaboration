@@ -13,7 +13,7 @@ def detect_problem_candidates(
     device_health: dict[str, Any],
     bearing_risk: dict[str, Any],
     packet_diagnosis: dict[str, Any],
-    bearing_aggregation: dict[str, Any],
+    cloud_bearing_review: dict[str, Any],
     device_arbitration: dict[str, Any],
     previous_analysis: list[dict[str, Any]],
     config: GlobalAnalysisConfig,
@@ -32,13 +32,13 @@ def detect_problem_candidates(
             "model_update", previous_analysis,
         ))
     if (
-        bearing_aggregation.get("status") == "succeeded"
-        and bearing_aggregation.get("bearing_correction_rate", 0) >= config.bearing_correction_warning_rate
+        cloud_bearing_review.get("status") == "succeeded"
+        and cloud_bearing_review.get("bearing_correction_rate", 0) >= config.bearing_correction_warning_rate
     ):
         candidates.append(_candidate(
-            "bearing_aggregation", "high_correction_rate", "medium",
-            {"sample_count": bearing_aggregation.get("bearing_review_count"), "bearing_correction_rate": bearing_aggregation.get("bearing_correction_rate")},
-            "aggregation_rule_review", previous_analysis,
+            "cloud_bearing_review", "high_correction_rate", "medium",
+            {"sample_count": cloud_bearing_review.get("bearing_review_count"), "bearing_correction_rate": cloud_bearing_review.get("bearing_correction_rate")},
+            "cloud_review_policy_review", previous_analysis,
         ))
     conflict = device_arbitration.get("conflict_rate")
     if conflict is not None and conflict > config.conflict_rate_target:

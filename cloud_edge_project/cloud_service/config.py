@@ -15,6 +15,8 @@ class CloudSettings:
     vllm_api_key: str
     vllm_timeout_seconds: float
     database_path: Path = Path("data/cloud_review.db")
+    legacy_bearing_window_review_enabled: bool = False
+    legacy_context_enhanced_pipeline_enabled: bool = False
 
 
 def load_cloud_settings() -> CloudSettings:
@@ -30,4 +32,16 @@ def load_cloud_settings() -> CloudSettings:
         vllm_api_key=os.getenv("VLLM_API_KEY", "").strip(),
         vllm_timeout_seconds=float(os.getenv("VLLM_TIMEOUT_SECONDS", "120")),
         database_path=Path(os.getenv("CLOUD_REVIEW_DB_PATH", "data/cloud_review.db")),
+        legacy_bearing_window_review_enabled=(
+            os.getenv("CLOUD_LEGACY_BEARING_WINDOW_REVIEW_ENABLED", "false")
+            .strip()
+            .lower()
+            == "true"
+        ),
+        legacy_context_enhanced_pipeline_enabled=(
+            os.getenv("CLOUD_LEGACY_CONTEXT_ENHANCED_PIPELINE_ENABLED", "false")
+            .strip()
+            .lower()
+            == "true"
+        ),
     )

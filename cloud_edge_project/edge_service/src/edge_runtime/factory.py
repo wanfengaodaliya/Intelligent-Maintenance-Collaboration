@@ -50,7 +50,7 @@ from .v12_flow import V12DecisionFlow
 class EdgeRuntimeAssembly:
     service: EdgeRuntimeService
     coordinator: EdgeRuntimeCoordinator
-    window_review_store: WindowReviewStore
+    window_review_store: WindowReviewStore | None
     v12_flow: V12DecisionFlow | None
 
 
@@ -89,29 +89,32 @@ def build_edge_runtime(
         qos=config.mqtt.qos,
     )
     transfer = config.window_transfer
-    window_review_store = WindowReviewStore(
-        transfer.cache_directory,
-        hard_limit_bytes=transfer.hard_limit_bytes,
-        warning_bytes=transfer.warning_bytes,
-        reserved_free_bytes=transfer.reserved_free_bytes,
-    )
-    dispatcher = WindowReviewDispatcher(
-        window_review_store,
-        WindowReviewHttpClient(transfer.cloud_base_url),
-        interval_seconds=transfer.dispatch_interval_seconds,
-    )
+    window_review_store = None
+    dispatcher = None
     aggregation_workflow = None
-    if config.cloud_node_urls:
-        cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
-        aggregation_workflow = BearingAggregationWorkflow(
-            cache=cache,
-            cloud=DurableWindowReviewGateway(
-                HttpCloudReviewGateway(cloud_base_url), window_review_store
-            ),
-            packet_cloud_confidence_threshold=(
-                transfer.packet_cloud_confidence_threshold
-            ),
+    if config.v12.legacy_realtime_aggregation:
+        window_review_store = WindowReviewStore(
+            transfer.cache_directory,
+            hard_limit_bytes=transfer.hard_limit_bytes,
+            warning_bytes=transfer.warning_bytes,
+            reserved_free_bytes=transfer.reserved_free_bytes,
         )
+        dispatcher = WindowReviewDispatcher(
+            window_review_store,
+            WindowReviewHttpClient(transfer.cloud_base_url),
+            interval_seconds=transfer.dispatch_interval_seconds,
+        )
+        if config.cloud_node_urls:
+            cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
+            aggregation_workflow = BearingAggregationWorkflow(
+                cache=cache,
+                cloud=DurableWindowReviewGateway(
+                    HttpCloudReviewGateway(cloud_base_url), window_review_store
+                ),
+                packet_cloud_confidence_threshold=(
+                    transfer.packet_cloud_confidence_threshold
+                ),
+            )
     v12_flow = None
     raw_sample_capture = None
     raw_sample_uploader = None
