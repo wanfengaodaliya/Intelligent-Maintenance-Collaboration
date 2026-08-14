@@ -472,6 +472,28 @@ def device_task_results(payload: dict) -> dict | JSONResponse:
     except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
 
 
+@app.post("/cloud/bearing-diagnosis-results", response_model=None)
+def bearing_diagnosis_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_bearing_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
+@app.post("/cloud/device-decision-results", response_model=None)
+def device_decision_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_device_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
