@@ -62,6 +62,8 @@ def test_finish_task_reports_tail_without_creating_a_partial_window() -> None:
     report = assembler.finish_task("task_001")
     assert report.incomplete_tail_packet_count == 2
     assert report.task_id == "task_001"
+    assert report.incomplete_tail_packet_ids == ("packet_001", "packet_002")
+    assert report.incomplete_tail_sequences == (1, 2)
 
 
 def test_assembler_rejects_overlap_or_step_that_differs_from_window() -> None:

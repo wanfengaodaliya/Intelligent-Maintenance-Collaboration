@@ -161,3 +161,25 @@ def test_service_freezes_buffered_history_after_route_event(tmp_path) -> None:
 
     assert outcome is not None and outcome.status == "INSERTED"
     assert repository.get(outcome.sample_id).sample.complete is True
+
+
+def test_repository_expires_old_payloads_and_enforces_quota_without_dropping_pending(tmp_path) -> None:
+    first = RawSampleFreezer().freeze(_decision(requested_window_ms=50), (_packet(1),))
+    second_decision = CaptureDecision(
+        **{**_decision(requested_window_ms=50).__dict__,
+           "decision_round_id": "round_002", "created_at_ns": 200_000_000}
+    )
+    second = RawSampleFreezer().freeze(second_decision, (_packet(2),))
+    repository = RawSampleRepository(
+        tmp_path / "quota", max_storage_bytes=len(first.payload) + 8,
+        retention_ns=100_000_000,
+    )
+
+    assert repository.enqueue(first).status == "INSERTED"
+    assert repository.enqueue(second).status == "EXPIRED"
+    assert repository.get(first.sample_id).status == "PENDING"
+    assert repository.get(second.sample_id).status == "EXPIRED"
+
+    assert repository.cleanup(now_ns=first.created_at_ns + 100_000_000) == 1
+    assert repository.get(first.sample_id).status == "EXPIRED"
+    assert repository.read_payload(first.sample_id) is None

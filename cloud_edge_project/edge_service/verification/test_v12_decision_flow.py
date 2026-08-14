@@ -8,6 +8,7 @@ from core.diagnosis_contracts import CloudBearingResult, EdgeBearingResult, Pack
 from device_decision import DeviceDecisionRoundRepository
 from edge_model.contracts import EdgeResult, PacketExecutionCompleted
 from edge_runtime.coordinator import _edge_bearing_result
+from diagnosis_window import DiagnosisWindowAssembler
 from edge_runtime.config import EdgeRuntimeConfig, V12RuntimeConfig
 from edge_runtime.v12_flow import V12DecisionFlow
 from result_lifecycle import BearingResultLifecycleManager, BearingResultRepository
@@ -211,6 +212,40 @@ def test_coordinator_converts_completed_packet_to_v12_edge_bearing_result() -> N
     assert result.bearing_state == "abnormal"
     assert result.action_grade == 4
     assert result.recommended_action == "shutdown"
+
+
+def test_coordinator_builds_bearing_result_from_the_complete_diagnosis_window() -> None:
+    packets = [
+        {
+            "device_id": "machine_01", "task_id": "task_001", "bearing_id": "bearing_a",
+            "sender_id": "sender_a", "packet_id": f"packet_{sequence:03d}",
+            "sequence_number": sequence,
+            "start_generate_timestamp_ns": (sequence - 1) * 50_000_000,
+            "end_generate_timestamp_ns": sequence * 50_000_000,
+            "data": {"vibration": {"sample_rate_hz": 64_000}},
+        }
+        for sequence in (1, 2)
+    ]
+    assembler = DiagnosisWindowAssembler(window_ms=100)
+    window = next(result for packet in packets for result in assembler.append(packet))
+    completion = PacketExecutionCompleted(
+        request_id="request_01", device_id="machine_01", task_id="task_001",
+        bearing_id="bearing_a", sender_id="sender_a", packet_id="packet_002",
+        sequence_number=2, status="SUCCEEDED", error_code=None, started_at_ns=1,
+        finished_at_ns=2, edge=EdgeResult("warning", .8, "medium", "edge_model_v1"),
+        data_quality_score=.9,
+    )
+
+    result = _edge_bearing_result(
+        completion, {"end_generate_timestamp_ns": 100_000_000},
+        diagnosis_window=window,
+    )
+
+    assert result.diagnosis_window_id == window.diagnosis_window_id
+    assert result.decision_round_id == window.decision_round_id
+    assert result.window_start_sequence == 1
+    assert result.window_end_sequence == 2
+    assert result.contributing_packet_ids == ("packet_001", "packet_002")
 
 
 def test_cloud_result_corrects_closed_provisional_round_without_reopening_it(tmp_path) -> None:

@@ -153,10 +153,23 @@ def _validate_v12_request(request: dict[str, Any]) -> dict[str, Any]:
     start, end = window["window_start_sequence"], window["window_end_sequence"]
     if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window sequence range is invalid", 400)
+    for field in ("window_start_ns", "window_end_ns", "sample_rate_hz", "sample_count"):
+        value = window[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < (0 if field == "window_start_ns" else 1):
+            raise CloudServiceError("INVALID_CLOUD_WINDOW", f"cloud_raw_window.{field} is invalid", 400)
+    if not isinstance(window["data"], dict):
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud_raw_window.data is invalid", 400)
     if not isinstance(window["contributing_packet_ids"], list) or not window["contributing_packet_ids"] or not all(isinstance(value, str) and value for value in window["contributing_packet_ids"]):
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window manifest is invalid", 400)
     if len(window["contributing_packet_ids"]) != end - start + 1:
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window manifest does not match its sequence range", 400)
+    packet_count = end - start + 1
+    if packet_count not in {1, 2, 3}:
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window must be 50, 100, or 150ms", 400)
+    if window["window_end_ns"] - window["window_start_ns"] != packet_count * 50_000_000:
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window duration is inconsistent", 400)
+    if window["sample_count"] != window["sample_rate_hz"] * packet_count // 20:
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window sample count is inconsistent", 400)
     expected_round = build_decision_round_id(device_id=window["device_id"], task_id=window["task_id"], window_start_sequence=start, window_end_sequence=end)
     expected_window = build_diagnosis_window_id(device_id=window["device_id"], task_id=window["task_id"], bearing_id=window["bearing_id"], sender_id=window["sender_id"], window_start_sequence=start, window_end_sequence=end)
     if request["decision_round_id"] != expected_round or request["diagnosis_window_id"] != expected_window:
@@ -173,6 +186,7 @@ def _legacy_packet_request(request: dict[str, Any], window: dict[str, Any]) -> d
         "start_timestamp_ns": window["window_start_ns"],
         "end_timestamp_ns": window["window_end_ns"],
         "end_generate_timestamp_ns": window["window_end_ns"],
+        "window_packet_count": window["window_end_sequence"] - window["window_start_sequence"] + 1,
     }
     edge = dict(request["edge_perception_result"])
     edge.update({

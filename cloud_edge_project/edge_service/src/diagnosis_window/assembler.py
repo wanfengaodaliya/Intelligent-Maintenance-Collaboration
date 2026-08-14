@@ -35,6 +35,8 @@ class IncompleteTailReport:
     bearing_id: str
     sender_id: str
     incomplete_tail_packet_count: int
+    incomplete_tail_packet_ids: tuple[str, ...] = ()
+    incomplete_tail_sequences: tuple[int, ...] = ()
 
 
 class DiagnosisWindowAssembler:
@@ -99,11 +101,24 @@ class DiagnosisWindowAssembler:
         matches = [(key, pending) for key, pending in self._pending.items() if key[1] == task_id and pending]
         if len(matches) != 1:
             raise DiagnosisWindowError("task must have exactly one incomplete window")
-        key, pending = matches[0]
+        key, _pending = matches[0]
+        return self.finish_subject(
+            device_id=key[0], task_id=key[1], bearing_id=key[2], sender_id=key[3]
+        )
+
+    def finish_subject(
+        self, *, device_id: str, task_id: str, bearing_id: str, sender_id: str
+    ) -> IncompleteTailReport:
+        key = (device_id, task_id, bearing_id, sender_id)
+        pending = self._pending.get(key, [])
+        if not pending:
+            raise DiagnosisWindowError("subject has no incomplete window")
         self._pending[key] = []
         return IncompleteTailReport(
             device_id=key[0], task_id=key[1], bearing_id=key[2], sender_id=key[3],
             incomplete_tail_packet_count=len(pending),
+            incomplete_tail_packet_ids=tuple(item["packet_id"] for item in pending),
+            incomplete_tail_sequences=tuple(item["sequence_number"] for item in pending),
         )
 
 

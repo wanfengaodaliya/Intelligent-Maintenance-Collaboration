@@ -235,14 +235,23 @@ class CloudReviewService:
 
 
 def _cloud_raw_window(control: Mapping[str, Any], raw_packet: Mapping[str, Any]) -> dict[str, Any]:
-    """Represent a compatible 50ms stored packet as the V1.2 raw-window form."""
-    start_ns = raw_packet.get("start_timestamp_ns", 0)
-    end_ns = raw_packet.get("end_timestamp_ns") or raw_packet.get("end_generate_timestamp_ns")
+    """Return the exact persisted 50/100/150ms V1.2 raw window."""
+    start_ns = raw_packet.get("window_start_ns", raw_packet.get("start_timestamp_ns", 0))
+    end_ns = raw_packet.get("window_end_ns") or raw_packet.get("end_timestamp_ns") or raw_packet.get("end_generate_timestamp_ns")
     if not isinstance(start_ns, int) or start_ns < 0 or not isinstance(end_ns, int) or end_ns <= start_ns:
         raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw packet lacks a valid time range", 409)
     data = raw_packet.get("data")
     if not isinstance(data, Mapping):
         raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw packet lacks signal data", 409)
+    packet_ids = raw_packet.get("contributing_packet_ids", [control["packet_id"]])
+    expected_count = control["window_end_sequence"] - control["window_start_sequence"] + 1
+    if (
+        not isinstance(packet_ids, list)
+        or len(packet_ids) != expected_count
+        or not all(isinstance(value, str) and value for value in packet_ids)
+    ):
+        raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw window manifest is invalid", 409)
+    vibration = data.get("vibration") if isinstance(data.get("vibration"), Mapping) else {}
     return {
         "device_id": control["device_id"],
         "task_id": control["task_id"],
@@ -252,8 +261,8 @@ def _cloud_raw_window(control: Mapping[str, Any], raw_packet: Mapping[str, Any])
         "window_end_sequence": control["window_end_sequence"],
         "window_start_ns": start_ns,
         "window_end_ns": end_ns,
-        "contributing_packet_ids": [control["packet_id"]],
-        "sample_rate_hz": raw_packet.get("sample_rate_hz", 64_000),
-        "sample_count": raw_packet.get("sample_count", 3_200),
+        "contributing_packet_ids": list(packet_ids),
+        "sample_rate_hz": raw_packet.get("sample_rate_hz", vibration.get("sample_rate_hz", 64_000)),
+        "sample_count": raw_packet.get("sample_count", vibration.get("sample_count", 3_200)),
         "data": dict(data),
     }

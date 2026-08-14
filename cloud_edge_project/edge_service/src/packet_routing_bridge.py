@@ -28,26 +28,44 @@ class PacketRoutingBridge:
         self,
         raw_packet: Mapping[str, Any],
         completion: PacketExecutionCompleted,
+        *,
+        diagnosis_window: Any | None = None,
     ) -> dict[str, Any]:
         raw = _json_value(dict(raw_packet))
         identity = self._identity(raw, completion)
+        start_sequence = (
+            diagnosis_window.window_start_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
+        end_sequence = (
+            diagnosis_window.window_end_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
         window_identity = {
-            "decision_round_id": build_decision_round_id(
-                device_id=completion.device_id,
-                task_id=completion.task_id,
-                window_start_sequence=completion.sequence_number,
-                window_end_sequence=completion.sequence_number,
+            "decision_round_id": (
+                diagnosis_window.decision_round_id
+                if diagnosis_window is not None
+                else build_decision_round_id(
+                    device_id=completion.device_id,
+                    task_id=completion.task_id,
+                    window_start_sequence=start_sequence,
+                    window_end_sequence=end_sequence,
+                )
             ),
-            "diagnosis_window_id": build_diagnosis_window_id(
-                device_id=completion.device_id,
-                task_id=completion.task_id,
-                bearing_id=completion.bearing_id,
-                sender_id=completion.sender_id,
-                window_start_sequence=completion.sequence_number,
-                window_end_sequence=completion.sequence_number,
+            "diagnosis_window_id": (
+                diagnosis_window.diagnosis_window_id
+                if diagnosis_window is not None
+                else build_diagnosis_window_id(
+                    device_id=completion.device_id,
+                    task_id=completion.task_id,
+                    bearing_id=completion.bearing_id,
+                    sender_id=completion.sender_id,
+                    window_start_sequence=start_sequence,
+                    window_end_sequence=end_sequence,
+                )
             ),
-            "window_start_sequence": completion.sequence_number,
-            "window_end_sequence": completion.sequence_number,
+            "window_start_sequence": start_sequence,
+            "window_end_sequence": end_sequence,
         }
         payload: dict[str, Any] = {
             "device_id": completion.device_id,

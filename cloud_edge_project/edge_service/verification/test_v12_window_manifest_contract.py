@@ -33,7 +33,7 @@ def test_edge_assembled_manifest_is_accepted_unchanged_by_cloud(window_ms: int) 
         "window_end_sequence": window.window_end_sequence,
         "window_start_ns": window.window_start_ns, "window_end_ns": window.window_end_ns,
         "contributing_packet_ids": list(window.contributing_packet_ids),
-        "sample_rate_hz": 64_000, "sample_count": 2 * len(window.packets),
+        "sample_rate_hz": 64_000, "sample_count": 3_200 * len(window.packets),
         "data": {"vibration": {"sample_rate_hz": 64_000, "values": [1.0, 2.0]}},
     }
     request = {

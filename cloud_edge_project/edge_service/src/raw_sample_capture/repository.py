@@ -12,11 +12,20 @@ from .contracts import InsertOutcome, QueuedRawSample, RawAnalysisSample
 
 
 class RawSampleRepository:
-    def __init__(self, root: Path | str) -> None:
+    def __init__(
+        self, root: Path | str, *, max_storage_bytes: int | None = None,
+        retention_ns: int | None = None,
+    ) -> None:
+        if max_storage_bytes is not None and max_storage_bytes <= 0:
+            raise ValueError("max_storage_bytes must be positive")
+        if retention_ns is not None and retention_ns <= 0:
+            raise ValueError("retention_ns must be positive")
         self.root = Path(root)
         self.payload_directory = self.root / "payloads"
         self.payload_directory.mkdir(parents=True, exist_ok=True)
         self.database_path = self.root / "raw_sample_queue.db"
+        self.max_storage_bytes = max_storage_bytes
+        self.retention_ns = retention_ns
         self._initialize()
         self._recover_uploading()
 
@@ -33,6 +42,20 @@ class RawSampleRepository:
                     "UPDATE raw_sample_queue SET status='CONFLICT' WHERE sample_id=?", (sample.sample_id,)
                 )
                 return InsertOutcome("CONFLICT", sample.sample_id)
+            if not self._reserve_storage(connection, len(sample.payload)):
+                connection.execute(
+                    """INSERT INTO raw_sample_queue(
+                    sample_id,payload_sha256,payload_path,metadata_json,status,attempt_count,
+                    next_attempt_at_ns,last_error,created_at_ns
+                    ) VALUES (?,?,?,?, 'EXPIRED', 0, NULL, 'LOCAL_STORAGE_QUOTA', ?)""",
+                    (
+                        sample.sample_id, sample.payload_sha256,
+                        str(self.payload_directory / f"{sample.sample_id}.json"),
+                        json.dumps(sample.as_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+                        sample.created_at_ns,
+                    ),
+                )
+                return InsertOutcome("EXPIRED", sample.sample_id)
             path = self._write_payload(sample)
             connection.execute(
                 """INSERT INTO raw_sample_queue(
@@ -71,6 +94,8 @@ class RawSampleRepository:
             ).rowcount == 1
 
     def claim_due(self, *, now_ns: int, limit: int) -> tuple[QueuedRawSample, ...]:
+        if self.retention_ns is not None:
+            self.cleanup(now_ns=now_ns)
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM raw_sample_queue AS candidate
@@ -93,6 +118,27 @@ class RawSampleRepository:
                 ).rowcount == 1:
                     claimed.append(_queued(row))
         return tuple(claimed)
+
+    def cleanup(self, *, now_ns: int) -> int:
+        if self.retention_ns is None:
+            return 0
+        cutoff = now_ns - self.retention_ns
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT sample_id,payload_path FROM raw_sample_queue
+                WHERE status IN ('PENDING','ACKNOWLEDGED','CONFLICT') AND created_at_ns<=?""",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "UPDATE raw_sample_queue SET status='EXPIRED',next_attempt_at_ns=NULL WHERE sample_id=?",
+                    (row["sample_id"],),
+                )
+        for row in rows:
+            path = Path(row["payload_path"])
+            if path.exists():
+                path.unlink()
+        return len(rows)
 
     def acknowledge(self, sample_id: str) -> None:
         with self._connect() as connection:
@@ -128,6 +174,34 @@ class RawSampleRepository:
             os.fsync(handle.fileno())
         os.replace(temporary, target)
         return target
+
+    def _reserve_storage(self, connection: sqlite3.Connection, incoming_bytes: int) -> bool:
+        if self.max_storage_bytes is None:
+            return True
+        rows = connection.execute(
+            "SELECT sample_id,payload_path,status FROM raw_sample_queue WHERE status!='EXPIRED' ORDER BY created_at_ns,sample_id"
+        ).fetchall()
+        used = sum(
+            Path(row["payload_path"]).stat().st_size
+            for row in rows if Path(row["payload_path"]).exists()
+        )
+        if used + incoming_bytes <= self.max_storage_bytes:
+            return True
+        for row in rows:
+            if row["status"] != "ACKNOWLEDGED":
+                continue
+            path = Path(row["payload_path"])
+            size = path.stat().st_size if path.exists() else 0
+            connection.execute(
+                "UPDATE raw_sample_queue SET status='EXPIRED' WHERE sample_id=?",
+                (row["sample_id"],),
+            )
+            if path.exists():
+                path.unlink()
+            used -= size
+            if used + incoming_bytes <= self.max_storage_bytes:
+                return True
+        return False
 
     def _recover_uploading(self) -> None:
         with self._connect() as connection:

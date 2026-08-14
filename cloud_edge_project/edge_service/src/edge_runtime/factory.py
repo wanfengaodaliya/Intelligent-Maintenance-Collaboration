@@ -42,6 +42,7 @@ from raw_sample_capture import (
     HttpRawSampleTransport,
     RawAnalysisSampleUploader,
 )
+from diagnosis_window import DiagnosisWindowAssembler
 from .v12_flow import V12DecisionFlow
 
 
@@ -123,7 +124,11 @@ def build_edge_runtime(
                 normal_sample_interval_seconds=raw_config.normal_sample_interval_seconds,
             ),
             RawSampleFreezer(),
-            RawSampleRepository(raw_config.directory),
+            RawSampleRepository(
+                raw_config.directory,
+                max_storage_bytes=raw_config.max_local_storage_mb * 1024 * 1024,
+                retention_ns=raw_config.local_retention_hours * 60 * 60 * 1_000_000_000,
+            ),
         )
         raw_sample_uploader = RawAnalysisSampleUploader(
             raw_sample_capture.repository,
@@ -197,6 +202,14 @@ def build_edge_runtime(
         raw_sample_capture=raw_sample_capture,
         raw_sample_uploader=raw_sample_uploader,
         result_uploader=result_uploader,
+        diagnosis_window_assembler=(
+            DiagnosisWindowAssembler(
+                window_ms=config.v12.diagnosis_window_ms,
+                step_ms=config.v12.diagnosis_step_ms,
+                overlap_enabled=config.v12.diagnosis_overlap_enabled,
+            )
+            if config.v12.enabled else None
+        ),
         legacy_realtime_aggregation=config.v12.legacy_realtime_aggregation,
         cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,

@@ -51,6 +51,7 @@ def test_cloud_infer_v12_keeps_the_same_non_overlapping_window_manifest() -> Non
         "window_end_sequence": 3,
         "window_end_ns": 150_000_000,
         "contributing_packet_ids": ["packet_001", "packet_002", "packet_003"],
+        "sample_count": 9_600,
     })
     request["decision_round_id"] = build_decision_round_id(
         device_id="machine_01", task_id="task_001", window_start_sequence=1, window_end_sequence=3,
