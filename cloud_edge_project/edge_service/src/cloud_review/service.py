@@ -77,6 +77,7 @@ class CloudReviewService:
         scheduler_reporter: SchedulerUploadReporter | Any,
         edge_node_id: str,
         result_lifecycle: Any | None = None,
+        cloud_result_handler: Any | None = None,
         clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self.store = store
@@ -84,6 +85,7 @@ class CloudReviewService:
         self.scheduler_reporter = scheduler_reporter
         self.edge_node_id = edge_node_id
         self.result_lifecycle = result_lifecycle
+        self.cloud_result_handler = cloud_result_handler
         self.clock_ns = clock_ns
         self._decision_locks_guard = threading.Lock()
         self._decision_locks: dict[str, threading.Lock] = {}
@@ -133,8 +135,9 @@ class CloudReviewService:
                 cloud_result = parse_cloud_bearing_result(cloud_payload)
                 if cloud_result.review_id != review_id:
                     raise CloudUploadError("INVALID_CLOUD_RESPONSE", retryable=False)
-                if self.result_lifecycle is not None:
-                    self.result_lifecycle.apply_cloud_result(
+                handler = self.cloud_result_handler or self.result_lifecycle
+                if handler is not None:
+                    handler.apply_cloud_result(
                         cloud_result, accepted_at_ns=self.clock_ns()
                     )
                 self.store.save_decision(control, phase="CLOUD_SUCCEEDED", review_id=review_id)

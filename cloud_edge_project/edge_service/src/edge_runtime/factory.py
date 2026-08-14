@@ -30,6 +30,9 @@ from .mqtt import MqttIngress, MqttJsonPublisher
 from .service import EdgeRuntimeService
 from .packet_route_reporter import PacketRouteReporter
 from packet_routing_bridge import PacketRoutingBridge
+from device_decision import DeviceDecisionRoundRepository
+from result_lifecycle import BearingResultLifecycleManager, BearingResultRepository
+from .v12_flow import V12DecisionFlow
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class EdgeRuntimeAssembly:
     service: EdgeRuntimeService
     coordinator: EdgeRuntimeCoordinator
     window_review_store: WindowReviewStore
+    v12_flow: V12DecisionFlow | None
 
 
 def build_edge_runtime(
@@ -96,6 +100,14 @@ def build_edge_runtime(
                 transfer.packet_cloud_confidence_threshold
             ),
         )
+    v12_flow = None
+    if config.v12.enabled:
+        bearing_results = BearingResultRepository(config.v12.database_path)
+        v12_flow = V12DecisionFlow(
+            BearingResultLifecycleManager(bearing_results),
+            DeviceDecisionRoundRepository(config.v12.database_path),
+            on_device_result=lambda result: device_result_publisher.publish(result.as_dict()),
+        )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,
         ingress=ingress,
@@ -115,6 +127,10 @@ def build_edge_runtime(
             if cloud_review_store is not None
             else None
         ),
+        v12_flow=v12_flow,
+        legacy_realtime_aggregation=config.v12.legacy_realtime_aggregation,
+        cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
+        round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
         on_packet_route_error=on_packet_route_error,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
@@ -140,4 +156,5 @@ def build_edge_runtime(
         service=service,
         coordinator=coordinator,
         window_review_store=window_review_store,
+        v12_flow=v12_flow,
     )

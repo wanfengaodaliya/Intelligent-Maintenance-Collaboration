@@ -84,6 +84,23 @@ class BearingResultRepository:
             ).fetchall()
         return tuple(_deserialize(str(row["payload_json"])) for row in rows)
 
+    def list_waiting_cloud_due(
+        self, *, now_ns: int, cloud_now_timeout_ns: int
+    ) -> tuple[BearingDecisionResult, ...]:
+        if cloud_now_timeout_ns <= 0:
+            raise ValueError("cloud_now_timeout_ns must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM bearing_decision_result WHERE is_current=1"
+            ).fetchall()
+        return tuple(
+            result
+            for row in rows
+            if (result := _deserialize(str(row["payload_json"]))).lifecycle_state
+            is BearingLifecycleStatus.WAITING_CLOUD
+            and result.edge_accepted_at_ns + cloud_now_timeout_ns <= now_ns
+        )
+
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(

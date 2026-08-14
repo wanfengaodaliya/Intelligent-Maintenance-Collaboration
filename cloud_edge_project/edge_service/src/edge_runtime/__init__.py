@@ -6,6 +6,7 @@ from .config import (
     EdgeRuntimeConfig,
     MqttConfig,
     SchedulerConfig,
+    V12RuntimeConfig,
     WindowTransferConfig,
 )
 from .contracts import action_level_for
@@ -23,6 +24,7 @@ __all__ = [
     "MqttConfig",
     "PacketRouteErrorRecorder",
     "WindowTransferConfig",
+    "V12RuntimeConfig",
     "SchedulerConfig",
     "action_level_for",
     "build_edge_runtime",

@@ -260,6 +260,7 @@ cloud_review_service = CloudReviewService(
     cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
     scheduler_reporter=SchedulerUploadReporter(cloud_review_config.scheduler_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
     edge_node_id=EDGE_NODE_ID,
+    cloud_result_handler=runtime_assembly.v12_flow,
 )
 cloud_review_cleanup = CloudReviewCleanupWorker(
     cloud_review_store,

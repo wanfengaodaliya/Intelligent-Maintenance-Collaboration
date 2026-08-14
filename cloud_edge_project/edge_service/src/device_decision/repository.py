@@ -61,6 +61,19 @@ class DeviceDecisionRoundRepository:
             ).fetchone()
         return None if row is None else _row(row)
 
+    def list_open_due(self, *, now_ns: int, round_timeout_ns: int) -> tuple[dict, ...]:
+        if round_timeout_ns <= 0:
+            raise ValueError("round_timeout_ns must be positive")
+        deadline = now_ns - round_timeout_ns
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM device_decision_round
+                WHERE state='OPEN' AND opened_at_ns<=?
+                ORDER BY opened_at_ns, device_id, task_id, decision_round_id""",
+                (deadline,),
+            ).fetchall()
+        return tuple(_row(row) for row in rows)
+
     def close_round(
         self,
         *,

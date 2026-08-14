@@ -50,12 +50,23 @@ class WindowTransferConfig:
 
 
 @dataclass(frozen=True)
+class V12RuntimeConfig:
+    enabled: bool = True
+    database_path: Path = Path("data/edge_v12.db")
+    legacy_realtime_aggregation: bool = False
+    cloud_now_timeout_ms: int = 3_000
+    round_finalize_grace_ms: int = 500
+    round_timeout_ms: int = 3_500
+
+
+@dataclass(frozen=True)
 class EdgeRuntimeConfig:
     edge_node_id: str = "edge_01"
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
+    v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -92,6 +103,16 @@ class EdgeRuntimeConfig:
             control=ControlServerConfig(
                 host=env.get("EDGE_CONTROL_HOST", "0.0.0.0").strip(),
                 port=int(env.get("EDGE_CONTROL_PORT", "8011")),
+            ),
+            v12=V12RuntimeConfig(
+                enabled=env.get("EDGE_V12_ENABLED", "true").strip().lower() == "true",
+                database_path=Path(env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db")),
+                legacy_realtime_aggregation=(
+                    env.get("EDGE_LEGACY_REALTIME_AGGREGATION", "false").strip().lower() == "true"
+                ),
+                cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
+                round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
+                round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
             ),
             cloud_node_urls=cloud_node_urls,
         )
@@ -140,4 +161,10 @@ class EdgeRuntimeConfig:
             errors.append("window transfer warning limit must be below the hard limit")
         if transfer.reserved_free_bytes < 0 or transfer.dispatch_interval_seconds <= 0:
             errors.append("window transfer reserve and interval are invalid")
+        if self.v12.enabled and not str(self.v12.database_path).strip():
+            errors.append("v12.database_path must be non-empty")
+        if self.v12.cloud_now_timeout_ms <= 0 or self.v12.round_finalize_grace_ms < 0:
+            errors.append("v12 cloud-now timeout and finalize grace are invalid")
+        if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:
+            errors.append("v12.round_timeout_ms must cover cloud-now timeout plus finalize grace")
         return errors

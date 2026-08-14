@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from core.diagnosis_contracts import (
     BearingDecisionResult,
     BearingLifecycleStatus,
@@ -16,6 +18,10 @@ from .repository import BearingResultRepository
 class BearingResultLifecycleManager:
     def __init__(self, repository: BearingResultRepository) -> None:
         self._repository = repository
+
+    @property
+    def repository(self) -> BearingResultRepository:
+        return self._repository
 
     def apply_route(
         self, edge_result: EdgeBearingResult, route_decision: dict, *, accepted_at_ns: int
@@ -64,7 +70,7 @@ class BearingResultLifecycleManager:
         return self._repository.save_revision(draft)
 
     def apply_cloud_result(
-        self, cloud_result: CloudBearingResult, *, accepted_at_ns: int
+        self, cloud_result: CloudBearingResult, *, accepted_at_ns: int, round_open: bool = False
     ) -> BearingDecisionResult:
         current = self._repository.get_current(
             cloud_result.device_id,
@@ -92,7 +98,7 @@ class BearingResultLifecycleManager:
 
         lifecycle_state = (
             BearingLifecycleStatus.FINAL_CLOUD
-            if current.lifecycle_state is BearingLifecycleStatus.WAITING_CLOUD
+            if current.lifecycle_state is BearingLifecycleStatus.WAITING_CLOUD or round_open
             else BearingLifecycleStatus.LATE_CLOUD_CORRECTED
         )
         draft = BearingDecisionResult(
@@ -122,6 +128,27 @@ class BearingResultLifecycleManager:
             edge_accepted_at_ns=current.edge_accepted_at_ns,
         )
         return self._repository.save_revision(draft)
+
+    def promote_timed_out_cloud_now(self, result: BearingDecisionResult) -> BearingDecisionResult:
+        if result.lifecycle_state is not BearingLifecycleStatus.WAITING_CLOUD:
+            raise ValueError("only WAITING_CLOUD may become provisional")
+        current = self._repository.get_current(
+            result.device_id, result.task_id, result.decision_round_id, result.bearing_id
+        )
+        if current != result:
+            raise ValueError("waiting cloud result is no longer current")
+        return self._repository.save_revision(
+            replace(
+                result,
+                result_id="pending",
+                revision=1,
+                replaces_result_id=None,
+                lifecycle_state=BearingLifecycleStatus.PROVISIONAL,
+                decision_source="PROVISIONAL_EDGE",
+                review_status="PENDING_CLOUD",
+                degraded=True,
+            )
+        )
 
     @staticmethod
     def _validate_identity(edge_result: EdgeBearingResult, route_decision: dict) -> None:

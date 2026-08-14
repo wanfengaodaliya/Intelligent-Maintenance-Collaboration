@@ -5,7 +5,10 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
+from core.bearing_actions import action_for_grade
 from core.bearing_workflow_contracts import FINAL_EDGE, FinalPacketResult
+from core.diagnosis_contracts import EdgeBearingResult
+from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from edge_aggregation.workflow import BearingAggregationWorkflow
 from edge_aggregation.window_transfer import WindowReviewStore
 from edge_model.contracts import PacketExecutionCompleted
@@ -17,6 +20,7 @@ from packet_routing_bridge import PacketRoutingBridge
 
 from .contracts import action_level_for
 from .http import SchedulerReporter
+from .v12_flow import V12DecisionFlow
 
 
 class JsonPublisher(Protocol):
@@ -39,6 +43,10 @@ class EdgeRuntimeCoordinator:
         device_result_publisher: Optional[JsonPublisher] = None,
         window_review_store: Optional[WindowReviewStore] = None,
         packet_router: Optional[PacketRoutingBridge] = None,
+        v12_flow: Optional[V12DecisionFlow] = None,
+        legacy_realtime_aggregation: bool = False,
+        cloud_now_timeout_ns: int = 3_000_000_000,
+        round_timeout_ns: int = 3_500_000_000,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
         clock_ns=time.time_ns,
     ):
@@ -52,6 +60,10 @@ class EdgeRuntimeCoordinator:
         self.device_result_publisher = device_result_publisher
         self.window_review_store = window_review_store
         self.packet_router = packet_router
+        self.v12_flow = v12_flow
+        self.legacy_realtime_aggregation = legacy_realtime_aggregation
+        self.cloud_now_timeout_ns = cloud_now_timeout_ns
+        self.round_timeout_ns = round_timeout_ns
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
         self._clock_ns = clock_ns
         self._pending_aggregation: dict[
@@ -122,20 +134,36 @@ class EdgeRuntimeCoordinator:
         )
         if completion.edge is not None:
             self._model_versions.add(completion.edge.model_version)
-        if self.packet_router is not None:
-            self._route_packet(completion, raw_ref)
+        route_decision = self._route_packet(completion, raw_ref)
+        if self.v12_flow is not None and completion.edge is not None and route_decision is not None:
+            try:
+                raw_packet = self.cache.read(raw_ref) if raw_ref is not None else None
+                if raw_packet is None:
+                    raise ValueError("completed packet raw data is unavailable")
+                self.v12_flow.apply_edge_result(
+                    _edge_bearing_result(completion, raw_packet),
+                    route_decision,
+                    expected_bearing_ids=task.expected_bearing_ids,
+                    accepted_at_ns=self._clock_ns(),
+                )
+            except Exception as error:
+                self._report_v12_error(completion, error)
+            if not self.legacy_realtime_aggregation:
+                return
         self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
 
     def _route_packet(
         self,
         completion: PacketExecutionCompleted,
         raw_ref: Any,
-    ) -> None:
+    ) -> dict[str, Any] | None:
+        if self.packet_router is None:
+            return None
         try:
             raw_packet = self.cache.read(raw_ref) if raw_ref is not None else None
             if raw_packet is None:
                 raise ValueError("completed packet raw data is unavailable")
-            self.packet_router.route(raw_packet, completion)
+            return self.packet_router.route(raw_packet, completion)
         except Exception as error:
             record = {
                 "stage": "packet_route",
@@ -153,6 +181,25 @@ class EdgeRuntimeCoordinator:
                 self.on_packet_route_error(record)
             except Exception:
                 pass
+            return None
+
+    def _report_v12_error(self, completion: PacketExecutionCompleted, error: Exception) -> None:
+        record = {
+            "stage": "v12_decision_flow",
+            "device_id": completion.device_id,
+            "task_id": completion.task_id,
+            "bearing_id": completion.bearing_id,
+            "sender_id": completion.sender_id,
+            "packet_id": completion.packet_id,
+            "sequence_number": completion.sequence_number,
+            "error_code": getattr(error, "code", type(error).__name__),
+            "message": str(error),
+            "action": "raw_packet_retained_for_replay",
+        }
+        try:
+            self.on_packet_route_error(record)
+        except Exception:
+            pass
 
     def _aggregate_completion(
         self,
@@ -222,6 +269,14 @@ class EdgeRuntimeCoordinator:
 
     def report_node_status(self) -> None:
         self._flush_aggregation()
+        if self.v12_flow is not None:
+            now = self._clock_ns()
+            self.v12_flow.promote_cloud_now_timeouts(
+                now_ns=now, cloud_now_timeout_ns=self.cloud_now_timeout_ns
+            )
+            self.v12_flow.finalize_timeouts(
+                now_ns=now, round_timeout_ns=self.round_timeout_ns
+            )
         self.scheduler.report_status(self.node_status())
 
     def _flush_aggregation(self) -> None:
@@ -269,4 +324,53 @@ def _result_id(value: PacketExecutionCompleted, version: int) -> str:
         value.bearing_id,
         value.packet_id,
         version,
+    )
+
+
+def _edge_bearing_result(
+    completion: PacketExecutionCompleted, raw_packet: Mapping[str, Any]
+) -> EdgeBearingResult:
+    if completion.edge is None:
+        raise ValueError("edge bearing result requires a successful edge model output")
+    end_ns = raw_packet.get("end_generate_timestamp_ns")
+    if isinstance(end_ns, bool) or not isinstance(end_ns, int) or end_ns <= 0:
+        raise ValueError("raw packet requires end_generate_timestamp_ns")
+    start_ns = max(0, end_ns - 50_000_000)
+    window_id = build_diagnosis_window_id(
+        device_id=completion.device_id,
+        task_id=completion.task_id,
+        bearing_id=completion.bearing_id,
+        sender_id=completion.sender_id,
+        window_start_sequence=completion.sequence_number,
+        window_end_sequence=completion.sequence_number,
+    )
+    action_grade = action_level_for(
+        completion.edge.edge_result, completion.edge.edge_risk_level
+    )
+    return EdgeBearingResult(
+        result_id=f"edge_{window_id}_{completion.edge.model_version}",
+        device_id=completion.device_id,
+        task_id=completion.task_id,
+        bearing_id=completion.bearing_id,
+        sender_id=completion.sender_id,
+        decision_round_id=build_decision_round_id(
+            device_id=completion.device_id,
+            task_id=completion.task_id,
+            window_start_sequence=completion.sequence_number,
+            window_end_sequence=completion.sequence_number,
+        ),
+        diagnosis_window_id=window_id,
+        window_start_sequence=completion.sequence_number,
+        window_end_sequence=completion.sequence_number,
+        window_start_ns=start_ns,
+        window_end_ns=end_ns,
+        contributing_packet_ids=(completion.packet_id,),
+        bearing_state="abnormal" if completion.edge.edge_result == "fault" else completion.edge.edge_result,
+        confidence=completion.edge.confidence,
+        data_quality_score=completion.data_quality_score,
+        risk_level=completion.edge.edge_risk_level,
+        action_grade=action_grade,
+        recommended_action=action_for_grade(action_grade),
+        model_version=completion.edge.model_version,
+        created_at_ns=completion.finished_at_ns,
     )

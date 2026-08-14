@@ -200,6 +200,14 @@ class DeviceDecisionResult:
         _validate_score("confidence", self.confidence)
         _validate_score("data_quality_score", self.data_quality_score)
 
+    def as_dict(self) -> dict:
+        from dataclasses import asdict
+
+        value = asdict(self)
+        value["status"] = self.status.value
+        value["closure_reason"] = self.closure_reason.value
+        return value
+
 
 def _validate_identity(result: EdgeBearingResult | BearingDecisionResult) -> None:
     for field in (
