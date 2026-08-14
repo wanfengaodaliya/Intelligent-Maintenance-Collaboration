@@ -307,6 +307,7 @@ class DeferredDeviceArbitrationRepository:
                     device_id TEXT NOT NULL,
                     task_id TEXT NOT NULL,
                     summary_module_id TEXT NOT NULL,
+                    edge_node_id TEXT,
                     route TEXT NOT NULL,
                     reason_codes_json TEXT NOT NULL,
                     defer_reason TEXT,
@@ -344,6 +345,7 @@ class DeferredDeviceArbitrationRepository:
                 "bearing_results_json": "TEXT",
                 "comparison_json": "TEXT",
                 "local_arbitration_supported": "INTEGER",
+                "edge_node_id": "TEXT",
             }
             for column, definition in migrations.items():
                 if column not in existing_columns:
@@ -357,11 +359,12 @@ class DeferredDeviceArbitrationRepository:
         if item["decision_round_id"] is None:
             return
         connection.execute(
-            "UPDATE deferred_device_arbitration_task SET conflict_id=?,"
+            "UPDATE deferred_device_arbitration_task SET edge_node_id=?,conflict_id=?,"
             "decision_round_id=?,device_result_revision=?,"
             "bearing_result_ids_json=?,bearing_results_json=?,comparison_json=?,"
             "local_arbitration_supported=? WHERE decision_id=?",
             (
+                item["edge_node_id"],
                 item["conflict_id"],
                 item["decision_round_id"],
                 item["device_result_revision"],
@@ -389,6 +392,7 @@ def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
             "device_id": _text(item.get("device_id"), "device_id"),
             "task_id": _text(item.get("task_id"), "task_id"),
             "summary_module_id": _text(item.get("summary_module_id"), "summary_module_id"),
+            "edge_node_id": _optional_text(item.get("edge_node_id"), "edge_node_id"),
             "route": route,
             "reason_codes": _string_list(item.get("reason_codes"), "reason_codes"),
             "defer_reason": _optional_text(item.get("defer_reason"), "defer_reason"),
@@ -448,6 +452,7 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
         "device_id": row["device_id"],
         "task_id": row["task_id"],
         "summary_module_id": row["summary_module_id"],
+        "edge_node_id": row["edge_node_id"],
         "route": row["route"],
         "reason_codes": json.loads(row["reason_codes_json"]),
         "defer_reason": row["defer_reason"],

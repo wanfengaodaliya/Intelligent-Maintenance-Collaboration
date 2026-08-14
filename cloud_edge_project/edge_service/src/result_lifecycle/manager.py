@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 
 from core.diagnosis_contracts import (
@@ -70,13 +71,19 @@ class BearingResultLifecycleManager:
         return self._repository.save_revision(draft)
 
     def apply_cloud_result(
-        self, cloud_result: CloudBearingResult, *, accepted_at_ns: int, round_open: bool = False
+        self,
+        cloud_result: CloudBearingResult,
+        *,
+        accepted_at_ns: int,
+        round_open: bool | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> BearingDecisionResult:
         current = self._repository.get_current(
             cloud_result.device_id,
             cloud_result.task_id,
             cloud_result.decision_round_id,
             cloud_result.bearing_id,
+            connection=connection,
         )
         if current is None:
             raise ValueError("cloud result has no matching edge bearing decision")
@@ -96,9 +103,14 @@ class BearingResultLifecycleManager:
         }:
             raise ValueError("cloud result cannot replace a final bearing decision")
 
+        accepted_before_round_close = (
+            current.lifecycle_state is BearingLifecycleStatus.WAITING_CLOUD
+            if round_open is None
+            else round_open
+        )
         lifecycle_state = (
             BearingLifecycleStatus.FINAL_CLOUD
-            if current.lifecycle_state is BearingLifecycleStatus.WAITING_CLOUD or round_open
+            if accepted_before_round_close
             else BearingLifecycleStatus.LATE_CLOUD_CORRECTED
         )
         draft = BearingDecisionResult(
@@ -127,7 +139,7 @@ class BearingResultLifecycleManager:
             created_at_ns=cloud_result.created_at_ns,
             edge_accepted_at_ns=current.edge_accepted_at_ns,
         )
-        return self._repository.save_revision(draft)
+        return self._repository.save_revision(draft, connection=connection)
 
     def promote_timed_out_cloud_now(self, result: BearingDecisionResult) -> BearingDecisionResult:
         if result.lifecycle_state is not BearingLifecycleStatus.WAITING_CLOUD:

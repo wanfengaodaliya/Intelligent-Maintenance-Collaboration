@@ -34,6 +34,7 @@ class DeviceArbitrationService:
                 "device_id": decision["device_id"],
                 "task_id": decision["task_id"],
                 "summary_module_id": decision["target"]["summary_module_id"],
+                "edge_node_id": decision["callback"]["edge_node_id"],
                 "route": decision["route"],
                 "reason_codes": decision["reason_codes"],
                 "defer_reason": decision["defer_reason"],

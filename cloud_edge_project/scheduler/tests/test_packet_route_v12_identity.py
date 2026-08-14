@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from scheduler.deferred_cloud_repository import DeferredCloudRepository
+from scheduler.deferred_dispatcher import DeferredCloudDispatcher
 from scheduler.packet_router import PacketRouter
 from scheduler.packet_service import PacketRoutingService
 
@@ -27,6 +28,23 @@ class _ReadyRegistry:
             loss_rate=0.0,
             link_id="link-1",
         )
+
+
+class _UnavailableRegistry:
+    def snapshot(self, *_args, **_kwargs):
+        return None
+
+    def link_snapshot(self, *_args, **_kwargs):
+        return None
+
+
+class _DispatchClient:
+    def __init__(self) -> None:
+        self.payloads: list[dict] = []
+
+    def dispatch(self, _base_url: str, payload: dict) -> dict:
+        self.payloads.append(payload)
+        return {"accepted": True}
 
 
 def _packet_route_request() -> dict:
@@ -74,6 +92,10 @@ def _packet_route_request() -> dict:
 
 
 def _router() -> PacketRouter:
+    return _router_with_registry(_ReadyRegistry())
+
+
+def _router_with_registry(registry) -> PacketRouter:
     return PacketRouter(
         assignment_lookup=lambda _task_id: {
             "task_id": "task_001",
@@ -83,7 +105,7 @@ def _router() -> PacketRouter:
             "edge_node_id": "edge_01",
             "assignment_status": "ASSIGNED",
         },
-        cloud_registry=_ReadyRegistry(),
+        cloud_registry=registry,
         clock_ns=lambda: 3,
     )
 
@@ -122,3 +144,33 @@ def test_deferred_task_persists_v12_identity(tmp_path) -> None:
     assert task["diagnosis_window_id"] == request["diagnosis_window_id"]
     assert task["window_start_sequence"] == 1
     assert task["window_end_sequence"] == 1
+
+
+def test_deferred_packet_route_rechecks_network_and_recovers_identity(tmp_path) -> None:
+    service = PacketRoutingService(
+        _router_with_registry(_UnavailableRegistry()),
+        DeferredCloudRepository(tmp_path / "scheduler.db"),
+    )
+    decision = service.route(_packet_route_request())
+    assert decision["route"] == "DEFER"
+    client = _DispatchClient()
+    blocked = DeferredCloudDispatcher(
+        service.repository,
+        edge_url_lookup=lambda _edge_id: "http://edge.example",
+        client=client,
+        eligibility_check=lambda _task, _now: (False, "NETWORK_UNAVAILABLE"),
+        clock_ns=lambda: 3,
+    ).dispatch_once(now_ns=3)
+    recovered = DeferredCloudDispatcher(
+        service.repository,
+        edge_url_lookup=lambda _edge_id: "http://edge.example",
+        client=client,
+        eligibility_check=lambda _task, _now: (True, None),
+        clock_ns=lambda: 5_000_000_003,
+    ).dispatch_once(now_ns=5_000_000_003)
+
+    assert blocked is not None and blocked["state"] == "PENDING"
+    assert blocked["last_reason_code"] == "NETWORK_UNAVAILABLE"
+    assert recovered is not None and recovered["state"] == "WAITING_RESULT"
+    assert client.payloads[0]["decision_round_id"] == decision["decision_round_id"]
+    assert client.payloads[0]["diagnosis_window_id"] == decision["diagnosis_window_id"]

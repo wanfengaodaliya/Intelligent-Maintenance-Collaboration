@@ -44,6 +44,23 @@ class CloudArbitrationDispatchClient:
 SummaryDispatchClient = CloudArbitrationDispatchClient
 
 
+class EdgeArbitrationResultClient:
+    def __init__(self, *, timeout_seconds: float = 3.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    def deliver(self, base_url: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        response = requests.post(
+            base_url.rstrip("/") + "/edge/device-arbitration-results",
+            json=dict(payload),
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("edge arbitration response must be an object")
+        return body
+
+
 class DeferredDeviceArbitrationDispatcher:
     def __init__(
         self,
@@ -52,6 +69,8 @@ class DeferredDeviceArbitrationDispatcher:
         cloud_url_lookup: Callable[[str], str] | None = None,
         summary_url_lookup: Callable[[str], str] | None = None,
         client: CloudArbitrationDispatchClient | Any | None = None,
+        edge_url_lookup: Callable[[str], str] | None = None,
+        edge_result_client: EdgeArbitrationResultClient | Any | None = None,
         eligibility_check: Callable[
             [Mapping[str, Any], int], tuple[bool, str | None]
         ] | None = None,
@@ -62,6 +81,8 @@ class DeferredDeviceArbitrationDispatcher:
         if self.cloud_url_lookup is None:
             raise ValueError("cloud_url_lookup is required")
         self.client = client or SummaryDispatchClient()
+        self.edge_url_lookup = edge_url_lookup
+        self.edge_result_client = edge_result_client or EdgeArbitrationResultClient()
         self.eligibility_check = eligibility_check
         self.clock_ns = clock_ns
         self._stop = threading.Event()
@@ -95,6 +116,23 @@ class DeferredDeviceArbitrationDispatcher:
         if "decision_round_id" in task and isinstance(response, Mapping):
             arbitration_id = response.get("arbitration_id")
             if isinstance(arbitration_id, str) and arbitration_id.strip():
+                if task["edge_node_id"] is not None:
+                    if self.edge_url_lookup is None:
+                        return self.repository.schedule_retry(
+                            task["decision_id"],
+                            reason_code="EDGE_CALLBACK_NOT_CONFIGURED",
+                            now_ns=now,
+                        )
+                    try:
+                        self.edge_result_client.deliver(
+                            self.edge_url_lookup(task["edge_node_id"]), response
+                        )
+                    except Exception as error:
+                        return self.repository.schedule_retry(
+                            task["decision_id"],
+                            reason_code=_edge_callback_reason(error),
+                            now_ns=now,
+                        )
                 return self.repository.save_arbitration_result(
                     {
                         "decision_id": task["decision_id"],
@@ -140,6 +178,14 @@ def _dispatch_reason(error: Exception) -> str:
     if isinstance(error, requests.RequestException):
         return "CLOUD_ARBITRATION_UNREACHABLE"
     return "CLOUD_ARBITRATION_DISPATCH_FAILED"
+
+
+def _edge_callback_reason(error: Exception) -> str:
+    if isinstance(error, requests.Timeout):
+        return "EDGE_ARBITRATION_CALLBACK_TIMEOUT"
+    if isinstance(error, requests.RequestException):
+        return "EDGE_ARBITRATION_CALLBACK_UNREACHABLE"
+    return "EDGE_ARBITRATION_CALLBACK_FAILED"
 
 
 def _cloud_arbitration_payload(task: Mapping[str, Any]) -> dict[str, Any]:

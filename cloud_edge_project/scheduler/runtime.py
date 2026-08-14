@@ -83,6 +83,7 @@ class SchedulerRuntime:
             self.deferred_device_repository,
             cloud_url_lookup=lambda _cloud_node_id: service_url("cloud", self.config),
             client=device_dispatcher_client,
+            edge_url_lookup=self.node_registry.control_url,
             eligibility_check=self.device_router.cloud_delivery_eligibility,
         )
         self._started = False

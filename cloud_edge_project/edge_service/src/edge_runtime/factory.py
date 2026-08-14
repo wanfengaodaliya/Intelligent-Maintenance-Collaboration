@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -28,7 +29,7 @@ from .http import (
 )
 from .mqtt import MqttIngress, MqttJsonPublisher
 from .service import EdgeRuntimeService
-from .packet_route_reporter import PacketRouteReporter
+from .packet_route_reporter import DeviceArbitrationReporter, PacketRouteReporter
 from packet_routing_bridge import PacketRoutingBridge
 from device_decision import DeviceDecisionRoundRepository
 from result_lifecycle import BearingResultLifecycleManager, BearingResultRepository
@@ -70,6 +71,7 @@ def build_edge_runtime(
     )
     scheduler_client = scheduler.client
     packet_route_reporter = PacketRouteReporter(scheduler_client.post)
+    device_arbitration_reporter = DeviceArbitrationReporter(scheduler_client.post)
     mqtt_ingress = MqttIngress(config.mqtt, lambda _: None)
     device_result_publisher = MqttJsonPublisher(
         mqtt_ingress.client,
@@ -103,10 +105,18 @@ def build_edge_runtime(
     v12_flow = None
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
+
+        def on_device_result(result):
+            device_result_publisher.publish(result.as_dict())
+
         v12_flow = V12DecisionFlow(
             BearingResultLifecycleManager(bearing_results),
             DeviceDecisionRoundRepository(config.v12.database_path),
-            on_device_result=lambda result: device_result_publisher.publish(result.as_dict()),
+            round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
+            on_device_result=on_device_result,
+            on_device_conflict=lambda payload: device_arbitration_reporter.report(
+                {**payload, "edge_node_id": config.edge_node_id}
+            ),
         )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,
@@ -134,7 +144,16 @@ def build_edge_runtime(
         on_packet_route_error=on_packet_route_error,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
-    control_application = EdgeControlApplication(ingress)
+    control_application = EdgeControlApplication(
+        ingress,
+        on_device_arbitration_result=(
+            None
+            if v12_flow is None
+            else lambda payload: v12_flow.apply_cloud_arbitration_result(
+                payload, accepted_at_ns=time.time_ns()
+            )
+        ),
+    )
     heartbeat = (
         HeartbeatLoop(
             config.scheduler.heartbeat_interval_seconds,

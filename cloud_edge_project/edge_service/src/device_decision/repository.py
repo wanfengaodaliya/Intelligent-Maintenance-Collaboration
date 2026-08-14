@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -12,6 +13,9 @@ from core.diagnosis_contracts import (
     DeviceDecisionStatus,
     RoundClosureReason,
 )
+
+
+DEFAULT_ROUND_TIMEOUT_NS = 3_500_000_000
 
 
 class DeviceDecisionRoundRepository:
@@ -27,10 +31,18 @@ class DeviceDecisionRoundRepository:
         decision_round_id: str,
         expected_bearing_ids: tuple[str, ...],
         opened_at_ns: int,
+        deadline_at_ns: int | None = None,
     ) -> dict:
         if not expected_bearing_ids or len(set(expected_bearing_ids)) != len(expected_bearing_ids):
             raise ValueError("expected_bearing_ids must be non-empty and unique")
         expected_json = json.dumps(expected_bearing_ids, separators=(",", ":"))
+        deadline = (
+            opened_at_ns + DEFAULT_ROUND_TIMEOUT_NS
+            if deadline_at_ns is None
+            else deadline_at_ns
+        )
+        if deadline <= opened_at_ns:
+            raise ValueError("deadline_at_ns must be after opened_at_ns")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -41,9 +53,16 @@ class DeviceDecisionRoundRepository:
                 connection.execute(
                     """INSERT INTO device_decision_round(
                     device_id,task_id,decision_round_id,expected_bearing_ids_json,state,
-                    closure_reason,opened_at_ns,closed_at_ns,version
-                    ) VALUES (?,?,?,?, 'OPEN', NULL, ?, NULL, 1)""",
-                    (device_id, task_id, decision_round_id, expected_json, opened_at_ns),
+                    closure_reason,opened_at_ns,deadline_at_ns,closed_at_ns,version
+                    ) VALUES (?,?,?,?, 'OPEN', NULL, ?, ?, NULL, 1)""",
+                    (
+                        device_id,
+                        task_id,
+                        decision_round_id,
+                        expected_json,
+                        opened_at_ns,
+                        deadline,
+                    ),
                 )
                 row = connection.execute(
                     "SELECT * FROM device_decision_round WHERE device_id=? AND task_id=? AND decision_round_id=?",
@@ -53,24 +72,28 @@ class DeviceDecisionRoundRepository:
                 raise ValueError("expected_bearing_ids conflict for decision round")
         return _row(row)
 
-    def get_round(self, device_id: str, task_id: str, decision_round_id: str) -> dict | None:
-        with self._connect() as connection:
-            row = connection.execute(
+    def get_round(
+        self,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict | None:
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            row = selected.execute(
                 "SELECT * FROM device_decision_round WHERE device_id=? AND task_id=? AND decision_round_id=?",
                 (device_id, task_id, decision_round_id),
             ).fetchone()
         return None if row is None else _row(row)
 
-    def list_open_due(self, *, now_ns: int, round_timeout_ns: int) -> tuple[dict, ...]:
-        if round_timeout_ns <= 0:
-            raise ValueError("round_timeout_ns must be positive")
-        deadline = now_ns - round_timeout_ns
+    def list_open_due(self, *, now_ns: int) -> tuple[dict, ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM device_decision_round
-                WHERE state='OPEN' AND opened_at_ns<=?
-                ORDER BY opened_at_ns, device_id, task_id, decision_round_id""",
-                (deadline,),
+                WHERE state='OPEN' AND deadline_at_ns<=?
+                ORDER BY deadline_at_ns, device_id, task_id, decision_round_id""",
+                (now_ns,),
             ).fetchall()
         return tuple(_row(row) for row in rows)
 
@@ -93,6 +116,66 @@ class DeviceDecisionRoundRepository:
                 (closure_reason.value, closed_at_ns, device_id, task_id, decision_round_id, expected_version),
             ).rowcount
         return changed == 1
+
+    def close_round_and_save_initial_result(
+        self,
+        draft: DeviceDecisionResult,
+        *,
+        expected_version: int,
+        connection: sqlite3.Connection | None = None,
+    ) -> DeviceDecisionResult | None:
+        """Atomically win round closure and persist its first device result."""
+        if draft.revision != 1 or draft.replaces_result_id is not None:
+            raise ValueError("initial device result must be an unsuperseded revision 1 draft")
+        result = replace(
+            draft,
+            result_id=f"device_{draft.decision_round_id}_r1",
+            revision=1,
+            replaces_result_id=None,
+        )
+        own_connection = connection is None
+        with (self._connect() if own_connection else nullcontext(connection)) as selected:
+            if own_connection:
+                selected.execute("BEGIN IMMEDIATE")
+            changed = selected.execute(
+                """UPDATE device_decision_round
+                SET state='CLOSED', closure_reason=?, closed_at_ns=?,
+                    current_device_result_id=?, version=version+1
+                WHERE device_id=? AND task_id=? AND decision_round_id=?
+                  AND state='OPEN' AND version=?""",
+                (
+                    result.closure_reason.value,
+                    result.closed_at_ns,
+                    result.result_id,
+                    result.device_id,
+                    result.task_id,
+                    result.decision_round_id,
+                    expected_version,
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            selected.execute(
+                """INSERT INTO device_decision_result(
+                result_id,device_id,task_id,decision_round_id,revision,is_current,payload_json
+                ) VALUES (?,?,?,?,?,1,?)""",
+                (
+                    result.result_id,
+                    result.device_id,
+                    result.task_id,
+                    result.decision_round_id,
+                    result.revision,
+                    _serialize_result(result),
+                ),
+            )
+        return result
+
+    @contextmanager
+    def transaction(self):
+        """Open one immediate transaction shared by round and bearing repositories."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
 
     def save_revision(self, draft: DeviceDecisionResult) -> DeviceDecisionResult:
         with self._connect() as connection:
@@ -121,6 +204,16 @@ class DeviceDecisionRoundRepository:
                 (result.result_id, result.device_id, result.task_id, result.decision_round_id,
                  result.revision, 1, _serialize_result(result)),
             )
+            connection.execute(
+                """UPDATE device_decision_round SET current_device_result_id=?
+                WHERE device_id=? AND task_id=? AND decision_round_id=?""",
+                (
+                    result.result_id,
+                    result.device_id,
+                    result.task_id,
+                    result.decision_round_id,
+                ),
+            )
         return result
 
     def get_current_result(
@@ -140,10 +233,35 @@ class DeviceDecisionRoundRepository:
                 """CREATE TABLE IF NOT EXISTS device_decision_round(
                 device_id TEXT NOT NULL, task_id TEXT NOT NULL, decision_round_id TEXT NOT NULL,
                 expected_bearing_ids_json TEXT NOT NULL, state TEXT NOT NULL,
-                closure_reason TEXT, opened_at_ns INTEGER NOT NULL, closed_at_ns INTEGER,
-                version INTEGER NOT NULL,
+                closure_reason TEXT, opened_at_ns INTEGER NOT NULL,
+                deadline_at_ns INTEGER NOT NULL, closed_at_ns INTEGER,
+                version INTEGER NOT NULL, current_device_result_id TEXT,
                 PRIMARY KEY(device_id, task_id, decision_round_id)
                 )"""
+            )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(device_decision_round)"
+                ).fetchall()
+            }
+            if "current_device_result_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE device_decision_round "
+                    "ADD COLUMN current_device_result_id TEXT"
+                )
+            if "deadline_at_ns" not in columns:
+                connection.execute(
+                    "ALTER TABLE device_decision_round ADD COLUMN deadline_at_ns INTEGER"
+                )
+                connection.execute(
+                    "UPDATE device_decision_round SET deadline_at_ns="
+                    "opened_at_ns+? WHERE deadline_at_ns IS NULL",
+                    (DEFAULT_ROUND_TIMEOUT_NS,),
+                )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_device_round_deadline
+                ON device_decision_round(state,deadline_at_ns)"""
             )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS device_decision_result(

@@ -38,6 +38,15 @@ class _Client:
         return {"arbitration_id": "arbitration_01"}
 
 
+class _EdgeResultClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def deliver(self, base_url: str, payload: dict) -> dict:
+        self.calls.append((base_url, payload))
+        return {"accepted": True}
+
+
 def _request() -> dict:
     return {
         "device_id": "machine_01",
@@ -169,3 +178,46 @@ def test_deferred_device_arbitration_rechecks_eligibility_before_recovery(tmp_pa
     assert recovered["state"] == "SUCCEEDED"
     assert client.calls[0][1]["conflict_id"] == decision["conflict_id"]
     assert client.calls[0][1]["decision_round_id"] == decision["decision_round_id"]
+
+
+def test_deferred_arbitration_returns_cloud_result_to_originating_edge(tmp_path) -> None:
+    request = _request() | {"edge_node_id": "edge_01"}
+    service = _service(tmp_path)
+    service.route(request)
+    edge_client = _EdgeResultClient()
+    dispatcher = DeferredDeviceArbitrationDispatcher(
+        service.repository,
+        cloud_url_lookup=lambda _cloud_id: "http://cloud.example",
+        edge_url_lookup=lambda edge_node_id: f"http://{edge_node_id}.example",
+        client=_Client(),
+        edge_result_client=edge_client,
+        clock_ns=lambda: 3,
+    )
+
+    dispatched = dispatcher.dispatch_once(now_ns=3)
+
+    assert dispatched is not None and dispatched["state"] == "SUCCEEDED"
+    assert edge_client.calls == [
+        ("http://edge_01.example", {"arbitration_id": "arbitration_01"})
+    ]
+
+
+def test_deferred_device_arbitration_recovers_after_scheduler_restart(tmp_path) -> None:
+    database_path = tmp_path / "scheduler.db"
+    service = DeviceArbitrationService(
+        DeviceArbitrationRouter(cloud_registry=_ReadyRegistry(), clock_ns=lambda: 3),
+        DeferredDeviceArbitrationRepository(database_path),
+    )
+    decision = service.route(_request())
+    claimed = service.repository.claim_due(now_ns=3)
+    assert claimed is not None and claimed["state"] == "DISPATCHING"
+    del service
+
+    recovered_repository = DeferredDeviceArbitrationRepository(database_path)
+    assert recovered_repository.recover_non_terminal(now_ns=4) == 1
+    recovered = recovered_repository.get(decision["decision_id"])
+
+    assert recovered is not None
+    assert recovered["state"] == "PENDING"
+    assert recovered["last_reason_code"] == "SCHEDULER_RESTART"
+    assert recovered["decision_round_id"] == "round_machine_01_task_001_0001"

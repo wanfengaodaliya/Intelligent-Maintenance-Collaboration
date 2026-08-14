@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -15,11 +16,18 @@ class BearingResultRepository:
         self._database_path = str(database_path)
         self._initialize()
 
-    def save_revision(self, draft: BearingDecisionResult) -> BearingDecisionResult:
+    def save_revision(
+        self,
+        draft: BearingDecisionResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> BearingDecisionResult:
         """Atomically supersede the current result for one bearing/round."""
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
+        own_connection = connection is None
+        with (self._connect() if own_connection else nullcontext(connection)) as selected:
+            if own_connection:
+                selected.execute("BEGIN IMMEDIATE")
+            row = selected.execute(
                 """
                 SELECT result_id, revision FROM bearing_decision_result
                 WHERE device_id = ? AND task_id = ? AND decision_round_id = ?
@@ -35,11 +43,11 @@ class BearingResultRepository:
                 replaces_result_id=None if row is None else str(row["result_id"]),
             )
             if row is not None:
-                connection.execute(
+                selected.execute(
                     "UPDATE bearing_decision_result SET is_current = 0 WHERE result_id = ?",
                     (row["result_id"],),
                 )
-            connection.execute(
+            selected.execute(
                 """
                 INSERT INTO bearing_decision_result (
                     result_id, device_id, task_id, bearing_id, decision_round_id,
@@ -59,10 +67,16 @@ class BearingResultRepository:
             return result
 
     def get_current(
-        self, device_id: str, task_id: str, decision_round_id: str, bearing_id: str
+        self,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        bearing_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> BearingDecisionResult | None:
-        with self._connect() as connection:
-            row = connection.execute(
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            row = selected.execute(
                 """
                 SELECT payload_json FROM bearing_decision_result
                 WHERE device_id = ? AND task_id = ? AND decision_round_id = ?
@@ -73,10 +87,15 @@ class BearingResultRepository:
         return None if row is None else _deserialize(str(row["payload_json"]))
 
     def list_current_round(
-        self, device_id: str, task_id: str, decision_round_id: str
+        self,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> tuple[BearingDecisionResult, ...]:
-        with self._connect() as connection:
-            rows = connection.execute(
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            rows = selected.execute(
                 """SELECT payload_json FROM bearing_decision_result
                 WHERE device_id=? AND task_id=? AND decision_round_id=? AND is_current=1
                 ORDER BY bearing_id""",

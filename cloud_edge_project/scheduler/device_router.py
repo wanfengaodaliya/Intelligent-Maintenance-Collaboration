@@ -210,6 +210,14 @@ class DeviceArbitrationRouter:
                 "cloud_node_id": self.config.default_cloud_node_id if needs_cloud else None,
                 "endpoint": self.config.cloud_endpoint if needs_cloud else None,
             },
+            "callback": {
+                "edge_node_id": request["edge_node_id"] if needs_cloud else None,
+                "endpoint": (
+                    "/edge/device-arbitration-results"
+                    if needs_cloud and request["edge_node_id"]
+                    else None
+                ),
+            },
             "retry_required": deferred,
             "created_at_ns": now_ns,
         }
@@ -281,6 +289,7 @@ def _validate_device_request(
                 item.get("summary_module_id", default_summary_module_id),
                 "summary_module_id",
             ),
+            "edge_node_id": _optional_text(item.get("edge_node_id"), "edge_node_id"),
             "expected_bearing_count": expected,
             "received_bearing_count": received,
             "bearing_results": bearings,
@@ -443,6 +452,10 @@ def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value.strip()
+
+
+def _optional_text(value: Any, field: str) -> str | None:
+    return None if value is None else _text(value, field)
 
 
 def _enum(value: Any, field: str, allowed: set[str]) -> str:

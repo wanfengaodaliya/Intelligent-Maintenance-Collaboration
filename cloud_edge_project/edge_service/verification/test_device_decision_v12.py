@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 from core.diagnosis_contracts import (
     BearingDecisionResult,
     BearingLifecycleStatus,
@@ -82,6 +85,44 @@ def test_round_repository_grants_close_authority_once_via_versioned_cas(tmp_path
     assert closed is not None
     assert closed["state"] == "CLOSED"
     assert closed["closure_reason"] == "ROUND_TIMEOUT"
+
+
+def test_round_close_and_initial_result_commit_atomically_once(tmp_path) -> None:
+    repository = DeviceDecisionRoundRepository(tmp_path / "edge-results.db")
+    opened = repository.register_round(
+        device_id="machine_01",
+        task_id="task_001",
+        decision_round_id="round_01",
+        expected_bearing_ids=("bearing_a", "bearing_b"),
+        opened_at_ns=1,
+    )
+    draft = aggregate_device_round(
+        (
+            _bearing("bearing_a", grade=0, confidence=.9, quality=.9),
+            _bearing("bearing_b", grade=2, confidence=.8, quality=.8),
+        ),
+        expected_bearing_ids=("bearing_a", "bearing_b"),
+        closure_reason=RoundClosureReason.ALL_BEARINGS_FINAL,
+        closed_at_ns=10,
+    )
+    barrier = threading.Barrier(2)
+
+    def close_once():
+        barrier.wait()
+        return repository.close_round_and_save_initial_result(
+            draft, expected_version=opened["version"]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: close_once(), range(2)))
+
+    saved = [result for result in results if result is not None]
+    assert len(saved) == 1
+    assert saved[0].revision == 1
+    closed = repository.get_round("machine_01", "task_001", "round_01")
+    assert closed is not None
+    assert closed["current_device_result_id"] == saved[0].result_id
+    assert repository.get_current_result("machine_01", "task_001", "round_01") == saved[0]
 
 
 def test_closed_provisional_round_can_create_historical_correction_but_timeout_cannot(tmp_path) -> None:
