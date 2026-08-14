@@ -27,6 +27,8 @@ from common.schemas import (
 if __package__ in {None, ""}:
     from scheduler.assignment_scheduler import AssignmentError
     from scheduler.deferred_cloud_repository import DeferredCloudError
+    from scheduler.deferred_device_repository import DeferredDeviceArbitrationError
+    from scheduler.device_router import DeviceArbitrationRouteError
     from scheduler.node_registry import RegistryError
     from scheduler.packet_router import PacketRouteError
     from scheduler.runtime import SchedulerRuntime
@@ -34,6 +36,8 @@ if __package__ in {None, ""}:
 else:
     from .assignment_scheduler import AssignmentError
     from .deferred_cloud_repository import DeferredCloudError
+    from .deferred_device_repository import DeferredDeviceArbitrationError
+    from .device_router import DeviceArbitrationRouteError
     from .node_registry import RegistryError
     from .packet_router import PacketRouteError
     from .runtime import SchedulerRuntime
@@ -88,6 +92,14 @@ def route_packet(request: Mapping[str, Any]) -> dict[str, Any]:
 
 def save_cloud_upload_result(request: Mapping[str, Any]) -> dict[str, Any]:
     return default_runtime.save_cloud_upload_result(request)
+
+
+def route_device_arbitration(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.route_device_arbitration(request)
+
+
+def save_device_arbitration_result(request: Mapping[str, Any]) -> dict[str, Any]:
+    return default_runtime.save_device_arbitration_result(request)
 
 
 def update_network_report(
@@ -172,7 +184,14 @@ def _error_payload(error: Exception) -> tuple[int, dict[str, Any]]:
         return 400, {"error_code": error.code, "message": error.message}
     if isinstance(
         error,
-        (AssignmentError, TaskRepositoryError, PacketRouteError, DeferredCloudError),
+        (
+            AssignmentError,
+            TaskRepositoryError,
+            PacketRouteError,
+            DeferredCloudError,
+            DeviceArbitrationRouteError,
+            DeferredDeviceArbitrationError,
+        ),
     ):
         return error.status_code, {"error_code": error.code, "message": error.message}
     if isinstance(error, RegistryError):
@@ -255,6 +274,18 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
     def upload_result_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         return endpoint("save_cloud_upload_result", request)
 
+    @router.post("/device-arbitration-route", response_model=None)
+    def device_arbitration_route_endpoint(
+        request: dict[str, Any],
+    ) -> dict[str, Any] | JSONResponse:
+        return endpoint("route_device_arbitration", request)
+
+    @router.post("/device-arbitration-results", response_model=None)
+    def device_arbitration_result_endpoint(
+        request: dict[str, Any],
+    ) -> dict[str, Any] | JSONResponse:
+        return endpoint("save_device_arbitration_result", request)
+
     application = FastAPI(
         title="Edge Node Assignment Scheduler",
         lifespan=lifespan,
@@ -290,6 +321,8 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             "/scheduler/tasks/result": save_task_result,
             "/scheduler/packet-route": route_packet,
             "/scheduler/cloud-upload-results": save_cloud_upload_result,
+            "/scheduler/device-arbitration-route": route_device_arbitration,
+            "/scheduler/device-arbitration-results": save_device_arbitration_result,
         }
         report_prefix = "/scheduler/network-reports/"
         if parsed.path.startswith(report_prefix):

@@ -26,6 +26,11 @@ from cloud_service.bearing_review.service import (
 )
 from cloud_service.bearing_review.receiver import BearingRawContextReceiver
 from cloud_service.task_results import TaskResultService
+from cloud_service.device_arbitration.v12_contract import (
+    adapt_v12_device_arbitration_request,
+    attach_v12_identity,
+    is_v12_device_arbitration_request,
+)
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
@@ -497,12 +502,18 @@ def device_decision_results(payload: dict) -> dict | JSONResponse:
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
+        adapted = (
+            adapt_v12_device_arbitration_request(payload)
+            if is_v12_device_arbitration_request(payload)
+            else None
+        )
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            (adapted or payload).get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.arbitrate_device_conflict(payload)
+        result = handler.arbitrate_device_conflict(adapted or payload)
+        return attach_v12_identity(result, adapted) if adapted is not None else result
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
