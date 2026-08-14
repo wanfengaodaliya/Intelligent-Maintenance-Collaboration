@@ -8,13 +8,12 @@ from typing import Any, Mapping
 try:
     from .deferred_cloud_repository import DAY_NS, DeferredCloudRepository
     from .packet_router import (
-        CLOUD_REVIEW_NOW,
         PacketRouter,
         cloud_task_id,
     )
 except ImportError:
     from deferred_cloud_repository import DAY_NS, DeferredCloudRepository
-    from packet_router import CLOUD_REVIEW_NOW, PacketRouter, cloud_task_id
+    from packet_router import PacketRouter, cloud_task_id
 
 
 class PacketRoutingService:
@@ -38,6 +37,10 @@ class PacketRoutingService:
                 "device_id": decision["device_id"],
                 "task_id": decision["task_id"],
                 "bearing_id": decision["bearing_id"],
+                "decision_round_id": decision["decision_round_id"],
+                "diagnosis_window_id": decision["diagnosis_window_id"],
+                "window_start_sequence": decision["window_start_sequence"],
+                "window_end_sequence": decision["window_end_sequence"],
                 "packet_id": decision["packet_id"],
                 "sequence_number": decision["sequence_number"],
                 "edge_node_id": edge_node_id,

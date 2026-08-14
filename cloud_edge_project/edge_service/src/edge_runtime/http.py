@@ -84,8 +84,14 @@ class SchedulerReporter:
 
 
 class EdgeControlApplication:
-    def __init__(self, ingress: EdgeTaskIngress):
+    def __init__(
+        self,
+        ingress: EdgeTaskIngress,
+        *,
+        on_device_arbitration_result: Callable[[dict[str, Any]], Any] | None = None,
+    ):
         self.ingress = ingress
+        self.on_device_arbitration_result = on_device_arbitration_result
 
     def handle(self, path: str, payload: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         if path == "/edge/tasks":
@@ -108,6 +114,17 @@ class EdgeControlApplication:
             if not found:
                 return 404, _error("DISPATCH_NOT_FOUND", "dispatch_id is unknown")
             return 200, {"dispatch_id": dispatch_id, "revoked": True}
+        if path == "/edge/device-arbitration-results":
+            if self.on_device_arbitration_result is None:
+                return 404, _error("NOT_FOUND", "device arbitration is not enabled")
+            try:
+                result = self.on_device_arbitration_result(dict(payload))
+            except (TypeError, ValueError) as exc:
+                return 400, _error("INVALID_DEVICE_ARBITRATION_RESULT", str(exc))
+            return 200, {
+                "accepted": True,
+                "device_result_id": None if result is None else result.result_id,
+            }
         return 404, _error("NOT_FOUND", "unknown edge control endpoint")
 
 

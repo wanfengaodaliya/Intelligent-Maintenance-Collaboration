@@ -72,17 +72,18 @@ class DeferredCloudRepository:
             connection.execute(
                 "INSERT INTO deferred_cloud_task("
                 "decision_id,cloud_task_id,device_id,task_id,bearing_id,packet_id,"
-                "sequence_number,edge_node_id,route,reason_codes_json,defer_reason,"
+                "sequence_number,decision_round_id,diagnosis_window_id,window_start_sequence,window_end_sequence,edge_node_id,route,reason_codes_json,defer_reason,"
                 "cloud_status_message_id,network_snapshot_id,raw_data_ref,context_ref,"
                 "cloud_node_id,endpoint,state,attempt_count,next_retry_at_ns,"
                 "lease_expires_at_ns,created_at_ns,updated_at_ns,expires_at_ns,"
                 "review_id,last_reason_code,upload_result_json,task_payload_json,"
                 "packet_request_json,routing_decision_json"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,NULL,NULL,NULL,?,?,?)",
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,NULL,NULL,NULL,?,?,?)",
                 (
                     item["decision_id"], item["cloud_task_id"], item["device_id"],
                     item["task_id"], item["bearing_id"], item["packet_id"],
-                    item["sequence_number"], item["edge_node_id"], item["route"],
+                    item["sequence_number"], item["decision_round_id"], item["diagnosis_window_id"],
+                    item["window_start_sequence"], item["window_end_sequence"], item["edge_node_id"], item["route"],
                     _canonical(item["reason_codes"]), item["defer_reason"],
                     item["cloud_status_message_id"], item["network_snapshot_id"],
                     item["raw_data_ref"], item["context_ref"], item["cloud_node_id"],
@@ -291,6 +292,7 @@ class DeferredCloudRepository:
                 "decision_id TEXT PRIMARY KEY,cloud_task_id TEXT NOT NULL UNIQUE,"
                 "device_id TEXT NOT NULL,task_id TEXT NOT NULL,bearing_id TEXT NOT NULL,"
                 "packet_id TEXT NOT NULL,sequence_number INTEGER NOT NULL,"
+                "decision_round_id TEXT,diagnosis_window_id TEXT,window_start_sequence INTEGER,window_end_sequence INTEGER,"
                 "edge_node_id TEXT NOT NULL,route TEXT NOT NULL,reason_codes_json TEXT NOT NULL,"
                 "defer_reason TEXT,cloud_status_message_id TEXT,network_snapshot_id TEXT,"
                 "raw_data_ref TEXT NOT NULL,context_ref TEXT,cloud_node_id TEXT NOT NULL,"
@@ -312,6 +314,16 @@ class DeferredCloudRepository:
                 connection.execute(
                     "ALTER TABLE deferred_cloud_task ADD COLUMN routing_decision_json TEXT"
                 )
+            for column, definition in (
+                ("decision_round_id", "TEXT"),
+                ("diagnosis_window_id", "TEXT"),
+                ("window_start_sequence", "INTEGER"),
+                ("window_end_sequence", "INTEGER"),
+            ):
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE deferred_cloud_task ADD COLUMN {column} {definition}"
+                    )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_deferred_due "
                 "ON deferred_cloud_task(state,next_retry_at_ns)"
@@ -326,7 +338,8 @@ class DeferredCloudRepository:
 def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
     required = {
         "decision_id", "cloud_task_id", "device_id", "task_id", "bearing_id",
-        "packet_id", "sequence_number", "edge_node_id", "route", "reason_codes",
+        "packet_id", "sequence_number", "decision_round_id", "diagnosis_window_id",
+        "window_start_sequence", "window_end_sequence", "edge_node_id", "route", "reason_codes",
         "defer_reason", "cloud_status_message_id", "network_snapshot_id", "raw_data_ref",
         "context_ref", "cloud_node_id", "endpoint", "created_at_ns", "expires_at_ns",
     }
@@ -340,12 +353,14 @@ def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
             field: _text(payload[field], field)
             for field in (
                 "decision_id", "cloud_task_id", "device_id", "task_id", "bearing_id",
-                "packet_id", "edge_node_id", "route", "raw_data_ref", "cloud_node_id", "endpoint",
+                "packet_id", "decision_round_id", "diagnosis_window_id", "edge_node_id", "route", "raw_data_ref", "cloud_node_id", "endpoint",
             )
         }
         item.update(
             {
                 "sequence_number": _bounded_int(payload["sequence_number"], 1, 80),
+                "window_start_sequence": _bounded_int(payload["window_start_sequence"], 1, 80),
+                "window_end_sequence": _bounded_int(payload["window_end_sequence"], 1, 80),
                 "reason_codes": [_text(reason, "reason_code") for reason in reasons],
                 "defer_reason": _optional_text(payload["defer_reason"], "defer_reason"),
                 "cloud_status_message_id": _optional_text(payload["cloud_status_message_id"], "cloud_status_message_id"),
@@ -355,6 +370,10 @@ def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "expires_at_ns": _positive_int(payload["expires_at_ns"], "expires_at_ns"),
             }
         )
+        if item["window_end_sequence"] < item["window_start_sequence"]:
+            raise ValueError("window sequence range must be ordered")
+        if not item["window_start_sequence"] <= item["sequence_number"] <= item["window_end_sequence"]:
+            raise ValueError("sequence_number must belong to the diagnosis window")
         if item["expires_at_ns"] <= item["created_at_ns"]:
             raise ValueError("expires_at_ns must follow created_at_ns")
         return item

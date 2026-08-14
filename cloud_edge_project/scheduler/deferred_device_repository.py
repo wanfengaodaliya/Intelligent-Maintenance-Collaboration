@@ -97,6 +97,7 @@ class DeferredDeviceArbitrationRepository:
                     canonical,
                 ),
             )
+            self._store_v12_payload(connection, item)
             saved = connection.execute(
                 "SELECT * FROM deferred_device_arbitration_task WHERE decision_id=?",
                 (item["decision_id"],),
@@ -306,6 +307,7 @@ class DeferredDeviceArbitrationRepository:
                     device_id TEXT NOT NULL,
                     task_id TEXT NOT NULL,
                     summary_module_id TEXT NOT NULL,
+                    edge_node_id TEXT,
                     route TEXT NOT NULL,
                     reason_codes_json TEXT NOT NULL,
                     defer_reason TEXT,
@@ -329,6 +331,50 @@ class DeferredDeviceArbitrationRepository:
                 )
                 """
             )
+            existing_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(deferred_device_arbitration_task)"
+                ).fetchall()
+            }
+            migrations = {
+                "conflict_id": "TEXT",
+                "decision_round_id": "TEXT",
+                "device_result_revision": "INTEGER",
+                "bearing_result_ids_json": "TEXT",
+                "bearing_results_json": "TEXT",
+                "comparison_json": "TEXT",
+                "local_arbitration_supported": "INTEGER",
+                "edge_node_id": "TEXT",
+            }
+            for column, definition in migrations.items():
+                if column not in existing_columns:
+                    connection.execute(
+                        "ALTER TABLE deferred_device_arbitration_task "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+
+    @staticmethod
+    def _store_v12_payload(connection: sqlite3.Connection, item: Mapping[str, Any]) -> None:
+        if item["decision_round_id"] is None:
+            return
+        connection.execute(
+            "UPDATE deferred_device_arbitration_task SET edge_node_id=?,conflict_id=?,"
+            "decision_round_id=?,device_result_revision=?,"
+            "bearing_result_ids_json=?,bearing_results_json=?,comparison_json=?,"
+            "local_arbitration_supported=? WHERE decision_id=?",
+            (
+                item["edge_node_id"],
+                item["conflict_id"],
+                item["decision_round_id"],
+                item["device_result_revision"],
+                _canonical(item["bearing_result_ids"]),
+                _canonical(item["bearing_results"]),
+                _canonical(item["comparison"]),
+                1 if item["local_arbitration_supported"] else 0,
+                item["decision_id"],
+            ),
+        )
 
 
 def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -339,12 +385,14 @@ def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
         expires_at_ns = _positive_int(item.get("expires_at_ns"), "expires_at_ns")
         if expires_at_ns <= created_at_ns:
             raise ValueError("expires_at_ns must be after created_at_ns")
+        v12 = _validate_v12_payload(item)
         return {
             "decision_id": _text(item.get("decision_id"), "decision_id"),
             "cloud_task_id": _text(item.get("cloud_task_id"), "cloud_task_id"),
             "device_id": _text(item.get("device_id"), "device_id"),
             "task_id": _text(item.get("task_id"), "task_id"),
             "summary_module_id": _text(item.get("summary_module_id"), "summary_module_id"),
+            "edge_node_id": _optional_text(item.get("edge_node_id"), "edge_node_id"),
             "route": route,
             "reason_codes": _string_list(item.get("reason_codes"), "reason_codes"),
             "defer_reason": _optional_text(item.get("defer_reason"), "defer_reason"),
@@ -356,6 +404,7 @@ def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": _text(item.get("endpoint"), "endpoint"),
             "created_at_ns": created_at_ns,
             "expires_at_ns": expires_at_ns,
+            **v12,
         }
     except (KeyError, TypeError, ValueError) as error:
         raise DeferredDeviceArbitrationError("INVALID_DEFERRED_DEVICE_TASK", str(error)) from error
@@ -397,12 +446,13 @@ def _match_result_identity(row: sqlite3.Row, result: Mapping[str, Any]) -> None:
 
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    item = {
         "decision_id": row["decision_id"],
         "cloud_task_id": row["cloud_task_id"],
         "device_id": row["device_id"],
         "task_id": row["task_id"],
         "summary_module_id": row["summary_module_id"],
+        "edge_node_id": row["edge_node_id"],
         "route": row["route"],
         "reason_codes": json.loads(row["reason_codes_json"]),
         "defer_reason": row["defer_reason"],
@@ -426,6 +476,70 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
             if row["arbitration_result_json"] is not None
             else None
         ),
+    }
+    if row["decision_round_id"] is not None:
+        item.update(
+            {
+                "conflict_id": row["conflict_id"],
+                "decision_round_id": row["decision_round_id"],
+                "device_result_revision": int(row["device_result_revision"]),
+                "bearing_result_ids": json.loads(row["bearing_result_ids_json"]),
+                "bearing_results": json.loads(row["bearing_results_json"]),
+                "comparison": json.loads(row["comparison_json"]),
+                "local_arbitration_supported": bool(
+                    row["local_arbitration_supported"]
+                ),
+            }
+        )
+    return item
+
+
+def _validate_v12_payload(item: Mapping[str, Any]) -> dict[str, Any]:
+    fields = (
+        "conflict_id",
+        "decision_round_id",
+        "device_result_revision",
+        "bearing_result_ids",
+        "bearing_results",
+        "comparison",
+        "local_arbitration_supported",
+    )
+    present = [field in item for field in fields]
+    if not any(present):
+        return {
+            "conflict_id": None,
+            "decision_round_id": None,
+            "device_result_revision": None,
+            "bearing_result_ids": None,
+            "bearing_results": None,
+            "comparison": None,
+            "local_arbitration_supported": None,
+        }
+    if not all(present):
+        raise ValueError("V1.2 device arbitration task fields must be provided together")
+    bearing_result_ids = _string_list(item.get("bearing_result_ids"), "bearing_result_ids")
+    bearing_results = item.get("bearing_results")
+    if not isinstance(bearing_results, list) or not bearing_results:
+        raise ValueError("bearing_results must be a non-empty array")
+    result_ids = []
+    for result in bearing_results:
+        result_item = _mapping(result, "bearing_result")
+        result_ids.append(_text(result_item.get("bearing_result_id"), "bearing_result_id"))
+    if bearing_result_ids != result_ids:
+        raise ValueError("bearing_result_ids must match bearing_results in order")
+    comparison = _mapping(item.get("comparison"), "comparison")
+    if not isinstance(item.get("local_arbitration_supported"), bool):
+        raise ValueError("local_arbitration_supported must be a boolean")
+    return {
+        "conflict_id": _text(item.get("conflict_id"), "conflict_id"),
+        "decision_round_id": _text(item.get("decision_round_id"), "decision_round_id"),
+        "device_result_revision": _positive_int(
+            item.get("device_result_revision"), "device_result_revision"
+        ),
+        "bearing_result_ids": bearing_result_ids,
+        "bearing_results": bearing_results,
+        "comparison": dict(comparison),
+        "local_arbitration_supported": item["local_arbitration_supported"],
     }
 
 

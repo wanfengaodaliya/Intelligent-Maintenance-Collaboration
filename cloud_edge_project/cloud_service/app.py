@@ -7,11 +7,12 @@ from contextlib import asynccontextmanager, suppress
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import BackgroundTasks, Body, FastAPI
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
@@ -26,6 +27,11 @@ from cloud_service.bearing_review.service import (
 )
 from cloud_service.bearing_review.receiver import BearingRawContextReceiver
 from cloud_service.task_results import TaskResultService
+from cloud_service.device_arbitration.v12_contract import (
+    adapt_v12_device_arbitration_request,
+    attach_v12_identity,
+    is_v12_device_arbitration_request,
+)
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
@@ -36,6 +42,7 @@ from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusVal
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
 from cloud_service.raw_context.transport import RoutedRawContextTransport
+from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
@@ -100,31 +107,38 @@ def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
     handler.run_enhanced_analysis(review_id)
 
 
-async def _expire_raw_context_requests() -> None:
+async def _run_background_workers() -> None:
     while True:
         try:
             settings = load_cloud_settings()
-            initialize_database(settings.database_path)
-            RawContextRequestRepository(
-                settings.database_path
-            ).expire_due()
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                initialize_database(settings.database_path)
+                RawContextRequestRepository(
+                    settings.database_path
+                ).expire_due()
+            if settings.legacy_bearing_window_review_enabled:
+                await asyncio.to_thread(
+                    WorkflowReviewService(settings.database_path).process_pending,
+                    20,
+                )
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                await asyncio.to_thread(
+                    ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
+                    config_version="cloud-preprocess-v1",
+                    limit=20,
+                )
+                await asyncio.to_thread(
+                    AggregationReadyDispatcher(
+                        settings.database_path,
+                        handler=lambda payload: _run_enhanced_analysis(
+                            settings.database_path, payload["review_id"]
+                        ),
+                    ).dispatch_pending,
+                    limit=20,
+                )
             await asyncio.to_thread(
-                WorkflowReviewService(settings.database_path).process_pending,
-                20,
-            )
-            await asyncio.to_thread(
-                ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
-                config_version="cloud-preprocess-v1",
-                limit=20,
-            )
-            await asyncio.to_thread(
-                AggregationReadyDispatcher(
-                    settings.database_path,
-                    handler=lambda payload: _run_enhanced_analysis(
-                        settings.database_path, payload["review_id"]
-                    ),
-                ).dispatch_pending,
-                limit=20,
+                SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
+                now_ns=time.time_ns(),
             )
         except sqlite3.Error:
             pass
@@ -137,14 +151,14 @@ async def _lifespan(_: FastAPI):
     await asyncio.to_thread(
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
-    expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    worker_task = asyncio.create_task(_run_background_workers())
     status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        for task in (status_task, expiry_task):
+        for task in (status_task, worker_task):
             task.cancel()
-        for task in (status_task, expiry_task):
+        for task in (status_task, worker_task):
             with suppress(asyncio.CancelledError):
                 await task
 
@@ -208,6 +222,24 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _workflow_review_service() -> WorkflowReviewService:
     return WorkflowReviewService(load_cloud_settings().database_path)
+
+
+def _legacy_bearing_workflow_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_bearing_window_review_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_BEARING_WORKFLOW_DISABLED"},
+    )
+
+
+def _legacy_context_pipeline_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_context_enhanced_pipeline_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_CONTEXT_PIPELINE_DISABLED"},
+    )
 
 
 def _workflow_error_response(error: WorkflowReviewError) -> JSONResponse:
@@ -369,6 +401,8 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
 
 @app.post("/cloud/packet-reviews", response_model=None)
 def create_packet_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.submit("PACKET", payload)
@@ -388,6 +422,8 @@ def get_packet_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/bearing-window-reviews", response_model=None)
 def create_bearing_window_review(payload: dict) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         return _workflow_job_response(
             _workflow_review_service().submit("BEARING_WINDOW", payload), 202
@@ -400,6 +436,8 @@ def create_bearing_window_review(payload: dict) -> JSONResponse:
 def upload_bearing_window_raw(
     review_id: str, payload: dict, background_tasks: BackgroundTasks
 ) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.upload_window_raw(review_id, payload)
@@ -419,6 +457,8 @@ def get_bearing_window_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/device-reviews", response_model=None)
 def create_device_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         service = _workflow_review_service()
         job = service.submit("DEVICE", payload)
@@ -438,6 +478,8 @@ def get_device_review(review_id: str) -> JSONResponse:
 
 @app.post("/cloud/bearing-review", response_model=None)
 def create_bearing_review(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try:
         return BearingReviewService(
             load_cloud_settings().database_path,
@@ -462,25 +504,82 @@ def get_bearing_review(bearing_review_id: str) -> dict | JSONResponse:
 
 @app.post("/cloud/bearing-task-results", response_model=None)
 def bearing_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try: return TaskResultService(load_cloud_settings().database_path).ingest_bearing(payload)
     except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
 
 
 @app.post("/cloud/device-task-results", response_model=None)
 def device_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
     try: return TaskResultService(load_cloud_settings().database_path).ingest_device(payload)
     except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.post("/cloud/bearing-diagnosis-results", response_model=None)
+def bearing_diagnosis_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_bearing_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
+@app.post("/cloud/device-decision-results", response_model=None)
+def device_decision_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_device_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
+@app.post("/cloud/raw-analysis-samples", response_model=None)
+async def raw_analysis_samples(
+    metadata: str = Form(...), payload: UploadFile = File(...)
+) -> dict | JSONResponse:
+    try:
+        result = RawAnalysisSampleService(load_cloud_settings().database_path).accept(
+            json.loads(metadata), await payload.read(), received_at_ns=time.time_ns()
+        )
+        return result
+    except (ValueError, json.JSONDecodeError) as error:
+        return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.get("/cloud/raw-analysis-samples/{sample_id}", response_model=None)
+def get_raw_analysis_sample(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_sample(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "RAW_SAMPLE_NOT_FOUND"})
+
+
+@app.get("/cloud/physical-evidence/{sample_id}", response_model=None)
+def get_physical_evidence(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_evidence(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "PHYSICAL_EVIDENCE_NOT_FOUND"})
 
 
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
+        adapted = (
+            adapt_v12_device_arbitration_request(payload)
+            if is_v12_device_arbitration_request(payload)
+            else None
+        )
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            (adapted or payload).get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.arbitrate_device_conflict(payload)
+        result = handler.arbitrate_device_conflict(adapted or payload)
+        return attach_v12_identity(result, adapted) if adapted is not None else result
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -724,6 +823,13 @@ def raw_context_batches(
 ) -> dict[str, object] | JSONResponse:
     """Receive one edge raw-context batch and acknowledge each packet."""
 
+    disabled = (
+        _legacy_bearing_workflow_disabled()
+        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review"
+        else _legacy_context_pipeline_disabled()
+    )
+    if disabled:
+        return disabled
     try:
         if isinstance(payload, dict) and payload.get("review_type") == "bearing_review":
             return BearingRawContextReceiver(

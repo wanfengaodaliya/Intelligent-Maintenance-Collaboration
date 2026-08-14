@@ -260,6 +260,7 @@ cloud_review_service = CloudReviewService(
     cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
     scheduler_reporter=SchedulerUploadReporter(cloud_review_config.scheduler_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
     edge_node_id=EDGE_NODE_ID,
+    cloud_result_handler=runtime_assembly.v12_flow,
 )
 cloud_review_cleanup = CloudReviewCleanupWorker(
     cloud_review_store,
@@ -285,8 +286,17 @@ def health() -> dict[str, object]:
         "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
         "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
-        "bearing_window_cache_bytes": runtime_assembly.window_review_store.usage_bytes(),
-        "bearing_window_cache_warning": runtime_assembly.window_review_store.warning,
+        "legacy_bearing_aggregation_enabled": runtime_assembly.window_review_store is not None,
+        "bearing_window_cache_bytes": (
+            None
+            if runtime_assembly.window_review_store is None
+            else runtime_assembly.window_review_store.usage_bytes()
+        ),
+        "bearing_window_cache_warning": (
+            False
+            if runtime_assembly.window_review_store is None
+            else runtime_assembly.window_review_store.warning
+        ),
     }
 
 
@@ -400,6 +410,11 @@ def submit_edge_packet(payload: dict) -> JSONResponse:
 
 @app.post("/edge/raw-context-requests", response_model=None)
 def raw_context_request(payload: dict) -> dict | JSONResponse:
+    if runtime_assembly.window_review_store is None:
+        return JSONResponse(
+            status_code=410,
+            content={"error_code": "LEGACY_BEARING_AGGREGATION_DISABLED"},
+        )
     try:
         record = runtime_assembly.window_review_store.attach_context_request(payload)
         return {

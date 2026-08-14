@@ -10,6 +10,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from core.diagnosis_contracts import PacketRoute
+from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
+
 try:
     from .cloud_registry import CloudNodeRegistry, CloudNodeSnapshot, EdgeCloudLinkSnapshot
 except ImportError:
@@ -191,21 +194,24 @@ class PacketRouter:
         direct = route == DIRECT_FINAL_TO_SUMMARY
         deferred = route == EDGE_PROVISIONAL_AND_DEFER_CLOUD
         needs_cloud = not direct
-        return {
+        response = {
             "decision_id": decision_id,
             "device_id": result["device_id"],
             "task_id": result["task_id"],
             "bearing_id": result["bearing_id"],
             "packet_id": input_ref["packet_id"],
             "sequence_number": input_ref["sequence_number"],
-            "route": route,
+            "route": _shared_route(route).value,
+            "legacy_route": route,
             "needs_cloud_review": needs_cloud,
             "deferred_cloud_review": deferred,
             "result_instruction": {
-                "result_status": "FINAL" if direct else "PROVISIONAL",
+                "result_status": (
+                    "FINAL" if direct else "PROVISIONAL" if deferred else "WAITING_CLOUD"
+                ),
                 "decision_source": "EDGE",
                 "review_status": "NOT_REQUIRED" if direct else "PENDING_CLOUD",
-                "degraded": not direct,
+                "degraded": deferred,
             },
             "reason_codes": reasons,
             "defer_reason": defer_reason,
@@ -223,6 +229,15 @@ class PacketRouter:
             },
             "created_at_ns": now_ns,
         }
+        for field in (
+            "decision_round_id",
+            "diagnosis_window_id",
+            "window_start_sequence",
+            "window_end_sequence",
+        ):
+            if field in result:
+                response[field] = result[field]
+        return response
 
 
 def cloud_task_id(decision_id: str) -> str:
@@ -263,6 +278,7 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("finished_at_ns cannot precede started_at_ns")
         if result["device_id"] != result["input_ref"]["device_id"] or result["bearing_id"] != result["input_ref"]["bearing_id"]:
             raise ValueError("top-level and input_ref identity must match")
+        _copy_v12_identity(item, result)
 
         if result["status"] == "SUCCEEDED":
             if item["error"] is not None:
@@ -322,6 +338,15 @@ def _decision_id(result: Mapping[str, Any]) -> str:
         "packet_id": result["input_ref"]["packet_id"],
         "sequence_number": result["input_ref"]["sequence_number"],
     }
+    if "decision_round_id" in result:
+        identity.update(
+            {
+                "decision_round_id": result["decision_round_id"],
+                "diagnosis_window_id": result["diagnosis_window_id"],
+                "window_start_sequence": result["window_start_sequence"],
+                "window_end_sequence": result["window_end_sequence"],
+            }
+        )
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
     return f"decision_packet_{digest}"
 
@@ -364,3 +389,54 @@ def _bounded_float(value: Any, field: str, minimum: float, maximum: float) -> fl
     if not math.isfinite(result) or not minimum <= result <= maximum:
         raise ValueError(f"{field} must be between {minimum} and {maximum}")
     return result
+
+
+def _copy_v12_identity(item: Mapping[str, Any], result: dict[str, Any]) -> None:
+    fields = {
+        "decision_round_id",
+        "diagnosis_window_id",
+        "window_start_sequence",
+        "window_end_sequence",
+    }
+    supplied = fields & set(item)
+    if supplied and supplied != fields:
+        raise ValueError("V1.2 route identity must include round, window, and sequence range")
+    if not supplied:
+        return
+    start = _bounded_int(item["window_start_sequence"], "window_start_sequence", 1, 80)
+    end = _bounded_int(item["window_end_sequence"], "window_end_sequence", start, 80)
+    sender_id = result["input_ref"]["sender_id"]
+    expected_round = build_decision_round_id(
+        device_id=result["device_id"],
+        task_id=result["task_id"],
+        window_start_sequence=start,
+        window_end_sequence=end,
+    )
+    expected_window = build_diagnosis_window_id(
+        device_id=result["device_id"],
+        task_id=result["task_id"],
+        bearing_id=result["bearing_id"],
+        sender_id=sender_id,
+        window_start_sequence=start,
+        window_end_sequence=end,
+    )
+    if item["decision_round_id"] != expected_round or item["diagnosis_window_id"] != expected_window:
+        raise ValueError("V1.2 route identity does not match deterministic identity")
+    if not start <= result["input_ref"]["sequence_number"] <= end:
+        raise ValueError("packet sequence_number must belong to the diagnosis window")
+    result.update(
+        {
+            "decision_round_id": expected_round,
+            "diagnosis_window_id": expected_window,
+            "window_start_sequence": start,
+            "window_end_sequence": end,
+        }
+    )
+
+
+def _shared_route(legacy_route: str) -> PacketRoute:
+    return {
+        DIRECT_FINAL_TO_SUMMARY: PacketRoute.EDGE,
+        CLOUD_REVIEW_NOW: PacketRoute.CLOUD_NOW,
+        EDGE_PROVISIONAL_AND_DEFER_CLOUD: PacketRoute.DEFER,
+    }[legacy_route]

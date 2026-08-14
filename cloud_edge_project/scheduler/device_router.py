@@ -178,7 +178,7 @@ class DeviceArbitrationRouter:
         local_final = route == LOCAL_FINAL
         deferred = route == LOCAL_PROVISIONAL_AND_DEFER_CLOUD
         needs_cloud = not local_final
-        return {
+        response = {
             "decision_id": decision_id,
             "device_id": request["device_id"],
             "task_id": request["task_id"],
@@ -210,9 +210,33 @@ class DeviceArbitrationRouter:
                 "cloud_node_id": self.config.default_cloud_node_id if needs_cloud else None,
                 "endpoint": self.config.cloud_endpoint if needs_cloud else None,
             },
+            "callback": {
+                "edge_node_id": request["edge_node_id"] if needs_cloud else None,
+                "endpoint": (
+                    "/edge/device-arbitration-results"
+                    if needs_cloud and request["edge_node_id"]
+                    else None
+                ),
+            },
             "retry_required": deferred,
             "created_at_ns": now_ns,
         }
+        if request["v12_identity"] is not None:
+            identity = request["v12_identity"]
+            response.update(
+                {
+                    "conflict_id": _conflict_id(request),
+                    "decision_round_id": identity["decision_round_id"],
+                    "device_result_revision": identity["device_result_revision"],
+                    "bearing_result_ids": list(identity["bearing_result_ids"]),
+                    "bearing_results": request["bearing_results"],
+                    "comparison": request["comparison"],
+                    "local_arbitration_supported": request[
+                        "local_arbitration_supported"
+                    ],
+                }
+            )
+        return response
 
 
 def cloud_device_task_id(decision_id: str) -> str:
@@ -248,6 +272,7 @@ def _validate_device_request(
         bearing_ids = [value["bearing_id"] for value in bearings]
         if len(set(bearing_ids)) != len(bearing_ids):
             raise ValueError("bearing_id values must be unique")
+        v12_identity = _validate_v12_identity(item, bearings)
         source_refs = item.get("source_refs")
         if source_refs is None:
             task_id = _text(item.get("task_id"), "task_id")
@@ -264,6 +289,7 @@ def _validate_device_request(
                 item.get("summary_module_id", default_summary_module_id),
                 "summary_module_id",
             ),
+            "edge_node_id": _optional_text(item.get("edge_node_id"), "edge_node_id"),
             "expected_bearing_count": expected,
             "received_bearing_count": received,
             "bearing_results": bearings,
@@ -312,6 +338,7 @@ def _validate_device_request(
                     "provisional_result_ref",
                 ),
             },
+            "v12_identity": v12_identity,
         }
     except DeviceArbitrationRouteError:
         raise
@@ -366,10 +393,53 @@ def _decision_id(request: Mapping[str, Any]) -> str:
         "task_id": request["task_id"],
         "summary_module_id": request["summary_module_id"],
     }
+    if request["v12_identity"] is not None:
+        identity["decision_round_id"] = request["v12_identity"]["decision_round_id"]
+        identity["device_result_revision"] = request["v12_identity"]["device_result_revision"]
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:24]
     return f"decision_device_{digest}"
+
+
+def _conflict_id(request: Mapping[str, Any]) -> str:
+    identity = request["v12_identity"]
+    if identity is None:
+        raise ValueError("V1.2 identity is required for conflict_id")
+    canonical = {
+        "device_id": request["device_id"],
+        "task_id": request["task_id"],
+        "decision_round_id": identity["decision_round_id"],
+        "device_result_revision": identity["device_result_revision"],
+    }
+    digest = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"conflict_device_{digest}"
+
+
+def _validate_v12_identity(
+    item: Mapping[str, Any],
+    bearings: list[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    fields = ("decision_round_id", "device_result_revision", "bearing_result_ids")
+    present = [field in item for field in fields]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("V1.2 device arbitration identity fields must be provided together")
+    result_ids = _string_list(item.get("bearing_result_ids"), "bearing_result_ids")
+    if len(set(result_ids)) != len(result_ids):
+        raise ValueError("bearing_result_ids must be unique")
+    if result_ids != [bearing["bearing_result_id"] for bearing in bearings]:
+        raise ValueError("bearing_result_ids must match bearing_results in order")
+    return {
+        "decision_round_id": _text(item.get("decision_round_id"), "decision_round_id"),
+        "device_result_revision": _positive_int(
+            item.get("device_result_revision"), "device_result_revision"
+        ),
+        "bearing_result_ids": result_ids,
+    }
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -382,6 +452,10 @@ def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value.strip()
+
+
+def _optional_text(value: Any, field: str) -> str | None:
+    return None if value is None else _text(value, field)
 
 
 def _enum(value: Any, field: str, allowed: set[str]) -> str:
@@ -401,6 +475,12 @@ def _positive_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{field} must be a positive integer")
     return value
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{field} must be a non-empty array")
+    return [_text(item, field) for item in value]
 
 
 def _non_negative_int(value: Any, field: str) -> int:

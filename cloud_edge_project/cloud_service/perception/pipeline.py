@@ -95,7 +95,7 @@ def run_single_packet_perception(
         "analysis_window": {
             "start_timestamp_ns": raw["start_timestamp_ns"],
             "end_timestamp_ns": raw["end_timestamp_ns"],
-            "packet_count": 1,
+            "packet_count": raw.get("window_packet_count", 1),
         },
         "enabled_modules": [
             "validation",

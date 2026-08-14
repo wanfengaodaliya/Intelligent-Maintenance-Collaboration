@@ -71,6 +71,10 @@ class DeferredCloudDispatcher:
             "device_id": task["device_id"],
             "task_id": task["task_id"],
             "bearing_id": task["bearing_id"],
+            "decision_round_id": task["decision_round_id"],
+            "diagnosis_window_id": task["diagnosis_window_id"],
+            "window_start_sequence": task["window_start_sequence"],
+            "window_end_sequence": task["window_end_sequence"],
             "packet_id": task["packet_id"],
             "trigger_reasons": task["reason_codes"],
             "source": {

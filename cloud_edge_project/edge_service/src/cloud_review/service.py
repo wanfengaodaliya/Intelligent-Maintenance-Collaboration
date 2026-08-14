@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping
 
 import requests
 
-from .contracts import CloudReviewError, validate_control
+from .contracts import CloudReviewError, parse_cloud_bearing_result, validate_control
 from .store import CloudReviewStore
 
 
@@ -76,12 +76,16 @@ class CloudReviewService:
         cloud_client: HttpCloudClient | Any,
         scheduler_reporter: SchedulerUploadReporter | Any,
         edge_node_id: str,
+        result_lifecycle: Any | None = None,
+        cloud_result_handler: Any | None = None,
         clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self.store = store
         self.cloud_client = cloud_client
         self.scheduler_reporter = scheduler_reporter
         self.edge_node_id = edge_node_id
+        self.result_lifecycle = result_lifecycle
+        self.cloud_result_handler = cloud_result_handler
         self.clock_ns = clock_ns
         self._decision_locks_guard = threading.Lock()
         self._decision_locks: dict[str, threading.Lock] = {}
@@ -110,8 +114,11 @@ class CloudReviewService:
         review_id = checkpoint.get("review_id") if checkpoint is not None else None
         if checkpoint is None or checkpoint["phase"] != "CLOUD_SUCCEEDED":
             cloud_request = {
+                "schema_version": "cloud-infer/2.0",
+                "decision_round_id": control["decision_round_id"],
+                "diagnosis_window_id": control["diagnosis_window_id"],
                 "edge_perception_result": record["edge_perception_result"],
-                "cloud_raw_packet": record["raw_packet"],
+                "cloud_raw_window": _cloud_raw_window(control, record["raw_packet"]),
             }
             try:
                 cloud_response = self.cloud_client.infer(
@@ -122,6 +129,17 @@ class CloudReviewService:
                 if cloud_response.get("success") is not True or not isinstance(cloud_response.get("review_id"), str) or not cloud_response["review_id"].strip():
                     raise CloudUploadError("INVALID_CLOUD_RESPONSE", retryable=False)
                 review_id = cloud_response["review_id"].strip()
+                cloud_payload = cloud_response.get("cloud_packet_result")
+                if not isinstance(cloud_payload, Mapping):
+                    raise CloudUploadError("INVALID_CLOUD_RESPONSE", retryable=False)
+                cloud_result = parse_cloud_bearing_result(cloud_payload)
+                if cloud_result.review_id != review_id:
+                    raise CloudUploadError("INVALID_CLOUD_RESPONSE", retryable=False)
+                handler = self.cloud_result_handler or self.result_lifecycle
+                if handler is not None:
+                    handler.apply_cloud_result(
+                        cloud_result, accepted_at_ns=self.clock_ns()
+                    )
                 self.store.save_decision(control, phase="CLOUD_SUCCEEDED", review_id=review_id)
             except CloudUploadError as error:
                 return self._report_failure(control, error)
@@ -142,6 +160,7 @@ class CloudReviewService:
             response=response,
         )
         return response
+
 
     def _decision_lock(self, decision_id: str) -> threading.Lock:
         with self._decision_locks_guard:
@@ -213,3 +232,37 @@ class CloudReviewService:
         if reason_code is not None:
             response["reason_code"] = reason_code
         return response
+
+
+def _cloud_raw_window(control: Mapping[str, Any], raw_packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact persisted 50/100/150ms V1.2 raw window."""
+    start_ns = raw_packet.get("window_start_ns", raw_packet.get("start_timestamp_ns", 0))
+    end_ns = raw_packet.get("window_end_ns") or raw_packet.get("end_timestamp_ns") or raw_packet.get("end_generate_timestamp_ns")
+    if not isinstance(start_ns, int) or start_ns < 0 or not isinstance(end_ns, int) or end_ns <= start_ns:
+        raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw packet lacks a valid time range", 409)
+    data = raw_packet.get("data")
+    if not isinstance(data, Mapping):
+        raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw packet lacks signal data", 409)
+    packet_ids = raw_packet.get("contributing_packet_ids", [control["packet_id"]])
+    expected_count = control["window_end_sequence"] - control["window_start_sequence"] + 1
+    if (
+        not isinstance(packet_ids, list)
+        or len(packet_ids) != expected_count
+        or not all(isinstance(value, str) and value for value in packet_ids)
+    ):
+        raise CloudReviewError("INVALID_CLOUD_REVIEW_RECORD", "raw window manifest is invalid", 409)
+    vibration = data.get("vibration") if isinstance(data.get("vibration"), Mapping) else {}
+    return {
+        "device_id": control["device_id"],
+        "task_id": control["task_id"],
+        "bearing_id": control["bearing_id"],
+        "sender_id": raw_packet.get("sender_id"),
+        "window_start_sequence": control["window_start_sequence"],
+        "window_end_sequence": control["window_end_sequence"],
+        "window_start_ns": start_ns,
+        "window_end_ns": end_ns,
+        "contributing_packet_ids": list(packet_ids),
+        "sample_rate_hz": raw_packet.get("sample_rate_hz", vibration.get("sample_rate_hz", 64_000)),
+        "sample_count": raw_packet.get("sample_count", vibration.get("sample_count", 3_200)),
+        "data": dict(data),
+    }

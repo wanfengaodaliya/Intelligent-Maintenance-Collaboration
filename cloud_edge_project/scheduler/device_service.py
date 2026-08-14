@@ -34,6 +34,7 @@ class DeviceArbitrationService:
                 "device_id": decision["device_id"],
                 "task_id": decision["task_id"],
                 "summary_module_id": decision["target"]["summary_module_id"],
+                "edge_node_id": decision["callback"]["edge_node_id"],
                 "route": decision["route"],
                 "reason_codes": decision["reason_codes"],
                 "defer_reason": decision["defer_reason"],
@@ -46,6 +47,20 @@ class DeviceArbitrationService:
                 "created_at_ns": decision["created_at_ns"],
                 "expires_at_ns": decision["created_at_ns"] + DAY_NS,
             }
+            if "decision_round_id" in decision:
+                task.update(
+                    {
+                        "conflict_id": decision["conflict_id"],
+                        "decision_round_id": decision["decision_round_id"],
+                        "device_result_revision": decision["device_result_revision"],
+                        "bearing_result_ids": decision["bearing_result_ids"],
+                        "bearing_results": decision["bearing_results"],
+                        "comparison": decision["comparison"],
+                        "local_arbitration_supported": decision[
+                            "local_arbitration_supported"
+                        ],
+                    }
+                )
             self.repository.create(task)
         return decision
 
