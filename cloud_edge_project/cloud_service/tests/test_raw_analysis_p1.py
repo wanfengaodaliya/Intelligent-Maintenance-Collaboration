@@ -44,4 +44,3 @@ def test_raw_sample_service_is_checksum_idempotent_and_worker_persists_physical_
     assert evidence is not None and evidence["status"] == "SUCCEEDED"
     assert "final_diagnosis" not in evidence["result"]
     assert "recommended_action" not in evidence["result"]
-
