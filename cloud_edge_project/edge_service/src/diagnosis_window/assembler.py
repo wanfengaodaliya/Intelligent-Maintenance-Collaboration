@@ -38,11 +38,18 @@ class IncompleteTailReport:
 
 
 class DiagnosisWindowAssembler:
-    def __init__(self, *, window_ms: int, packet_duration_ms: int = 50) -> None:
+    def __init__(
+        self, *, window_ms: int, packet_duration_ms: int = 50,
+        step_ms: int | None = None, overlap_enabled: bool = False,
+    ) -> None:
         if window_ms not in {50, 100, 150}:
             raise ValueError("window_ms must be one of 50, 100, or 150")
         if packet_duration_ms != 50 or window_ms % packet_duration_ms:
             raise ValueError("packet_duration_ms must be 50 and divide window_ms")
+        if step_ms is not None and step_ms != window_ms:
+            raise ValueError("step_ms must equal window_ms")
+        if overlap_enabled:
+            raise ValueError("overlap_enabled must be false")
         self._packets_per_window = window_ms // packet_duration_ms
         self._pending: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
         self._next_sequence: dict[tuple[str, str, str, str], int] = {}

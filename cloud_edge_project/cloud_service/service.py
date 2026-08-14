@@ -155,6 +155,8 @@ def _validate_v12_request(request: dict[str, Any]) -> dict[str, Any]:
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window sequence range is invalid", 400)
     if not isinstance(window["contributing_packet_ids"], list) or not window["contributing_packet_ids"] or not all(isinstance(value, str) and value for value in window["contributing_packet_ids"]):
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window manifest is invalid", 400)
+    if len(window["contributing_packet_ids"]) != end - start + 1:
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window manifest does not match its sequence range", 400)
     expected_round = build_decision_round_id(device_id=window["device_id"], task_id=window["task_id"], window_start_sequence=start, window_end_sequence=end)
     expected_window = build_diagnosis_window_id(device_id=window["device_id"], task_id=window["task_id"], bearing_id=window["bearing_id"], sender_id=window["sender_id"], window_start_sequence=start, window_end_sequence=end)
     if request["decision_round_id"] != expected_round or request["diagnosis_window_id"] != expected_window:

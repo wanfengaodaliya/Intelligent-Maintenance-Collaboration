@@ -11,14 +11,15 @@ from cloud_service.global_analysis.arbitration_analyzer import analyze_device_ar
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT, GlobalAnalysisConfig
 from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
 from cloud_service.global_analysis.packet_model_analyzer import analyze_packet_model
+from cloud_service.global_analysis.physical_evidence_analyzer import analyze_physical_evidence
 from cloud_service.global_analysis.problem_detector import detect_problem_candidates
 from cloud_service.global_analysis.result_repository import GlobalAnalysisResultRepository
 from core.scenario_errors import UnsupportedScenarioError
 from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import analyze_bearing_aggregation
 from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyze_bearing_risk
 from scenarios.bearing.cloud.global_analysis.config import DEFAULT_GLOBAL_ANALYSIS_CONFIG
-from scenarios.bearing.cloud.global_analysis.data_loader import SQLiteGlobalAnalysisDataSource
 from scenarios.bearing.cloud.global_analysis.data_source import GlobalAnalysisDataSource
+from cloud_service.global_analysis.v12_data_source import V12GlobalAnalysisDataSource
 
 
 class GlobalAnalysisService:
@@ -32,7 +33,7 @@ class GlobalAnalysisService:
     ) -> None:
         self.database_path = Path(database_path)
         self.repository = GlobalAnalysisResultRepository(self.database_path)
-        self.data_source = data_source or SQLiteGlobalAnalysisDataSource(self.database_path)
+        self.data_source = data_source or V12GlobalAnalysisDataSource(self.database_path)
         self.config = config
 
     def analyze(self, scenario_type: str, subject_id: str, task_limit: int = DEFAULT_TASK_LIMIT) -> dict[str, Any]:
@@ -52,6 +53,11 @@ class GlobalAnalysisService:
         )
         bearing_aggregation = analyze_bearing_aggregation(data["bearing_review_pairs"], self.config)
         device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
+        physical_evidence = analyze_physical_evidence(
+            data.get("physical_evidence", []),
+            edge_summary_count=len(data.get("edge_summaries", [])),
+            available=availability.get("physical_evidence", False),
+        )
         previous = self.repository.get_recent(scenario, subject, 3)
         candidates = detect_problem_candidates(
             device_health=device_health, bearing_risk=bearing_risk,
@@ -70,6 +76,13 @@ class GlobalAnalysisService:
             "packet_diagnosis_analysis": packet_diagnosis,
             "bearing_aggregation_analysis": bearing_aggregation,
             "device_arbitration_analysis": device_arbitration,
+            "cloud_bearing_review_analysis": {
+                **bearing_aggregation,
+                "reviewed_bearing_count": bearing_aggregation["bearing_review_count"],
+            },
+            "physical_evidence_analysis": physical_evidence,
+            "revision_deduplication": data.get("revision_deduplication", {}),
+            "round_closure_analysis": data.get("round_closure_analysis", {}),
             "problem_candidates": candidates,
             "maintenance_recommendations": _maintenance_recommendations(device_health, bearing_risk),
             "created_at_ns": time.time_ns(),

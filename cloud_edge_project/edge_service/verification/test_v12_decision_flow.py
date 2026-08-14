@@ -457,3 +457,15 @@ def test_runtime_config_rejects_round_timeout_shorter_than_cloud_now_deadline() 
     )).validate()
 
     assert "v12.round_timeout_ms must cover cloud-now timeout plus finalize grace" in errors
+
+
+def test_runtime_config_allows_only_fixed_non_overlapping_diagnosis_windows() -> None:
+    errors = EdgeRuntimeConfig(v12=V12RuntimeConfig(
+        diagnosis_window_ms=100, diagnosis_step_ms=50, diagnosis_overlap_enabled=True,
+    )).validate()
+
+    assert "v12.diagnosis_step_ms must equal diagnosis_window_ms" in errors
+    assert "v12.diagnosis_overlap_enabled must be false" in errors
+    assert EdgeRuntimeConfig(v12=V12RuntimeConfig(
+        diagnosis_window_ms=150, diagnosis_step_ms=150, diagnosis_overlap_enabled=False,
+    )).validate() == []

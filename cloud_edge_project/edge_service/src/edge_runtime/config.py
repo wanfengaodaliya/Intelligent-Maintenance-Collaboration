@@ -57,6 +57,9 @@ class V12RuntimeConfig:
     cloud_now_timeout_ms: int = 3_000
     round_finalize_grace_ms: int = 500
     round_timeout_ms: int = 3_500
+    diagnosis_window_ms: int = 50
+    diagnosis_step_ms: int = 50
+    diagnosis_overlap_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,9 @@ class EdgeRuntimeConfig:
                 cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
                 round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
                 round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
+                diagnosis_window_ms=int(env.get("EDGE_DIAGNOSIS_WINDOW_MS", "50")),
+                diagnosis_step_ms=int(env.get("EDGE_DIAGNOSIS_STEP_MS", "50")),
+                diagnosis_overlap_enabled=env.get("EDGE_DIAGNOSIS_OVERLAP_ENABLED", "false").strip().lower() == "true",
             ),
             raw_sample_capture=RawSampleCaptureConfig(
                 enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
@@ -188,6 +194,12 @@ class EdgeRuntimeConfig:
             errors.append("v12 cloud-now timeout and finalize grace are invalid")
         if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:
             errors.append("v12.round_timeout_ms must cover cloud-now timeout plus finalize grace")
+        if self.v12.diagnosis_window_ms not in {50, 100, 150}:
+            errors.append("v12.diagnosis_window_ms must be one of 50, 100, or 150")
+        if self.v12.diagnosis_step_ms != self.v12.diagnosis_window_ms:
+            errors.append("v12.diagnosis_step_ms must equal diagnosis_window_ms")
+        if self.v12.diagnosis_overlap_enabled:
+            errors.append("v12.diagnosis_overlap_enabled must be false")
         raw_capture = self.raw_sample_capture
         if raw_capture.enabled and not str(raw_capture.directory).strip():
             errors.append("raw_sample_capture.directory must be non-empty")

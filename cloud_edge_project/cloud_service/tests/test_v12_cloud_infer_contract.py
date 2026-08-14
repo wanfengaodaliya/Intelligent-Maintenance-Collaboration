@@ -43,3 +43,42 @@ def test_cloud_infer_v12_rejects_mismatched_diagnosis_window_identity() -> None:
         assert error.code == "INVALID_CLOUD_WINDOW"
     else:
         raise AssertionError("cloud infer must reject a mismatched window identity")
+
+
+def test_cloud_infer_v12_keeps_the_same_non_overlapping_window_manifest() -> None:
+    request = _request()
+    request["cloud_raw_window"].update({
+        "window_end_sequence": 3,
+        "window_end_ns": 150_000_000,
+        "contributing_packet_ids": ["packet_001", "packet_002", "packet_003"],
+    })
+    request["decision_round_id"] = build_decision_round_id(
+        device_id="machine_01", task_id="task_001", window_start_sequence=1, window_end_sequence=3,
+    )
+    request["diagnosis_window_id"] = build_diagnosis_window_id(
+        device_id="machine_01", task_id="task_001", bearing_id="bearing_02", sender_id="sender_02",
+        window_start_sequence=1, window_end_sequence=3,
+    )
+
+    assert _validate_v12_request(request)["contributing_packet_ids"] == [
+        "packet_001", "packet_002", "packet_003",
+    ]
+
+
+def test_cloud_infer_v12_rejects_manifest_that_does_not_cover_its_sequence_range() -> None:
+    request = _request()
+    request["cloud_raw_window"]["window_end_sequence"] = 2
+    request["decision_round_id"] = build_decision_round_id(
+        device_id="machine_01", task_id="task_001", window_start_sequence=1, window_end_sequence=2,
+    )
+    request["diagnosis_window_id"] = build_diagnosis_window_id(
+        device_id="machine_01", task_id="task_001", bearing_id="bearing_02", sender_id="sender_02",
+        window_start_sequence=1, window_end_sequence=2,
+    )
+
+    try:
+        _validate_v12_request(request)
+    except CloudServiceError as error:
+        assert error.code == "INVALID_CLOUD_WINDOW"
+    else:
+        raise AssertionError("cloud infer must reject a shortened window manifest")
