@@ -10,6 +10,14 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 OUTPUT = REPO / "src" / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
+SCENARIO_OUTPUT = (
+    REPO.parent
+    / "scenarios"
+    / "bearing"
+    / "edge"
+    / "assets"
+    / "fir_64k_to_16k_369.txt"
+)
 
 
 def main() -> None:
@@ -20,17 +28,14 @@ def main() -> None:
         * np.kaiser(369, 8.41)
     )
     coefficients /= np.sum(coefficients, dtype=np.float64)
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(
-        OUTPUT,
-        coefficients,
-        fmt="%.18e",
-        header=(
-            "development_test asset; fs=64000; cutoff=7500; taps=369; "
-            f"kaiser_beta=8.41; numpy={np.__version__}"
-        ),
+    header = (
+        "development_test asset; fs=64000; cutoff=7500; taps=369; "
+        f"kaiser_beta=8.41; numpy={np.__version__}"
     )
-    print(hashlib.sha256(OUTPUT.read_bytes()).hexdigest())
+    for output in (OUTPUT, SCENARIO_OUTPUT):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        np.savetxt(output, coefficients, fmt="%.18e", header=header)
+        print(f"{output}: {hashlib.sha256(output.read_bytes()).hexdigest()}")
 
 
 if __name__ == "__main__":

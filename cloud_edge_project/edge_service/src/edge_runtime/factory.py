@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 from cloud_review import CloudReviewStore
 from edge_model.pipeline import EdgeModelPipeline
-from edge_perception import EdgePerception
+from core.edge_perception_contracts import PerceptionHandler
 from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from edge_aggregation import (
@@ -59,7 +59,7 @@ def build_edge_runtime(
     config: EdgeRuntimeConfig,
     ingress: EdgeTaskIngress,
     cache: EdgeValidationCache,
-    perception: EdgePerception,
+    perception: PerceptionHandler,
     pipeline: EdgeModelPipeline,
     cloud_review_store: Optional[CloudReviewStore] = None,
     on_packet_route_error: Optional[Callable[[dict], None]] = None,

@@ -35,6 +35,22 @@ def test_cloud_stores_and_returns_latest_edge_status():
     assert registry.get("edge_01") == _report()
 
 
+def test_cloud_preserves_optional_network_status() -> None:
+    registry = EdgeStatusRegistry()
+    report = _report()
+    report["network_to_scheduler"] = {
+        "measured_at_ns": 123,
+        "available_uplink_mbps_estimate": 25.0,
+        "rtt_ms_avg": 12.0,
+        "rtt_ms_p95": 16.0,
+        "loss_rate": 0.005,
+    }
+
+    registry.update(report)
+
+    assert registry.get("edge_01") == report
+
+
 def test_cloud_rejects_stale_edge_status_without_overwriting_latest():
     registry = EdgeStatusRegistry()
     registry.update(_report(2))

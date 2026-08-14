@@ -56,7 +56,7 @@ def _validate_report(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "load_status": _non_empty_text(item.get("load_status"), "load_status").upper(),
             }
         )
-    return {
+    validated = {
         "edge_node_id": _non_empty_text(report.get("edge_node_id"), "edge_node_id"),
         "reported_at_ns": _positive_int(report.get("reported_at_ns"), "reported_at_ns"),
         "resources": {
@@ -79,6 +79,27 @@ def _validate_report(payload: Mapping[str, Any]) -> dict[str, Any]:
             report.get("last_task_activity_ns"), "last_task_activity_ns"
         ),
     }
+    if report.get("network_to_scheduler") is not None:
+        network = _mapping(report.get("network_to_scheduler"), "network_to_scheduler")
+        validated["network_to_scheduler"] = {
+            "measured_at_ns": _positive_int(
+                network.get("measured_at_ns"), "measured_at_ns"
+            ),
+            "available_uplink_mbps_estimate": _non_negative_float(
+                network.get("available_uplink_mbps_estimate"),
+                "available_uplink_mbps_estimate",
+            ),
+            "rtt_ms_avg": _non_negative_float(
+                network.get("rtt_ms_avg"), "rtt_ms_avg"
+            ),
+            "rtt_ms_p95": _non_negative_float(
+                network.get("rtt_ms_p95"), "rtt_ms_p95"
+            ),
+            "loss_rate": _bounded_float(
+                network.get("loss_rate"), "loss_rate", 0.0, 1.0
+            ),
+        }
+    return validated
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
