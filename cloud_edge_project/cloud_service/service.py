@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import time
+from math import isfinite
 from typing import Any
 
 from core.bearing_actions import grade_for_action
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.errors import CloudServiceError
+from cloud_service.moment_light_adapt import (
+    MomentLightAdaptRunner,
+    MomentReviewPolicy,
+)
 from cloud_service.packet_diagnosis import (
     DiagnosisModel,
     PacketDiagnosis,
@@ -17,6 +22,28 @@ from cloud_service.packet_diagnosis import (
 from cloud_service.perception.pipeline import run_single_packet_perception
 from cloud_service.storage.persistence import CloudReviewPersistence
 from cloud_service.vllm_backend import infer_vllm
+
+
+_moment_runner: MomentLightAdaptRunner | None = None
+_moment_runner_settings: CloudSettings | None = None
+
+
+def get_moment_runner(settings: CloudSettings) -> MomentLightAdaptRunner:
+    """Return the process-wide runner for the current MOMENT configuration."""
+
+    global _moment_runner, _moment_runner_settings
+    if _moment_runner is None or _moment_runner_settings != settings:
+        _moment_runner = MomentLightAdaptRunner(settings)
+        _moment_runner_settings = settings
+    return _moment_runner
+
+
+def preload_moment_runner(settings: CloudSettings) -> MomentLightAdaptRunner:
+    """Load the cached runner during service startup."""
+
+    runner = get_moment_runner(settings)
+    runner.load()
+    return runner
 
 
 def infer_cloud(
@@ -94,8 +121,11 @@ def _infer_v12(
     diagnosis_model: DiagnosisModel | None,
 ) -> dict[str, Any]:
     window = _validate_v12_request(request)
+    selected = settings or load_cloud_settings()
+    if selected.backend == "moment_light_adapt":
+        return _infer_v12_moment(request, window, selected)
     legacy_request = _legacy_packet_request(request, window)
-    response = _infer_packet(legacy_request, settings, diagnosis_model=diagnosis_model)
+    response = _infer_packet(legacy_request, selected, diagnosis_model=diagnosis_model)
     packet_result = response.get("cloud_packet_result")
     if not isinstance(packet_result, dict):
         raise CloudServiceError("INVALID_CLOUD_WINDOW", "cloud raw window did not produce a bearing result", 422)
@@ -104,6 +134,85 @@ def _infer_v12(
     )
     response["review_result"] = response["cloud_packet_result"]
     return response
+
+
+def _infer_v12_moment(
+    request: dict[str, Any],
+    window: dict[str, Any],
+    settings: CloudSettings,
+) -> dict[str, Any]:
+    vibration = _moment_vibration(window)
+    edge = request["edge_perception_result"]
+    operating_context = edge["features"]["operating_context"]
+    prediction = get_moment_runner(settings).predict(vibration, operating_context)
+    bearing_state, risk_level, recommended_action = MomentReviewPolicy().decide(
+        prediction.label
+    )
+    review_id = f"moment_{request['diagnosis_window_id']}"
+    result = {
+        "schema_version": "cloud-bearing-result/2.0",
+        "result_id": f"cloud_{request['diagnosis_window_id']}",
+        "review_id": review_id,
+        "device_id": window["device_id"],
+        "task_id": window["task_id"],
+        "bearing_id": window["bearing_id"],
+        "sender_id": window["sender_id"],
+        "decision_round_id": request["decision_round_id"],
+        "diagnosis_window_id": request["diagnosis_window_id"],
+        "window_start_sequence": window["window_start_sequence"],
+        "window_end_sequence": window["window_end_sequence"],
+        "window_start_ns": window["window_start_ns"],
+        "window_end_ns": window["window_end_ns"],
+        "bearing_state": bearing_state,
+        "confidence": prediction.confidence,
+        "data_quality_score": 1.0,
+        "risk_level": risk_level,
+        "action_grade": grade_for_action(recommended_action),
+        "recommended_action": recommended_action,
+        "model_version": prediction.model_version,
+        "created_at_ns": time.time_ns(),
+    }
+    return {
+        "success": True,
+        "review_id": review_id,
+        "cloud_packet_result": result,
+        "review_result": result,
+    }
+
+
+def _moment_vibration(window: dict[str, Any]) -> dict[str, Any]:
+    if (
+        len(window["contributing_packet_ids"]) != 1
+        or window["sample_rate_hz"] != 64_000
+        or window["sample_count"] != 3_200
+    ):
+        raise CloudServiceError(
+            "INVALID_CLOUD_WINDOW",
+            "MOMENT LIGHT_ADAPT requires one 50ms 64kHz window with 3200 samples",
+            400,
+        )
+    vibration = window["data"].get("vibration")
+    if not isinstance(vibration, dict):
+        raise CloudServiceError("INVALID_CLOUD_WINDOW", "vibration signal is required", 400)
+    values = vibration.get("values")
+    if (
+        vibration.get("sample_rate_hz") != 64_000
+        or vibration.get("sample_count") != 3_200
+        or not isinstance(values, list)
+        or len(values) != 3_200
+        or not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and isfinite(value)
+            for value in values
+        )
+    ):
+        raise CloudServiceError(
+            "INVALID_CLOUD_WINDOW",
+            "vibration signal does not match the MOMENT 50ms input contract",
+            400,
+        )
+    return vibration
 
 
 def _cloud_packet_result(

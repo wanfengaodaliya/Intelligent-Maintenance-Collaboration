@@ -37,6 +37,7 @@ from cloud_service.context_aggregation.coordinator import ContextAggregationCoor
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
+from cloud_service.service import get_moment_runner, preload_moment_runner
 from cloud_service.vllm_backend import infer_v01_vllm
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
@@ -148,6 +149,8 @@ async def _run_background_workers() -> None:
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
+    if settings.backend == "moment_light_adapt":
+        await asyncio.to_thread(preload_moment_runner, settings)
     await asyncio.to_thread(
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
@@ -314,6 +317,13 @@ def health() -> dict[str, object] | JSONResponse:
     settings = load_cloud_settings()
     if settings.backend == "mock":
         return _health_payload(settings, "ok")
+    if settings.backend == "moment_light_adapt":
+        if get_moment_runner(settings).loaded:
+            return _health_payload(settings, "ok")
+        return JSONResponse(
+            status_code=503,
+            content=_health_payload(settings, "unavailable"),
+        )
     if settings.backend != "vllm":
         return JSONResponse(
             status_code=500,
