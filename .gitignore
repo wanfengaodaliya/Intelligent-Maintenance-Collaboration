@@ -1,2 +1,13 @@
 # 项目内部 Git worktree 目录。
 .worktrees/
+
+# Local Python virtual environment for random-forest development.
+cloud_edge_project/.venv-rf/
+
+# Generated random-forest features, reports, caches, and handoff archive.
+cloud_edge_project/model_training/bearing_random_forest/var/
+cloud_edge_project/model_training/bearing_random_forest.zip
+
+# Python bytecode caches.
+**/__pycache__/
+*.py[cod]
