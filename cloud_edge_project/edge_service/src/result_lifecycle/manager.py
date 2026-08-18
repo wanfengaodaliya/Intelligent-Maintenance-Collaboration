@@ -35,11 +35,16 @@ class BearingResultLifecycleManager:
 
         lifecycle_state, decision_source, review_status, degraded = _ROUTE_LIFECYCLE[route]
         instruction = route_decision.get("result_instruction")
-        if not isinstance(instruction, dict) or instruction != {
+        expected_instruction = {
             "result_status": _RESULT_STATUS[route],
             "review_status": review_status,
             "degraded": degraded,
-        }:
+        }
+        # Scheduler 的指令包含额外字段（如 decision_source），逐字段比对语义即可。
+        if not isinstance(instruction, dict) or any(
+            instruction.get(field) != value
+            for field, value in expected_instruction.items()
+        ):
             raise ValueError("route decision result instruction is inconsistent")
 
         draft = BearingDecisionResult(

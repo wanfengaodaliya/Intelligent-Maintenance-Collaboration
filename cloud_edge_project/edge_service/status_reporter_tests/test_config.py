@@ -115,3 +115,33 @@ def test_disabled_target_ignores_its_url_timeout_and_retry_values() -> None:
 def test_target_config_rejects_invalid_url_ports(url: str) -> None:
     with pytest.raises(ValueError, match=r"HTTP\(S\)"):
         StatusTargetConfig("scheduler", True, url, 0.5, 0)
+
+
+def test_default_urls_derive_from_service_base_urls_when_set() -> None:
+    config = EdgeStatusReporterConfig.from_env(
+        default_model_version="edge_bearing_mock",
+        environ={
+            "SCHEDULER_SERVICE_BASE_URL": "http://192.168.56.10:8003/",
+            "CLOUD_SERVICE_BASE_URL": "http://192.168.56.10:8004/",
+        },
+    )
+    assert config.scheduler.url == "http://192.168.56.10:8003/scheduler/edge-nodes/status"
+    assert config.cloud.url == "http://192.168.56.10:8004/cloud/edge-status"
+
+
+def test_default_urls_fallback_to_loopback_when_only_scheduler_base_set() -> None:
+    config = EdgeStatusReporterConfig.from_env(
+        default_model_version="edge_bearing_mock",
+        environ={"SCHEDULER_SERVICE_BASE_URL": "http://192.168.56.10:8003"},
+    )
+    assert config.scheduler.url == "http://192.168.56.10:8003/scheduler/edge-nodes/status"
+    assert config.cloud.url == "http://127.0.0.1:8004/cloud/edge-status"
+
+
+def test_default_urls_fallback_to_loopback_when_only_cloud_base_set() -> None:
+    config = EdgeStatusReporterConfig.from_env(
+        default_model_version="edge_bearing_mock",
+        environ={"CLOUD_SERVICE_BASE_URL": "http://192.168.56.10:8004"},
+    )
+    assert config.scheduler.url == "http://127.0.0.1:8003/scheduler/edge-nodes/status"
+    assert config.cloud.url == "http://192.168.56.10:8004/cloud/edge-status"

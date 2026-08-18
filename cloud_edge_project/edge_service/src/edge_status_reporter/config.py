@@ -178,7 +178,9 @@ class EdgeStatusReporterConfig:
             "http://127.0.0.1:8090/api/v1/network/links/"
             f"{network_link_id}"
         )
-        scheduler_default_url, cloud_default_url = _default_status_urls(edge_node_id)
+        scheduler_default_url, cloud_default_url = _default_status_urls(
+            edge_node_id, env
+        )
         enabled = _boolean(env.get("EDGE_STATUS_REPORTER_ENABLED", "true"), "EDGE_STATUS_REPORTER_ENABLED")
         if not enabled:
             return cls(
@@ -270,7 +272,23 @@ class EdgeStatusReporterConfig:
         )
 
 
-def _default_status_urls(edge_node_id: str) -> tuple[str, str]:
+def _default_status_urls(
+    edge_node_id: str, env: Mapping[str, str]
+) -> tuple[str, str]:
+    # 优先从统一服务基址推导，避免与 SCHEDULER_SERVICE_BASE_URL /
+    # CLOUD_SERVICE_BASE_URL 指向的地址不一致；仅在未设置基址时
+    # 回退到网络模拟器的本地代理端口（手动启动模拟器场景）。
+    scheduler_base = env.get("SCHEDULER_SERVICE_BASE_URL", "").strip()
+    cloud_base = env.get("CLOUD_SERVICE_BASE_URL", "").strip()
+    if scheduler_base or cloud_base:
+        return (
+            f"{scheduler_base.rstrip('/')}/scheduler/edge-nodes/status"
+            if scheduler_base
+            else "http://127.0.0.1:8003/scheduler/edge-nodes/status",
+            f"{cloud_base.rstrip('/')}/cloud/edge-status"
+            if cloud_base
+            else "http://127.0.0.1:8004/cloud/edge-status",
+        )
     local_proxy_ports = {
         "edge_01": (18011, 18021),
         "edge_02": (18051, 18053),
