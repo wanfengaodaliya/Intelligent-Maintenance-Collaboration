@@ -9,6 +9,10 @@ from sender.config import load_config
 from sender.controller import run_all_senders
 
 
+def _default_config_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "config" / "local.json"
+
+
 def parse_source_files(entries: list[str]) -> dict[str, Path]:
     source_files: dict[str, Path] = {}
     for entry in entries:
@@ -25,7 +29,7 @@ def parse_source_files(entries: list[str]) -> dict[str, Path]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Replay three independent bearing senders")
-    parser.add_argument("--config", type=Path, default=Path("config/local.json"))
+    parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument(
         "--source",
         action="append",

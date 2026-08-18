@@ -65,7 +65,7 @@ def deployment_workspace_root(pretrained_path: Path) -> Path:
     for candidate in (pretrained_path, *pretrained_path.parents):
         if (candidate / "experiments").is_dir():
             return candidate
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 class MomentLightAdaptRunner:

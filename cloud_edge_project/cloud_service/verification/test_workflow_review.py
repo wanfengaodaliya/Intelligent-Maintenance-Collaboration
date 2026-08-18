@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from cloud_service.workflow_review import WorkflowReviewService
+from scenarios.bearing.cloud.workflow_review_scenario import (
+    BearingWorkflowReviewScenario,
+)
 
 
 def _packet_result(sequence=1):
@@ -35,7 +38,9 @@ def _raw(sequence):
 
 
 def test_packet_review_job_is_idempotent_and_queryable(tmp_path):
-    service = WorkflowReviewService(tmp_path / "cloud.db")
+    service = WorkflowReviewService(
+        tmp_path / "cloud.db", scenario_reviewer=BearingWorkflowReviewScenario()
+    )
     request = {
         "review_id": "packet-review-1",
         "device_id": "device-1",
@@ -54,7 +59,9 @@ def test_packet_review_job_is_idempotent_and_queryable(tmp_path):
 
 
 def test_window_review_requires_exact_ordered_twenty_packet_batch(tmp_path):
-    service = WorkflowReviewService(tmp_path / "cloud.db")
+    service = WorkflowReviewService(
+        tmp_path / "cloud.db", scenario_reviewer=BearingWorkflowReviewScenario()
+    )
     window = {
         "result_id": "window-1",
         "device_id": "device-1",
@@ -91,7 +98,9 @@ def test_window_review_requires_exact_ordered_twenty_packet_batch(tmp_path):
 
 
 def test_device_review_reuses_existing_arbitration_and_returns_safe_action(tmp_path):
-    service = WorkflowReviewService(tmp_path / "cloud.db")
+    service = WorkflowReviewService(
+        tmp_path / "cloud.db", scenario_reviewer=BearingWorkflowReviewScenario()
+    )
     bearings = []
     for bearing_id, grade in (("bearing-1", 0), ("bearing-2", 2)):
         bearings.append({

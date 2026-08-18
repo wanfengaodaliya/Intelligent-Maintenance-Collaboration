@@ -28,9 +28,7 @@ from cloud_service.model_update.dataset_repository import (
 from cloud_service.model_update.decision import decide_update
 from cloud_service.model_update.distribution_client import build_distribution_request
 from cloud_service.model_update.label_confirmation import (
-    CloudReferenceProvider,
     LabelConfirmationProvider,
-    LabelConfirmationResolver,
     SnapshotLabelProvider,
 )
 from cloud_service.model_update.post_validator import (
@@ -39,9 +37,6 @@ from cloud_service.model_update.post_validator import (
 )
 from cloud_service.model_update.repository import ModelUpdateRepository
 from cloud_service.model_update.validator import validate_candidate
-from scenarios.bearing.cloud.model_update.dataset_label_provider import DatasetLabelProvider
-from scenarios.bearing.cloud.model_update.human_review_provider import HumanReviewProvider
-from scenarios.bearing.cloud.model_update.training_data_source import BearingTrainingDataSource
 
 
 class ModelUpdateError(RuntimeError):
@@ -57,7 +52,6 @@ class ModelUpdateService:
         *,
         data_root: Path | None = None,
         packet_source_database_path: Path | None = None,
-        label_mapping: dict[str, Any] | None = None,
         config: ModelUpdateConfig = DEFAULT_CONFIG,
         training_data_source: Any | None = None,
         label_provider: LabelConfirmationProvider | None = None,
@@ -65,7 +59,7 @@ class ModelUpdateService:
         self.database_path = Path(database_path)
         self.data_root = (
             data_root
-            or Path(__file__).resolve().parents[2] / "data" / "model_updates"
+            or Path(__file__).resolve().parents[1] / "data" / "model_updates"
         ).resolve()
         self.config = config
         self.repository = ModelUpdateRepository(self.database_path)
@@ -74,16 +68,8 @@ class ModelUpdateService:
         self.source_repository = PacketSourceRepository(
             packet_source_database_path or self.database_path
         )
-        self.training_data_source = training_data_source or BearingTrainingDataSource(
-            self.database_path, self.source_repository
-        )
-        self.label_provider = label_provider or LabelConfirmationResolver(
-            [
-                DatasetLabelProvider(self.source_repository, label_mapping or {}),
-                HumanReviewProvider(self.label_repository),
-                CloudReferenceProvider(),
-            ]
-        )
+        self.training_data_source = training_data_source
+        self.label_provider = label_provider
         self.dataset_builder = DatasetBuilder(config)
         self.candidate_registry = CandidateRegistry(self.data_root)
 
@@ -148,6 +134,8 @@ class ModelUpdateService:
                 )
             return task
         self._require_state(task, DATA_PREPARATION_STATES)
+        if self.training_data_source is None or self.label_provider is None:
+            raise ModelUpdateError("MODEL_UPDATE_SCENARIO_NOT_CONFIGURED")
         self.repository.update(
             update_id, status="data_preparing", updated_at_ns=time.time_ns()
         )

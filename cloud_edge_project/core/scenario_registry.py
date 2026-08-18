@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from core.scenario_errors import UnsupportedScenarioError
-from scenarios.bearing.cloud.handler import BearingCloudHandler
 
 
 DEFAULT_SCENARIO_TYPE = "bearing"
@@ -29,7 +28,19 @@ class ScenarioHandler(Protocol):
     def get_device_arbitration(self, conflict_id: str) -> dict[str, Any] | None: ...
 
 
-SCENARIO_HANDLERS = {"bearing": BearingCloudHandler}
+# Mutable registry: handlers are registered from outside (e.g. cloud_service/app.py).
+# core does NOT import any scenario implementation.
+_SCENARIO_HANDLERS: dict[str, type] = {}
+
+
+def register_handler(scenario_type: str, handler_class: type) -> None:
+    """Register a scenario handler class for the given scenario_type."""
+    _SCENARIO_HANDLERS[scenario_type] = handler_class
+
+
+def get_registered_types() -> tuple[str, ...]:
+    """Return the list of registered scenario types."""
+    return tuple(_SCENARIO_HANDLERS.keys())
 
 
 def normalize_scenario_type(value: object) -> str:
@@ -45,7 +56,7 @@ def get_scenario_handler(
     database_path: Path,
 ) -> ScenarioHandler:
     normalized = normalize_scenario_type(scenario_type)
-    handler_type = SCENARIO_HANDLERS.get(normalized)
+    handler_type = _SCENARIO_HANDLERS.get(normalized)
     if handler_type is None:
         raise UnsupportedScenarioError(normalized)
     return handler_type(database_path)

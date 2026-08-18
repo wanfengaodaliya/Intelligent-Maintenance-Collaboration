@@ -1,22 +1,32 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from cloud_service.device_arbitration.service import DeviceArbitrationService
 from cloud_service.workflow_review.repository import WorkflowReviewRepository
-from core.bearing_workflow_contracts import (
-    REVIEW_BEARING_WINDOW,
-    REVIEW_DEVICE,
-    REVIEW_PACKET,
-)
-from scenarios.bearing.cloud.device_arbitration.adapter import BearingDeviceArbitrationAdapter
-from scenarios.bearing.cloud.workflow_review import (
-    device_arbitration_request,
-    review_packet,
-    review_window,
-    reviewed_device_result,
-)
+
+
+# Generic review granularities of the workflow-review service. The string values
+# are part of the persisted contract (see cloud_service/storage/schema.py) and
+# must stay identical; "BEARING_WINDOW" is a legacy persisted value.
+REVIEW_TYPE_PACKET = "PACKET"
+REVIEW_TYPE_WINDOW = "BEARING_WINDOW"
+REVIEW_TYPE_DEVICE = "DEVICE"
+REVIEW_TYPES = frozenset({REVIEW_TYPE_PACKET, REVIEW_TYPE_WINDOW, REVIEW_TYPE_DEVICE})
+
+
+class WorkflowReviewScenario(Protocol):
+    """Scenario-specific review processors injected by the assembly layer."""
+
+    def review_packet(self, request: dict[str, Any]) -> dict[str, Any]: ...
+
+    def review_window(
+        self, request: dict[str, Any], raw_packets: list[dict[str, Any]]
+    ) -> dict[str, Any]: ...
+
+    def review_device(
+        self, request: dict[str, Any], review_id: str, database_path: Path
+    ) -> dict[str, Any]: ...
 
 
 class WorkflowReviewError(ValueError):
@@ -26,12 +36,18 @@ class WorkflowReviewError(ValueError):
 
 
 class WorkflowReviewService:
-    def __init__(self, database_path: Path):
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        scenario_reviewer: WorkflowReviewScenario | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
         self.repository = WorkflowReviewRepository(self.database_path)
+        self.scenario_reviewer = scenario_reviewer
 
     def submit(self, review_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if review_type not in {REVIEW_PACKET, REVIEW_BEARING_WINDOW, REVIEW_DEVICE}:
+        if review_type not in REVIEW_TYPES:
             raise WorkflowReviewError("INVALID_REVIEW_TYPE")
         if not isinstance(payload, dict):
             raise WorkflowReviewError("INVALID_REVIEW_REQUEST")
@@ -40,12 +56,12 @@ class WorkflowReviewService:
             raise WorkflowReviewError("INVALID_REVIEW_ID")
         self._validate_identity(payload)
         self._validate_payload(review_type, payload)
-        status = "WAITING_RAW" if review_type == REVIEW_BEARING_WINDOW else "PENDING"
+        status = "WAITING_RAW" if review_type == REVIEW_TYPE_WINDOW else "PENDING"
         return self.repository.create(review_id, review_type, payload, status)
 
     def upload_window_raw(self, review_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         job = self.get(review_id)
-        if job["review_type"] != REVIEW_BEARING_WINDOW:
+        if job["review_type"] != REVIEW_TYPE_WINDOW:
             raise WorkflowReviewError("INVALID_REVIEW_TYPE")
         packets = payload.get("raw_packets") if isinstance(payload, dict) else None
         if not isinstance(packets, list) or len(packets) != 20:
@@ -68,19 +84,20 @@ class WorkflowReviewService:
             return
         job = self.get(review_id)
         try:
-            if job["review_type"] == REVIEW_PACKET:
-                result = review_packet(job["request"])
-            elif job["review_type"] == REVIEW_BEARING_WINDOW:
+            if self.scenario_reviewer is None:
+                raise WorkflowReviewError("WORKFLOW_REVIEW_SCENARIO_NOT_CONFIGURED")
+            if job["review_type"] == REVIEW_TYPE_PACKET:
+                result = self.scenario_reviewer.review_packet(job["request"])
+            elif job["review_type"] == REVIEW_TYPE_WINDOW:
                 raw_packets = job["raw_packets"]
                 if raw_packets is None:
                     raise WorkflowReviewError("WINDOW_RAW_NOT_UPLOADED")
-                result = review_window(job["request"], raw_packets)
+                result = self.scenario_reviewer.review_window(job["request"], raw_packets)
             else:
                 device = job["request"]["device_result"]
-                arbitration = DeviceArbitrationService(
-                    self.database_path, BearingDeviceArbitrationAdapter()
-                ).arbitrate(device_arbitration_request(device, review_id))
-                result = reviewed_device_result(device, arbitration)
+                result = self.scenario_reviewer.review_device(
+                    device, review_id, self.database_path
+                )
             self.repository.succeed(review_id, result)
         except Exception as exc:
             code = exc.code if isinstance(exc, WorkflowReviewError) else type(exc).__name__.upper()
@@ -107,19 +124,19 @@ class WorkflowReviewService:
     @staticmethod
     def _validate_payload(review_type: str, payload: dict[str, Any]) -> None:
         field = {
-            REVIEW_PACKET: "packet_result",
-            REVIEW_BEARING_WINDOW: "window_result",
-            REVIEW_DEVICE: "device_result",
+            REVIEW_TYPE_PACKET: "packet_result",
+            REVIEW_TYPE_WINDOW: "window_result",
+            REVIEW_TYPE_DEVICE: "device_result",
         }[review_type]
         result = payload.get(field)
         if not isinstance(result, dict):
             raise WorkflowReviewError("INVALID_REVIEW_REQUEST", "%s is required" % field)
         identity_fields = ("device_id", "task_id")
-        if review_type != REVIEW_DEVICE:
+        if review_type != REVIEW_TYPE_DEVICE:
             identity_fields += ("bearing_id",)
         if any(result.get(name) != payload.get(name) for name in identity_fields):
             raise WorkflowReviewError("REVIEW_IDENTITY_MISMATCH")
-        if review_type == REVIEW_PACKET:
+        if review_type == REVIEW_TYPE_PACKET:
             raw = payload.get("raw_packet")
             if not isinstance(raw, dict) or any(
                 raw.get(name) != result.get(name)

@@ -1,0 +1,1 @@
+"""Bearing high-sample-rate signal and operating-context contracts."""
