@@ -20,3 +20,16 @@ interface-gap-analysis/
 
 # TRAE HTML 分享包临时目录。
 .trae-html-share-packages/
+
+# 本地实验与训练产物（体积大，不上传）。
+experiments/
+local_experiment/
+
+# 缓存目录。
+.cache/
+.pytest_cache/
+
+# 环境变量文件（可能含密钥，仅保留不含密钥的 .env.example）。
+.env
+.env.*
+!.env.example

@@ -11,9 +11,9 @@ from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
 def detect_problem_candidates(
     *,
     device_health: dict[str, Any],
-    bearing_risk: dict[str, Any],
+    bearing_risk: dict[str, Any] | None,
     packet_diagnosis: dict[str, Any],
-    cloud_bearing_review: dict[str, Any],
+    cloud_bearing_review: dict[str, Any] | None,
     device_arbitration: dict[str, Any],
     previous_analysis: list[dict[str, Any]],
     config: GlobalAnalysisConfig,
@@ -32,7 +32,8 @@ def detect_problem_candidates(
             "model_update", previous_analysis,
         ))
     if (
-        cloud_bearing_review.get("status") == "succeeded"
+        cloud_bearing_review is not None
+        and cloud_bearing_review.get("status") == "succeeded"
         and cloud_bearing_review.get("bearing_correction_rate", 0) >= config.bearing_correction_warning_rate
     ):
         candidates.append(_candidate(

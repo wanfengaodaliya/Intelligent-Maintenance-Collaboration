@@ -5,11 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from cloud_service.model_update.contracts import ModelUpdateConfig
 from cloud_service.model_update.candidate_registry import schema_is_compatible
-from scenarios.bearing.cloud.model_update.validation_metrics import (
-    classification_metrics,
-)
+from cloud_service.model_update.classification_metrics import classification_metrics
+from cloud_service.model_update.contracts import ModelUpdateConfig
 
 
 TARGET_METRICS = {

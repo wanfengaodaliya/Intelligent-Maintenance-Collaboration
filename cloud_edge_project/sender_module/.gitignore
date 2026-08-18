@@ -6,8 +6,7 @@ __pycache__/
 venv/
 .pytest_cache/
 
-runtime/logs/
-runtime/state/
+runtime/
 
 *.mat
 *.rar

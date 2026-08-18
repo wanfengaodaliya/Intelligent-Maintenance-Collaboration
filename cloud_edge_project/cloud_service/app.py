@@ -19,7 +19,27 @@ from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
+from cloud_service.model_update.dataset_repository import (
+    LabelConfirmationRepository,
+    PacketSourceRepository,
+)
+from cloud_service.model_update.label_confirmation import (
+    CloudReferenceProvider,
+    LabelConfirmationResolver,
+)
 from scenarios.bearing.cloud.model_update.config import load_label_mapping
+from scenarios.bearing.cloud.model_update.dataset_label_provider import (
+    DatasetLabelProvider,
+)
+from scenarios.bearing.cloud.model_update.human_review_provider import (
+    HumanReviewProvider,
+)
+from scenarios.bearing.cloud.model_update.training_data_source import (
+    BearingTrainingDataSource,
+)
+from scenarios.bearing.cloud.workflow_review_scenario import (
+    BearingWorkflowReviewScenario,
+)
 from cloud_service.bearing_review.service import (
     BearingReviewService,
     BearingReviewConflictError,
@@ -65,13 +85,22 @@ from common.schemas import (
 from core.scenario_registry import (
     DEFAULT_SCENARIO_TYPE,
     get_scenario_handler,
+    register_handler,
 )
+from scenarios.bearing.cloud.handler import BearingCloudHandler
 from core.scenario_errors import UnsupportedScenarioError
 from core.arbitration_contracts import ArbitrationValidationError
+from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyze_bearing_risk
+from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import analyze_bearing_aggregation
+from scenarios.bearing.cloud.global_analysis.analyzer import build_bearing_maintenance_recommendations
 
 
 config = load_config()
 edge_status_registry = EdgeStatusRegistry()
+
+# Register the default bearing scenario handler at module level.
+# This ensures get_scenario_handler() works without core importing scenarios.
+register_handler("bearing", BearingCloudHandler)
 
 
 def build_cloud_status_reporter() -> CloudNodeStatusReporter:
@@ -100,6 +129,34 @@ def build_cloud_status_reporter() -> CloudNodeStatusReporter:
 status_reporter = build_cloud_status_reporter()
 
 
+def _build_bearing_global_analyzers() -> dict[str, Any]:
+    """Build scenario-specific analyzers for the bearing scenario.
+
+    Each wrapper extracts the relevant data slice from the full data dict
+    that GlobalAnalysisService passes to all injected analyzers (data, config).
+    """
+    def _bearing_risk_wrapper(data: dict[str, Any], config: Any) -> dict[str, Any]:
+        rows = data.get("bearing_tasks", [])
+        return analyze_bearing_risk(rows, config)
+
+    def _bearing_review_wrapper(data: dict[str, Any], config: Any) -> dict[str, Any]:
+        rows = data.get("bearing_review_pairs", [])
+        if not rows:
+            return {"status": "not_available", "bearing_review_count": 0}
+        return analyze_bearing_aggregation(rows, config)
+
+    def _maintenance_wrapper(device_health: dict[str, Any], bearing_risk: dict[str, Any]) -> list[str]:
+        if bearing_risk is None:
+            return []
+        return build_bearing_maintenance_recommendations(device_health, bearing_risk)
+
+    return {
+        "analyze_bearing_risk": _bearing_risk_wrapper,
+        "analyze_cloud_bearing_review": _bearing_review_wrapper,
+        "maintenance_recommendations": _maintenance_wrapper,
+    }
+
+
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
     handler = get_scenario_handler(
         DEFAULT_SCENARIO_TYPE,
@@ -119,7 +176,10 @@ async def _run_background_workers() -> None:
                 ).expire_due()
             if settings.legacy_bearing_window_review_enabled:
                 await asyncio.to_thread(
-                    WorkflowReviewService(settings.database_path).process_pending,
+                    WorkflowReviewService(
+                        settings.database_path,
+                        scenario_reviewer=BearingWorkflowReviewScenario(),
+                    ).process_pending,
                     20,
                 )
             if settings.legacy_context_enhanced_pipeline_enabled:
@@ -224,7 +284,10 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _workflow_review_service() -> WorkflowReviewService:
-    return WorkflowReviewService(load_cloud_settings().database_path)
+    return WorkflowReviewService(
+        load_cloud_settings().database_path,
+        scenario_reviewer=BearingWorkflowReviewScenario(),
+    )
 
 
 def _legacy_bearing_workflow_disabled() -> JSONResponse | None:
@@ -629,8 +692,13 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
             content={"error_code": "INVALID_GLOBAL_ANALYSIS_REQUEST"},
         )
     try:
-        result = GlobalAnalysisService(load_cloud_settings().database_path).analyze(
-            payload.get("scenario_type"),
+        scenario_type = payload.get("scenario_type", DEFAULT_SCENARIO_TYPE)
+        analyzers = _build_bearing_global_analyzers() if scenario_type == "bearing" else None
+        result = GlobalAnalysisService(
+            load_cloud_settings().database_path,
+            scenario_analyzers=analyzers,
+        ).analyze(
+            scenario_type,
             payload.get("subject_id"),
             payload.get("task_limit", DEFAULT_TASK_LIMIT),
         )
@@ -677,14 +745,29 @@ def _model_update_service() -> ModelUpdateService:
     source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
     label_mapping_path = os.getenv("PADERBORN_LABEL_MAPPING_PATH")
     data_root = os.getenv("MODEL_UPDATE_DATA_ROOT")
+    database_path = settings.database_path
+    source_repository = PacketSourceRepository(
+        Path(source_database) if source_database else database_path
+    )
+    label_repository = LabelConfirmationRepository(database_path)
+    label_mapping = load_label_mapping(
+        Path(label_mapping_path) if label_mapping_path else None
+    )
     return ModelUpdateService(
-        settings.database_path,
+        database_path,
         data_root=Path(data_root) if data_root else None,
         packet_source_database_path=(
             Path(source_database) if source_database else None
         ),
-        label_mapping=load_label_mapping(
-            Path(label_mapping_path) if label_mapping_path else None
+        training_data_source=BearingTrainingDataSource(
+            database_path, source_repository
+        ),
+        label_provider=LabelConfirmationResolver(
+            [
+                DatasetLabelProvider(source_repository, label_mapping),
+                HumanReviewProvider(label_repository),
+                CloudReferenceProvider(),
+            ]
         ),
     )
 

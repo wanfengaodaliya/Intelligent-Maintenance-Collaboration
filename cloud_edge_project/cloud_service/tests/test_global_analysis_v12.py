@@ -84,7 +84,7 @@ def test_default_global_analysis_uses_current_v12_revisions_and_physical_evidenc
         "round_timeout_count": 1, "late_bearing_revision_count": 1,
     }
     assert "bearing_aggregation_analysis" not in result
-    assert result["cloud_bearing_review_analysis"]["reviewed_bearing_count"] == 1
+    assert "cloud_bearing_review_analysis" not in result
     assert result["physical_evidence_analysis"]["event_sample_count"] == 1
     assert result["physical_evidence_analysis"]["partial_sample_count"] == 1
     assert result["physical_evidence_analysis"]["multi_scale"]["edge_feature_window_ms"] == 50
