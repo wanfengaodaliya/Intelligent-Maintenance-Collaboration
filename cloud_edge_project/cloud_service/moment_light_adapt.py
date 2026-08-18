@@ -17,7 +17,7 @@ from cloud_service.moment_backbone import load_moment_backbone
 
 
 LABEL_NAMES = ("healthy", "outer_ring_damage", "inner_ring_damage")
-MODEL_VERSION = "moment-light-adapt-fold3"
+MODEL_VERSION = "moment-scl05-final"
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ def deployment_workspace_root(pretrained_path: Path) -> Path:
 
 
 class MomentLightAdaptRunner:
-    """Load fold_3 once and infer directly from a raw 50 ms vibration window."""
+    """Load the final MOMENT model once and infer from a raw 50 ms vibration window."""
 
     def __init__(self, settings: CloudSettings):
         self.settings = settings

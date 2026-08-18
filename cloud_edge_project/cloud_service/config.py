@@ -29,11 +29,11 @@ class CloudSettings:
     legacy_context_enhanced_pipeline_enabled: bool = False
     moment_checkpoint_path: Path = PROJECT_ROOT / (
         "local_experiment/analysis/final_model/moment_final_chance/"
-        "LIGHT_ADAPT_REPRO/fold_3/best_model.pt"
+        "SCL05/fold_3/best_model.pt"
     )
     moment_condition_norm_path: Path = PROJECT_ROOT / (
         "local_experiment/analysis/final_model/moment_final_chance/"
-        "LIGHT_ADAPT_REPRO/fold_3/condition_norm.json"
+        "SCL05/fold_3/condition_norm.json"
     )
     moment_pretrained_path: Path = PROJECT_ROOT / (
         "experiments/diagnosis_models/moment/pretrained/MOMENT-1-small"
@@ -70,12 +70,12 @@ def load_cloud_settings() -> CloudSettings:
         moment_checkpoint_path=_artifact_path(
             "CLOUD_MOMENT_CHECKPOINT_PATH",
             "local_experiment/analysis/final_model/moment_final_chance/"
-            "LIGHT_ADAPT_REPRO/fold_3/best_model.pt",
+            "SCL05/fold_3/best_model.pt",
         ),
         moment_condition_norm_path=_artifact_path(
             "CLOUD_MOMENT_CONDITION_NORM_PATH",
             "local_experiment/analysis/final_model/moment_final_chance/"
-            "LIGHT_ADAPT_REPRO/fold_3/condition_norm.json",
+            "SCL05/fold_3/condition_norm.json",
         ),
         moment_pretrained_path=_artifact_path(
             "CLOUD_MOMENT_PRETRAINED_PATH",
