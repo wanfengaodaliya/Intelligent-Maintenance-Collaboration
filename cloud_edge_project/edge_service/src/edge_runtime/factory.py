@@ -45,6 +45,7 @@ from raw_sample_capture import (
 )
 from diagnosis_window import DiagnosisWindowAssembler
 from .v12_flow import V12DecisionFlow
+from suggestion_llm import SuggestionClient
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,20 @@ def build_edge_runtime(
     device_result_publisher = MqttJsonPublisher(
         mqtt_ingress.client,
         topic=config.mqtt.device_result_topic,
+        qos=config.mqtt.qos,
+    )
+    suggestion_client = (
+        SuggestionClient(
+            base_url=config.suggestion_llm.base_url,
+            timeout_seconds=config.suggestion_llm.timeout_seconds,
+            fallback_text=config.suggestion_llm.fallback_text,
+        )
+        if config.suggestion_llm.enabled
+        else None
+    )
+    suggestion_publisher = MqttJsonPublisher(
+        mqtt_ingress.client,
+        topic=config.mqtt.suggestion_topic,
         qos=config.mqtt.qos,
     )
     transfer = config.window_transfer
@@ -228,6 +243,9 @@ def build_edge_runtime(
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
         device_result_outbox=device_result_outbox,
         on_packet_route_error=on_packet_route_error,
+        suggestion_llm_client=suggestion_client,
+        suggestion_publisher=suggestion_publisher,
+        suggestion_history_window=config.suggestion_llm.history_window,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     control_application = EdgeControlApplication(

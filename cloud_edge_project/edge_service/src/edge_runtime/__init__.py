@@ -7,6 +7,7 @@ from .config import (
     MaintenanceConfig,
     MqttConfig,
     SchedulerConfig,
+    SuggestionLlmConfig,
     V12RuntimeConfig,
     WindowTransferConfig,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "MaintenanceConfig",
     "MqttConfig",
     "PacketRouteErrorRecorder",
+    "SuggestionLlmConfig",
     "WindowTransferConfig",
     "V12RuntimeConfig",
     "SchedulerConfig",

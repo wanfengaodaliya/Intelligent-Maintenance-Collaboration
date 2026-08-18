@@ -21,6 +21,9 @@ from raw_sample_capture import RawSampleCaptureService
 from raw_sample_capture.uploader import RawAnalysisSampleUploader
 from result_uploader import ResultUploader
 
+from suggestion_llm import SuggestionClient, build_suggestion_messages
+from suggestion_rule import evaluate_suggestion
+
 from .contracts import action_level_for
 from .http import SchedulerReporter
 from .v12_flow import V12DecisionFlow
@@ -55,6 +58,9 @@ class EdgeRuntimeCoordinator:
         round_timeout_ns: int = 3_500_000_000,
         device_result_outbox: Any = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
+        suggestion_llm_client: Optional[SuggestionClient] = None,
+        suggestion_publisher: Optional[JsonPublisher] = None,
+        suggestion_history_window: int = 10,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -77,6 +83,11 @@ class EdgeRuntimeCoordinator:
         self.device_result_outbox = device_result_outbox
         self.cloud_review_service: Any = None
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
+        self.suggestion_llm_client = suggestion_llm_client
+        self.suggestion_publisher = suggestion_publisher
+        self.suggestion_history_window = suggestion_history_window
+        # 设备级历史记录缓存：{device_id: [edge_result_dict, ...]}
+        self._suggestion_history: dict[str, list[dict[str, Any]]] = {}
         self._clock_ns = clock_ns
         self._pending_aggregation: dict[
             tuple[str, str, str, str, str], FinalPacketResult
@@ -220,6 +231,7 @@ class EdgeRuntimeCoordinator:
             if not self.legacy_realtime_aggregation:
                 return
         self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
+        self._generate_suggestion(completion)
 
     def _route_packet(
         self,
@@ -359,6 +371,81 @@ class EdgeRuntimeCoordinator:
             and self.device_result_publisher is not None
         ):
             self.device_result_publisher.publish(device_result.as_dict())
+
+    def _generate_suggestion(self, completion: PacketExecutionCompleted) -> None:
+        """根据包完成结果生成建议并通过 MQTT 发布。
+
+        流程：规则引擎决定建议类型 → LLM 翻译为自然语言 → MQTT 发布。
+        LLM 不可用时自动降级为 fallback 文本。
+        """
+        if completion.edge is None:
+            return
+        if self.suggestion_publisher is None:
+            return
+
+        device_id = completion.device_id
+        edge = completion.edge
+
+        # 1. 更新历史记录
+        with self._mutex:
+            if device_id not in self._suggestion_history:
+                self._suggestion_history[device_id] = []
+            history = self._suggestion_history[device_id]
+            history.append({
+                "edge_result": edge.edge_result,
+                "confidence": edge.confidence,
+                "risk_level": edge.edge_risk_level,
+            })
+            # 只保留最近 N 条
+            if len(history) > self.suggestion_history_window:
+                history[:] = history[-self.suggestion_history_window:]
+
+        # 2. 规则引擎决策
+        rule_result = evaluate_suggestion(
+            device_id=device_id,
+            current_label=edge.edge_result,
+            confidence=edge.confidence,
+            risk_level=edge.edge_risk_level,
+            history=list(history),
+        )
+
+        # 3. LLM 翻译为自然语言
+        if self.suggestion_llm_client is not None:
+            messages = build_suggestion_messages(
+                device_id=device_id,
+                label=edge.edge_result,
+                confidence=edge.confidence,
+                risk_level=edge.edge_risk_level,
+                suggestion_type=rule_result.suggestion_type,
+                trend=rule_result.trend,
+            )
+            llm_result = self.suggestion_llm_client.suggest(messages)
+            suggestion_text = llm_result.text
+        else:
+            # 没有 LLM 时，用规则引擎的 reason 字段直接作为建议
+            suggestion_text = f"{rule_result.reason}。"
+            if rule_result.maintenance_window:
+                suggestion_text = (
+                    f"{rule_result.reason}，建议"
+                    f"{'立即' if rule_result.maintenance_window == 'immediate' else rule_result.maintenance_window}检修。"
+                )
+
+        # 4. MQTT 发布
+        try:
+            self.suggestion_publisher.publish({
+                "device_id": device_id,
+                "task_id": completion.task_id,
+                "bearing_id": completion.bearing_id,
+                "packet_id": completion.packet_id,
+                "suggestion": suggestion_text,
+                "suggestion_type": rule_result.suggestion_type,
+                "priority": rule_result.priority,
+                "edge_result": edge.edge_result,
+                "confidence": edge.confidence,
+                "risk_level": edge.edge_risk_level,
+            })
+        except Exception:
+            pass
 
     def node_status(self) -> dict[str, Any]:
         now = self._clock_ns()

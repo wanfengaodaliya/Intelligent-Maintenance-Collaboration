@@ -20,6 +20,7 @@ class MqttConfig:
     qos: int = 1
     input_topic: str = "edge/edge_01/input"
     device_result_topic: str = "summary/device-results"
+    suggestion_topic: str = "summary/suggestions"
     client_id: str = "edge_01-runtime"
     ingress_queue_capacity: int = 160
 
@@ -84,6 +85,15 @@ class RawSampleCaptureConfig:
 
 
 @dataclass(frozen=True)
+class SuggestionLlmConfig:
+    enabled: bool = True
+    base_url: str = "http://127.0.0.1:8002"
+    timeout_seconds: float = 3.0
+    history_window: int = 10
+    fallback_text: str = "设备异常，建议关注。"
+
+
+@dataclass(frozen=True)
 class EdgeRuntimeConfig:
     edge_node_id: str = "edge_01"
     mqtt: MqttConfig = field(default_factory=MqttConfig)
@@ -92,6 +102,7 @@ class EdgeRuntimeConfig:
     window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
+    suggestion_llm: SuggestionLlmConfig = field(default_factory=SuggestionLlmConfig)
     raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
@@ -118,9 +129,30 @@ class EdgeRuntimeConfig:
                     "EDGE_MQTT_DEVICE_RESULT_TOPIC",
                     "summary/device-results",
                 ).strip(),
+                suggestion_topic=env.get(
+                    "EDGE_MQTT_SUGGESTION_TOPIC",
+                    "summary/suggestions",
+                ).strip(),
                 client_id=env.get(
                     "EDGE_MQTT_CLIENT_ID",
                     f"{edge_node_id}-runtime",
+                ).strip(),
+            ),
+            suggestion_llm=SuggestionLlmConfig(
+                enabled=env.get("EDGE_SUGGESTION_LLM_ENABLED", "true").strip().lower() == "true",
+                base_url=env.get(
+                    "EDGE_SUGGESTION_LLM_BASE_URL",
+                    "http://127.0.0.1:8002",
+                ).rstrip("/"),
+                timeout_seconds=float(
+                    env.get("EDGE_SUGGESTION_LLM_TIMEOUT_SECONDS", "3.0")
+                ),
+                history_window=int(
+                    env.get("EDGE_SUGGESTION_HISTORY_WINDOW", "10")
+                ),
+                fallback_text=env.get(
+                    "EDGE_SUGGESTION_FALLBACK_TEXT",
+                    "设备异常，建议关注。",
                 ).strip(),
             ),
             scheduler=SchedulerConfig(
@@ -269,4 +301,12 @@ class EdgeRuntimeConfig:
             errors.append("raw sample capture retention and storage limits must be positive")
         if raw_capture.upload_batch_size <= 0:
             errors.append("raw_sample_capture.upload_batch_size must be positive")
+        suggestion = self.suggestion_llm
+        if suggestion.enabled:
+            if not suggestion.base_url.startswith(("http://", "https://")):
+                errors.append("suggestion_llm.base_url must use HTTP or HTTPS")
+            if suggestion.timeout_seconds <= 0:
+                errors.append("suggestion_llm.timeout_seconds must be positive")
+            if suggestion.history_window < 1:
+                errors.append("suggestion_llm.history_window must be at least 1")
         return errors
