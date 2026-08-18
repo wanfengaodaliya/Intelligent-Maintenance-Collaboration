@@ -11,3 +11,12 @@ cloud_edge_project/edge_service/model_training/bearing_random_forest/generated/
 # Python bytecode caches.
 **/__pycache__/
 *.py[cod]
+
+# 本地模型训练产物（parquet/jsonl/日志等运行时生成）。
+cloud_edge_project/model_training/
+
+# 本地接口差距分析报告。
+interface-gap-analysis/
+
+# TRAE HTML 分享包临时目录。
+.trae-html-share-packages/
