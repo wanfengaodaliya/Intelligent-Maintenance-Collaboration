@@ -1,0 +1,22 @@
+# 构建上下文为 cloud_edge_project 根目录；仅排除与边缘镜像无关的内容。
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.venv/
+**/venv/
+.eval-venv/
+.pytest_tmp/
+.qoder/
+.git/
+docs/
+data/
+edge_service/data/
+edge_service/status_reporter_tests/
+edge_service/verification/
+internet_service/
+sender_module/
+cloud_service/
+scheduler/tests/
+*.db
+*.db-shm
+*.db-wal

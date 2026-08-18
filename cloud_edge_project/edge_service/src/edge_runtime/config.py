@@ -60,6 +60,16 @@ class V12RuntimeConfig:
     diagnosis_window_ms: int = 50
     diagnosis_step_ms: int = 50
     diagnosis_overlap_enabled: bool = False
+    http_connect_timeout_ms: int = 500
+    http_read_timeout_ms: int = 2_000
+    late_correction_retention_ms: int = 3_600_000
+    device_result_publish_max_attempts: int = 5
+
+
+@dataclass(frozen=True)
+class MaintenanceConfig:
+    enabled: bool = True
+    interval_seconds: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,7 @@ class EdgeRuntimeConfig:
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
+    maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
@@ -88,9 +99,12 @@ class EdgeRuntimeConfig:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "EdgeRuntimeConfig":
         env = os.environ if environ is None else environ
         edge_node_id = env.get("EDGE_NODE_ID", "edge_01").strip()
+        cloud_base_url = env.get("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021").rstrip("/")
         cloud_node_urls = json.loads(env.get("EDGE_CLOUD_NODE_URLS_JSON", "{}"))
         if not isinstance(cloud_node_urls, dict):
             raise ValueError("EDGE_CLOUD_NODE_URLS_JSON must be a JSON object")
+        if not cloud_node_urls:
+            cloud_node_urls = {"cloud_01": cloud_base_url}
         return cls(
             edge_node_id=edge_node_id,
             mqtt=MqttConfig(
@@ -119,6 +133,21 @@ class EdgeRuntimeConfig:
                 host=env.get("EDGE_CONTROL_HOST", "0.0.0.0").strip(),
                 port=int(env.get("EDGE_CONTROL_PORT", "8011")),
             ),
+            window_transfer=WindowTransferConfig(
+                cache_directory=Path(
+                    env.get("EDGE_BEARING_WINDOW_CACHE_DIR", "data/bearing_windows")
+                ),
+                cloud_base_url=cloud_base_url,
+                hard_limit_bytes=int(env.get("EDGE_WINDOW_HARD_LIMIT_GIB", "20")) * 1024**3,
+                warning_bytes=int(env.get("EDGE_WINDOW_WARNING_GIB", "16")) * 1024**3,
+                reserved_free_bytes=int(env.get("EDGE_WINDOW_RESERVED_FREE_GIB", "10")) * 1024**3,
+                dispatch_interval_seconds=float(
+                    env.get("EDGE_WINDOW_DISPATCH_INTERVAL_SECONDS", "1.0")
+                ),
+                packet_cloud_confidence_threshold=float(
+                    env.get("EDGE_WINDOW_PACKET_CLOUD_CONFIDENCE_THRESHOLD", "0.0")
+                ),
+            ),
             v12=V12RuntimeConfig(
                 enabled=env.get("EDGE_V12_ENABLED", "true").strip().lower() == "true",
                 database_path=Path(env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db")),
@@ -131,6 +160,18 @@ class EdgeRuntimeConfig:
                 diagnosis_window_ms=int(env.get("EDGE_DIAGNOSIS_WINDOW_MS", "50")),
                 diagnosis_step_ms=int(env.get("EDGE_DIAGNOSIS_STEP_MS", "50")),
                 diagnosis_overlap_enabled=env.get("EDGE_DIAGNOSIS_OVERLAP_ENABLED", "false").strip().lower() == "true",
+                http_connect_timeout_ms=int(env.get("EDGE_HTTP_CONNECT_TIMEOUT_MS", "500")),
+                http_read_timeout_ms=int(env.get("EDGE_HTTP_READ_TIMEOUT_MS", "2000")),
+                late_correction_retention_ms=int(
+                    env.get("EDGE_LATE_CORRECTION_RETENTION_MS", "3600000")
+                ),
+                device_result_publish_max_attempts=int(
+                    env.get("EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS", "5")
+                ),
+            ),
+            maintenance=MaintenanceConfig(
+                enabled=env.get("EDGE_MAINTENANCE_ENABLED", "true").strip().lower() == "true",
+                interval_seconds=float(env.get("EDGE_MAINTENANCE_INTERVAL_SECONDS", "0.5")),
             ),
             raw_sample_capture=RawSampleCaptureConfig(
                 enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
@@ -196,6 +237,23 @@ class EdgeRuntimeConfig:
             errors.append("v12 cloud-now timeout and finalize grace are invalid")
         if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:
             errors.append("v12.round_timeout_ms must cover cloud-now timeout plus finalize grace")
+        if self.v12.http_connect_timeout_ms <= 0 or self.v12.http_read_timeout_ms <= 0:
+            errors.append("v12 HTTP connect and read timeouts must be positive")
+        elif self.v12.http_connect_timeout_ms >= self.v12.http_read_timeout_ms:
+            errors.append("v12.http_connect_timeout_ms must be shorter than http_read_timeout_ms")
+        elif (
+            self.v12.http_connect_timeout_ms + self.v12.http_read_timeout_ms
+            >= self.v12.cloud_now_timeout_ms
+        ):
+            errors.append(
+                "v12 single HTTP request budget must stay below cloud_now_timeout_ms"
+            )
+        if self.v12.late_correction_retention_ms <= 0:
+            errors.append("v12.late_correction_retention_ms must be positive")
+        if self.v12.device_result_publish_max_attempts <= 0:
+            errors.append("v12.device_result_publish_max_attempts must be positive")
+        if not 0.1 <= self.maintenance.interval_seconds <= 10.0:
+            errors.append("maintenance.interval_seconds must be within [0.1, 10.0]")
         if self.v12.diagnosis_window_ms not in {50, 100, 150}:
             errors.append("v12.diagnosis_window_ms must be one of 50, 100, or 150")
         if self.v12.diagnosis_step_ms != self.v12.diagnosis_window_ms:

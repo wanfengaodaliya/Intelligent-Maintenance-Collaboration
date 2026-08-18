@@ -58,6 +58,7 @@ class EdgeRuntimeCoordinator:
         legacy_realtime_aggregation: bool = False,
         cloud_now_timeout_ns: int = 3_000_000_000,
         round_timeout_ns: int = 3_500_000_000,
+        device_result_outbox: Any = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
         clock_ns=time.time_ns,
     ):
@@ -79,6 +80,8 @@ class EdgeRuntimeCoordinator:
         self.legacy_realtime_aggregation = legacy_realtime_aggregation
         self.cloud_now_timeout_ns = cloud_now_timeout_ns
         self.round_timeout_ns = round_timeout_ns
+        self.device_result_outbox = device_result_outbox
+        self.cloud_review_service: Any = None
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
         self._clock_ns = clock_ns
         self._pending_aggregation: dict[
@@ -385,13 +388,14 @@ class EdgeRuntimeCoordinator:
 
     def node_status(self) -> dict[str, Any]:
         now = self._clock_ns()
+        load_status = self._model_load_status()
         return {
             "edge_node_id": self.edge_node_id,
             "reported_at_ns": now,
             "health_status": "ONLINE",
             "queue_length": self.pipeline.queue_length,
             "models": [
-                {"model_version": version, "model_load_status": "LOADED"}
+                {"model_version": version, "model_load_status": load_status}
                 for version in sorted(self._model_versions)
             ],
             "network_to_scheduler": {
@@ -405,28 +409,71 @@ class EdgeRuntimeCoordinator:
             "last_task_activity_ns": self._last_task_activity_ns or None,
         }
 
+    @property
+    def last_task_activity_ns(self) -> int:
+        """最近一次任务活动时间（MQTT 与 HTTP 入口均会更新）。"""
+        return self._last_task_activity_ns
+
+    @property
+    def model_load_status(self) -> str:
+        return self._model_load_status()
+
+    def _model_load_status(self) -> str:
+        """根据模型真实加载生命周期推导状态，而不是固定 LOADED。"""
+        fallback = getattr(self.pipeline, "fallback", None)
+        if fallback is None:
+            return "UNLOADED"
+        if getattr(fallback, "deployment_status", None) == "built_in_rule":
+            return "LOADED"
+        if getattr(fallback, "estimator", None) is not None:
+            return "LOADED"
+        return "ERROR"
+
     def report_node_status(self) -> None:
-        self._flush_aggregation()
-        if self.raw_sample_uploader is not None:
-            self.raw_sample_uploader.run_once(self._clock_ns())
-        if self.result_uploader is not None:
-            self.result_uploader.run_once(self._clock_ns())
-        if self.v12_flow is not None:
-            now = self._clock_ns()
-            self.v12_flow.promote_cloud_now_timeouts(
-                now_ns=now, cloud_now_timeout_ns=self.cloud_now_timeout_ns
-            )
-            self.v12_flow.finalize_timeouts(
-                now_ns=now, round_timeout_ns=self.round_timeout_ns
-            )
+        """只采集并上报节点状态，不推进任何业务状态机。"""
         self.scheduler.report_status(self.node_status())
 
-    def _flush_aggregation(self) -> None:
+    def run_maintenance_once(self, now_ns: int | None = None) -> dict[str, Any]:
+        """执行一轮幂等的业务维护：超时推进、重试、恢复与待发布任务。"""
+        now = self._clock_ns() if now_ns is None else now_ns
+        summary: dict[str, Any] = {
+            "finished_at_ns": 0,
+            "aggregation_flushed": 0,
+            "provisional_promotions": 0,
+            "rounds_finalized": 0,
+            "device_results_published": 0,
+            "result_uploads": 0,
+            "raw_sample_uploads": 0,
+            "cloud_review_retries": 0,
+        }
+        summary["aggregation_flushed"] = self._flush_aggregation()
+        if self.v12_flow is not None:
+            promoted = self.v12_flow.promote_cloud_now_timeouts(
+                now_ns=now, cloud_now_timeout_ns=self.cloud_now_timeout_ns
+            )
+            finalized = self.v12_flow.finalize_timeouts(
+                now_ns=now, round_timeout_ns=self.round_timeout_ns
+            )
+            summary["provisional_promotions"] = len(promoted)
+            summary["rounds_finalized"] = len(finalized)
+        if self.device_result_outbox is not None:
+            summary["device_results_published"] = self.device_result_outbox.run_once(now)
+        if self.result_uploader is not None:
+            summary["result_uploads"] = self.result_uploader.run_once(now)
+        if self.raw_sample_uploader is not None:
+            summary["raw_sample_uploads"] = self.raw_sample_uploader.run_once(now)
+        if self.cloud_review_service is not None:
+            summary["cloud_review_retries"] = self.cloud_review_service.retry_due(now)
+        summary["finished_at_ns"] = self._clock_ns()
+        return summary
+
+    def _flush_aggregation(self) -> int:
         with self._mutex:
             pending = sorted(
                 self._pending_aggregation.items(),
                 key=lambda item: item[1].sequence_number,
             )
+        flushed = 0
         for key, packet in pending:
             try:
                 self._accept_aggregation_packet(packet)
@@ -435,6 +482,8 @@ class EdgeRuntimeCoordinator:
             with self._mutex:
                 if self._pending_aggregation.get(key) == packet:
                     self._pending_aggregation.pop(key, None)
+            flushed += 1
+        return flushed
 
     def _report_pre_model_failure(
         self, packet: Mapping[str, Any], *, error_code: str, started_at_ns: int

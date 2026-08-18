@@ -20,3 +20,9 @@ interface-gap-analysis/
 
 # TRAE HTML 分享包临时目录。
 .trae-html-share-packages/
+
+# pytest 本地临时目录（--basetemp）。
+.pytest_tmp/
+
+# 本地运行产生的根级数据目录（SQLite 等运行时产物）。
+/data/

@@ -50,12 +50,8 @@ from scenarios.bearing.edge import (  # noqa: E402
     build_bearing_perception_config,
 )
 from edge_runtime import (  # noqa: E402
-    ControlServerConfig,
     EdgeRuntimeConfig,
-    MqttConfig,
     PacketRouteErrorRecorder,
-    SchedulerConfig,
-    WindowTransferConfig,
     build_edge_runtime,
 )
 from cloud_review import (  # noqa: E402
@@ -67,7 +63,7 @@ from cloud_review import (  # noqa: E402
     SchedulerUploadReporter,
     load_cloud_review_config,
 )
-from edge_status_reporter import build_edge_status_integration  # noqa: E402
+from edge_status_reporter import ModelStatus, build_edge_status_integration  # noqa: E402
 from model_input_contract import validate_model_input  # noqa: E402
 
 
@@ -164,55 +160,47 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     )
     mqtt_settings = config.get("mqtt", {})
     transfer_settings = config.get("bearing_window_transfer", {})
-    mqtt = MqttConfig(
-        host=os.getenv("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1"))),
-        port=int(os.getenv("EDGE_MQTT_PORT", str(mqtt_settings.get("port", 1883)))),
-        qos=int(mqtt_settings.get("qos", 1)),
-        input_topic=os.getenv(
-            "EDGE_MQTT_INPUT_TOPIC",
-            str(mqtt_settings.get("input_topic", f"edge/{EDGE_NODE_ID}/input")),
-        ),
-        client_id=os.getenv(
-            "EDGE_MQTT_CLIENT_ID",
-            str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
+    # 统一配置入口：环境变量优先，local.yaml 只作为本地开发兜底。
+    os.environ.setdefault("EDGE_NODE_ID", EDGE_NODE_ID)
+    os.environ.setdefault("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1")))
+    os.environ.setdefault("EDGE_MQTT_PORT", str(mqtt_settings.get("port", 1883)))
+    os.environ.setdefault(
+        "EDGE_MQTT_INPUT_TOPIC",
+        str(mqtt_settings.get("input_topic", f"edge/{EDGE_NODE_ID}/input")),
+    )
+    os.environ.setdefault(
+        "EDGE_MQTT_CLIENT_ID",
+        str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
+    )
+    os.environ.setdefault(
+        "SCHEDULER_SERVICE_BASE_URL", service_url("scheduler", config)
+    )
+    os.environ.setdefault("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
+    os.environ.setdefault(
+        "EDGE_BEARING_WINDOW_CACHE_DIR",
+        str(
+            Path(__file__).resolve().parents[1]
+            / str(transfer_settings.get("cache_directory", "edge_service/data/bearing_windows"))
         ),
     )
-    scheduler_base = os.getenv(
-        "SCHEDULER_SERVICE_BASE_URL",
-        service_url("scheduler", config),
+    os.environ.setdefault(
+        "EDGE_WINDOW_HARD_LIMIT_GIB", str(transfer_settings.get("hard_limit_gib", 20))
     )
-    cloud_base = os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
-    runtime_config = EdgeRuntimeConfig(
-        edge_node_id=EDGE_NODE_ID,
-        mqtt=mqtt,
-        scheduler=SchedulerConfig(base_url=scheduler_base),
-        control=ControlServerConfig(
-            host=os.getenv("EDGE_CONTROL_HOST", "0.0.0.0"),
-            port=int(os.getenv("EDGE_CONTROL_PORT", "8011")),
-        ),
-        window_transfer=WindowTransferConfig(
-            cache_directory=Path(
-                os.getenv(
-                    "EDGE_BEARING_WINDOW_CACHE_DIR",
-                    str(
-                        Path(__file__).resolve().parents[1]
-                        / str(transfer_settings.get("cache_directory", "edge_service/data/bearing_windows"))
-                    ),
-                )
-            ),
-            cloud_base_url=cloud_base,
-            hard_limit_bytes=int(transfer_settings.get("hard_limit_gib", 20)) * 1024**3,
-            warning_bytes=int(transfer_settings.get("warning_gib", 16)) * 1024**3,
-            reserved_free_bytes=int(transfer_settings.get("reserved_free_gib", 10)) * 1024**3,
-            dispatch_interval_seconds=float(
-                transfer_settings.get("dispatch_interval_seconds", 1.0)
-            ),
-            packet_cloud_confidence_threshold=float(
-                transfer_settings.get("packet_cloud_confidence_threshold", 0.0)
-            ),
-        ),
-        cloud_node_urls={"cloud_01": cloud_base},
+    os.environ.setdefault(
+        "EDGE_WINDOW_WARNING_GIB", str(transfer_settings.get("warning_gib", 16))
     )
+    os.environ.setdefault(
+        "EDGE_WINDOW_RESERVED_FREE_GIB", str(transfer_settings.get("reserved_free_gib", 10))
+    )
+    os.environ.setdefault(
+        "EDGE_WINDOW_DISPATCH_INTERVAL_SECONDS",
+        str(transfer_settings.get("dispatch_interval_seconds", 1.0)),
+    )
+    os.environ.setdefault(
+        "EDGE_WINDOW_PACKET_CLOUD_CONFIDENCE_THRESHOLD",
+        str(transfer_settings.get("packet_cloud_confidence_threshold", 0.0)),
+    )
+    runtime_config = EdgeRuntimeConfig.from_env()
     packet_route_error_recorder = PacketRouteErrorRecorder(
         os.getenv(
             "EDGE_PACKET_ROUTE_ERROR_LOG",
@@ -237,13 +225,40 @@ cloud_review_store = CloudReviewStore(
     retention_ns=cloud_review_config.retention_ns,
 )
 runtime_assembly = _build_runtime(cloud_review_store)
+
+
+# 阶段 2：把 Reporter 的业务快照接到真实运行时，替换固定值。
+if edge_status_integration.state is not None:
+
+    def _runtime_queue_length() -> int:
+        # 队列长度 = MQTT 接入等待数 + 推理流水线等待数，不重复计入正在执行的任务。
+        return (
+            runtime_assembly.service.mqtt_ingress.queue_depth
+            + runtime_assembly.coordinator.pipeline.queue_length
+        )
+
+    def _runtime_models() -> tuple[ModelStatus, ...]:
+        coordinator = runtime_assembly.coordinator
+        fallback = coordinator.pipeline.fallback
+        version = getattr(fallback, "model_version", runtime_model_version)
+        return (ModelStatus(version, coordinator.model_load_status),)
+
+    edge_status_integration.state.attach_runtime_providers(
+        queue_length_provider=_runtime_queue_length,
+        models_provider=_runtime_models,
+        activity_ns_provider=lambda: runtime_assembly.coordinator.last_task_activity_ns,
+    )
+
+
 cloud_review_service = CloudReviewService(
     cloud_review_store,
-    cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
-    scheduler_reporter=SchedulerUploadReporter(cloud_review_config.scheduler_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
+    cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.request_timeout()),
+    scheduler_reporter=SchedulerUploadReporter(cloud_review_config.scheduler_base_url, timeout_seconds=cloud_review_config.request_timeout()),
     edge_node_id=EDGE_NODE_ID,
     cloud_result_handler=runtime_assembly.v12_flow,
 )
+# 注入协调器，由后台维护轮次驱动可重试复核的到期重试。
+runtime_assembly.coordinator.cloud_review_service = cloud_review_service
 cloud_review_cleanup = CloudReviewCleanupWorker(
     cloud_review_store,
     interval_seconds=cloud_review_config.cleanup_interval_seconds,
@@ -252,10 +267,18 @@ cloud_review_cleanup = CloudReviewCleanupWorker(
 @app.get("/health")
 def health() -> dict[str, object]:
     model = runtime_assembly.coordinator.pipeline.fallback
+    maintenance = runtime_assembly.maintenance
+    outbox = runtime_assembly.device_result_outbox
+    maintenance_health = maintenance.health() if maintenance is not None else None
+    ready = runtime_assembly.service.started and (
+        maintenance is None
+        or bool(maintenance_health and maintenance_health["maintenance_worker_running"])
+    )
     return {
         "service": "edge_service",
         "node_id": EDGE_NODE_ID,
-        "status": "ok",
+        "status": "ok" if ready else "starting",
+        "ready": ready,
         "port": config["services"]["edge"]["port"],
         "model_backend": diagnostic_backend,
         "model_version": model.model_version,
@@ -279,6 +302,14 @@ def health() -> dict[str, object]:
             if runtime_assembly.window_review_store is None
             else runtime_assembly.window_review_store.warning
         ),
+        "maintenance": maintenance_health,
+        "device_result_outbox": outbox.health() if outbox is not None else None,
+        "http_timeout_ms": {
+            "connect": runtime_assembly.service.config.v12.http_connect_timeout_ms,
+            "read": runtime_assembly.service.config.v12.http_read_timeout_ms,
+            "cloud_now": runtime_assembly.service.config.v12.cloud_now_timeout_ms,
+            "round": runtime_assembly.service.config.v12.round_timeout_ms,
+        },
     }
 
 
@@ -371,6 +402,25 @@ def register_edge_task(payload: dict) -> JSONResponse:
     else:
         status_code = 400
     return JSONResponse(status_code=status_code, content=ack.as_dict())
+
+
+def _forward_edge_control(path: str, payload: Any) -> JSONResponse:
+    # 统一对外控制入口：任务控制与仲裁回调都收敛到同一应用地址，
+    # 处理逻辑复用运行时控制应用，旧控制端口仅保留兼容。
+    application = runtime_assembly.service.control_application
+    body = payload if isinstance(payload, dict) else {}
+    status, result = application.handle(path, body)
+    return JSONResponse(status_code=status, content=result)
+
+
+@app.post("/edge/task-revocations", response_model=None)
+def edge_task_revocation(payload: dict = Body(default=None)) -> JSONResponse:
+    return _forward_edge_control("/edge/task-revocations", payload)
+
+
+@app.post("/edge/device-arbitration-results", response_model=None)
+def edge_device_arbitration_result(payload: dict = Body(default=None)) -> JSONResponse:
+    return _forward_edge_control("/edge/device-arbitration-results", payload)
 
 
 
