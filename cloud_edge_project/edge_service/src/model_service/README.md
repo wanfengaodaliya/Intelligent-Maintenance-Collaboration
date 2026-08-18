@@ -4,22 +4,22 @@
 
 当前服务用于技术闭环和开发测试。合成数据闭环通过不代表真实轴承诊断准确率已经得到验证；在取得健康轴承、故障轴承和现场噪声数据前，不得把模型输出描述为经过业务验证的诊断结论。
 
-## 1. 已验证基线
+## 1. 当前统一运行时
 
-以下组合已于 2026-08-06 在本项目中完成真实模型闭环：
+以下为项目统一`moment`环境的当前冻结版本。Qwen 已完成导入与GPU能力预检；实际权重加载和完整闭环仍须按本文验收清单执行：
 
 | 项目 | 已验证值 |
 |---|---|
 | Windows/WSL | WSL2，Ubuntu |
-| Conda环境 | `model-train` |
+| Conda环境 | `moment`（项目统一环境） |
 | Python | `3.11.15` |
-| PyTorch | `2.10.0+cu128` |
-| CUDA Runtime | `12.8` |
+| PyTorch | `2.13.0+cu130` |
+| CUDA Runtime | `13.0` |
 | GPU | NVIDIA GeForce RTX 5060 Laptop GPU |
 | BF16 | 支持 |
-| Transformers | `5.5.0` |
+| Transformers | `5.15.0` |
 | Accelerate | `1.14.0` |
-| Hugging Face Hub | `1.23.0` |
+| Hugging Face Hub | `1.27.0` |
 | Safetensors | `0.8.0` |
 | 基础模型 | `Qwen/Qwen2.5-1.5B-Instruct` |
 | 项目模型ID | `edge-bearing-qwen` |
@@ -29,8 +29,7 @@
 | 最大输出 | 64 tokens |
 | 服务地址 | `http://127.0.0.1:8001` |
 
-`model-train`环境保留为Transformers正确性基线；`vllm`环境用于后续逐包吞吐压测。
-两个环境独立管理，不要为了消除某一环境的警告而修改另一个已验证环境。
+项目运行时统一使用`moment`环境及`cloud_edge_project/requirements-moment.txt`。Qwen 在该环境已完成导入与GPU能力预检；首次使用某份实际权重时仍须完成一次完整加载和最小闭环验证。
 
 ## 2. 运行结构
 
@@ -39,7 +38,7 @@ Windows边缘程序
   └─ EdgeModelPipeline / ModelClient
        └─ HTTP http://127.0.0.1:8001
             └─ WSL2 Ubuntu
-                 └─ model-train Conda环境
+                 └─ moment Conda环境
                       └─ src.model_service.app
                            └─ Qwen2.5-1.5B-Instruct（GPU/BF16）
 ```
@@ -50,7 +49,7 @@ Windows侧负责逐包任务封装、有界队列、超时、熔断和代码替�
 
 ## 3. 准备WSL和Conda环境
 
-### 3.1 已有`model-train`环境
+### 3.1 使用统一`moment`环境
 
 在Windows PowerShell进入WSL：
 
@@ -62,7 +61,7 @@ wsl -d Ubuntu
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate model-train
+conda activate moment
 ```
 
 确认解释器和关键依赖：
@@ -91,7 +90,7 @@ cuda_available = True
 bf16 = True
 ```
 
-### 3.2 新协作者创建环境
+### 3.2 新协作者准备环境
 
 先安装支持WSL的NVIDIA驱动、WSL2、Ubuntu和Miniconda。不要在WSL内部另外安装Linux NVIDIA显示驱动；WSL使用Windows宿主机提供的GPU驱动接口。
 
@@ -99,16 +98,14 @@ bf16 = True
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
-conda create -n model-train python=3.11.15 -y
-conda activate model-train
+conda create -n moment python=3.11.15 -y
+conda activate moment
 ```
 
-按照PyTorch官方针对CUDA 12.8的安装方式安装PyTorch，再安装与已验证环境一致的运行库。当前已验证版本如下：
+在仓库根目录的`cloud_edge_project`目录安装唯一依赖源：
 
 ```bash
-python -m pip install --index-url https://download.pytorch.org/whl/cu128 "torch==2.10.0"
-python -m pip install "transformers==5.5.0" "accelerate==1.14.0" \
-  "huggingface-hub==1.23.0" "safetensors==0.8.0"
+python -m pip install -r requirements-moment.txt
 ```
 
 安装后必须重新执行GPU检查。若包仓库不再提供完全相同的版本，不要自行选择“最新版本”后宣称环境等价，应记录实际版本并重新执行模型加载、可用性检查和真实闭环测试。
@@ -382,7 +379,7 @@ Manifest记录权重哈希、Tokenizer哈希、Python、PyTorch、Transformers�
 
 当前最安全、最容易复现的方式是：
 
-1. 每位开发者在自己的WSL2中创建`model-train`环境；
+1. 每位开发者在自己的WSL2中使用统一的`moment`环境；
 2. 从批准的内部存储获得同一模型目录；
 3. 校验SHA-256；
 4. 只监听自己的`127.0.0.1:8001`；
@@ -411,14 +408,14 @@ Manifest记录权重哈希、Tokenizer哈希、Python、PyTorch、Transformers�
 
 ### 11.1 C++扩展版本警告
 
-当前环境可能输出：
+旧的`model-train`基线可能输出：
 
 ```text
 Skipping import of cpp extensions due to incompatible torch version.
 Please upgrade to torch >= 2.11.0 (found 2.10.0+cu128).
 ```
 
-本次真实模型闭环在该警告下仍然通过。它表示某个可选C++扩展没有加载，不等于Qwen权重或CUDA加载失败。现阶段不要只为消除该警告升级PyTorch；升级属于环境变更，必须重新执行完整回归和性能测试。
+统一`moment`环境使用Torch 2.13.0+cu130，满足该扩展的最低版本要求；若仍出现警告，应以实际权重加载和最小闭环结果为准。
 
 ### 11.2 生成参数被忽略
 
@@ -487,7 +484,7 @@ QUEUE_TIMEOUT
 
 新环境交付前逐项确认：
 
-- [ ] 明确本次使用`model-train`正确性基线或`vllm`吞吐测试环境；
+- [ ] 已激活统一的`moment`环境并安装`requirements-moment.txt`；
 - [ ] Python和关键运行库版本已记录；
 - [ ] `torch.cuda.is_available()`为`True`；
 - [ ] GPU名称和CUDA版本已记录；

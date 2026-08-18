@@ -30,7 +30,7 @@ H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权
 ```powershell
 conda activate moment
 cd cloud_edge_project
-python -m pip install -r requirements.txt -r requirements-dev.txt -r edge_service\requirements.txt
+python -m pip install -r requirements-moment.txt
 python start_all.py
 ```
 

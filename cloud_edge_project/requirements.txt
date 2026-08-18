@@ -1,9 +1,2 @@
-fastapi
-uvicorn
-requests
-numpy>=1.25.2,<3
-scipy>=1.9,<2
-paho-mqtt==2.1.0
-python-multipart>=0.0.32,<1
-python-multipart>=0.0.32,<1
+-r requirements-moment.txt
 

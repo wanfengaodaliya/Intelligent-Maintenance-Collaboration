@@ -8,11 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./requirements.txt
-COPY edge_service/requirements.txt ./edge_service/requirements.txt
-RUN pip install --no-cache-dir \
-    --requirement requirements.txt \
-    --requirement edge_service/requirements.txt
+COPY requirements-moment.txt ./requirements-moment.txt
+RUN pip install --no-cache-dir --requirement requirements-moment.txt
 
 COPY common ./common
 COPY core ./core
