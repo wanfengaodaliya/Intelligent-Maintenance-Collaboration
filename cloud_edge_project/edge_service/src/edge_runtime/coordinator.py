@@ -13,10 +13,6 @@ from edge_aggregation.workflow import BearingAggregationWorkflow
 from edge_aggregation.window_transfer import WindowReviewStore
 from edge_model.contracts import PacketExecutionCompleted
 from edge_model.pipeline import EdgeModelPipeline
-from core.edge_perception_contracts import (
-    PerceptionHandler,
-    PerceptionInvocationContext,
-)
 from edge_task_ingress import EXPECTED_PACKET_COUNT, INGRESS_ACCEPTED, EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from diagnosis_window import DiagnosisWindow, DiagnosisWindowAssembler
@@ -43,7 +39,6 @@ class EdgeRuntimeCoordinator:
         edge_node_id: str,
         ingress: EdgeTaskIngress,
         cache: EdgeValidationCache,
-        perception: PerceptionHandler,
         pipeline: EdgeModelPipeline,
         scheduler: SchedulerReporter,
         aggregation_workflow: Optional[BearingAggregationWorkflow] = None,
@@ -65,7 +60,6 @@ class EdgeRuntimeCoordinator:
         self.edge_node_id = edge_node_id
         self.ingress = ingress
         self.cache = cache
-        self.perception = perception
         self.pipeline = pipeline
         self.scheduler = scheduler
         self.aggregation_workflow = aggregation_workflow
@@ -132,27 +126,7 @@ class EdgeRuntimeCoordinator:
         return True
 
     def _process_model_input(self, packet: dict[str, Any], received_at_ns: int) -> None:
-        context = PerceptionInvocationContext(
-            edge_node_id=self.edge_node_id,
-            perception_received_at_ns=received_at_ns,
-        )
-        downsampled = self.perception.downsample(packet, context)
-        if not downsampled.status.success or downsampled.payload is None:
-            self._report_pre_model_failure(
-                packet,
-                error_code=downsampled.status.error_code or "DOWNSAMPLING_FAILED",
-                started_at_ns=received_at_ns,
-            )
-            return
-        perceived = self.perception.perceive(downsampled.payload, context)
-        if not perceived.status.success or perceived.payload is None:
-            self._report_pre_model_failure(
-                packet,
-                error_code=perceived.status.error_code or "PERCEPTION_FAILED",
-                started_at_ns=received_at_ns,
-            )
-            return
-        self.pipeline.ingest(packet["sender_id"], perceived.payload)
+        self.pipeline.ingest(packet["sender_id"], packet)
 
     def _close_incomplete_tail(self, packet: Mapping[str, Any]) -> None:
         if self.diagnosis_window_assembler is None:
@@ -587,6 +561,8 @@ def _edge_bearing_result(
         recommended_action=action_for_grade(action_grade),
         model_version=completion.edge.model_version,
         created_at_ns=completion.finished_at_ns,
+        diagnosis_label=completion.edge.diagnosis_label,
+        class_probabilities=completion.edge.class_probabilities,
     )
 
 

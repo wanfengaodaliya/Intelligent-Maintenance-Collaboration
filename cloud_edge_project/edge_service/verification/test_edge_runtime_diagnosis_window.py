@@ -47,18 +47,6 @@ class _Ingress:
         return True
 
 
-class _Perception:
-    def __init__(self):
-        self.downsampled = []
-
-    def downsample(self, packet, _context):
-        self.downsampled.append(packet)
-        return SimpleNamespace(status=SimpleNamespace(success=True), payload=packet)
-
-    def perceive(self, packet, _context):
-        return SimpleNamespace(status=SimpleNamespace(success=True), payload=packet)
-
-
 class _Pipeline:
     def __init__(self):
         self.inputs = []
@@ -69,24 +57,21 @@ class _Pipeline:
         self.inputs.append((sender_id, payload))
 
 
-def test_runtime_waits_for_a_complete_window_before_preprocessing_and_inference() -> None:
-    perception = _Perception()
+def test_runtime_waits_for_a_complete_window_before_direct_raw_inference() -> None:
     pipeline = _Pipeline()
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id="edge_01", ingress=_Ingress(), cache=object(),
-        perception=perception, pipeline=pipeline, scheduler=object(),
+        pipeline=pipeline, scheduler=object(),
         diagnosis_window_assembler=DiagnosisWindowAssembler(
             window_ms=100, step_ms=100, overlap_enabled=False,
         ),
     )
 
     assert coordinator.receive_raw_packet(_packet(1)) is True
-    assert perception.downsampled == []
     assert pipeline.inputs == []
 
     assert coordinator.receive_raw_packet(_packet(2)) is True
-    assert len(perception.downsampled) == 1
-    merged = perception.downsampled[0]
+    merged = pipeline.inputs[0][1]
     assert merged["packet_id"] == "packet_002"
     assert merged["window_start_sequence"] == 1
     assert merged["window_end_sequence"] == 2
@@ -170,7 +155,7 @@ def test_runtime_records_150ms_task_tail_without_emitting_a_partial_diagnosis() 
     errors = []
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id="edge_01", ingress=ingress, cache=object(),
-        perception=_Perception(), pipeline=pipeline, scheduler=object(),
+        pipeline=pipeline, scheduler=object(),
         diagnosis_window_assembler=DiagnosisWindowAssembler(window_ms=150),
         on_packet_route_error=errors.append,
     )

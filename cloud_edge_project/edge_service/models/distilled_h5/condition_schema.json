@@ -1,0 +1,19 @@
+{
+  "fields": [
+    "speed_mean",
+    "speed_std",
+    "speed_min",
+    "speed_max",
+    "torque_mean",
+    "torque_std",
+    "torque_min",
+    "torque_max",
+    "force_mean",
+    "force_std",
+    "force_min",
+    "force_max",
+    "temp_mean"
+  ],
+  "dim": 13,
+  "source": "speed/torque/force (mean,std,min,max) + temp (mean)"
+}

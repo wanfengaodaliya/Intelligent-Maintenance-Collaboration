@@ -83,12 +83,12 @@ class EdgeModelPipeline:
     def queue_length(self) -> int:
         return self.queue.waiting_count
 
-    def ingest(self, sender_id: str, perception: dict) -> str:
-        """立即为当前 PerceptionResult 创建一个独立包级推理任务。"""
+    def ingest(self, sender_id: str, model_input: dict) -> str:
+        """Create an independent packet inference task from the active backend input."""
 
         if not self.started:
             raise RuntimeError("边缘模型管线未启动")
-        task = self._make_task(sender_id, perception)
+        task = self._make_task(sender_id, model_input)
         if self.cfg.diagnostic_backend == "local":
             task.submit_ts = self._clock()
             self._run_local(task)
@@ -98,7 +98,13 @@ class EdgeModelPipeline:
             self._run_fallback(fallback_task, reason)
         return task.request_id
 
-    def _make_task(self, sender_id: str, perception: dict) -> PacketInferenceTask:
+    def _make_task(self, sender_id: str, model_input: dict) -> PacketInferenceTask:
+        raw_packet = None
+        if callable(getattr(self.fallback, "build_evidence", None)):
+            raw_packet = copy.deepcopy(model_input)
+            perception = self.fallback.build_evidence(raw_packet)
+        else:
+            perception = model_input
         validate_model_input(perception)
         identities = {}
         for field in ("device_id", "bearing_id", "task_id", "packet_id", "sender_id"):
@@ -124,6 +130,7 @@ class EdgeModelPipeline:
             sender_id=sender_id,
             sequence_number=sequence_number,
             perception=copy.deepcopy(perception),
+            raw_packet=raw_packet,
             started_at_ns=self._clock_ns(),
         )
 
