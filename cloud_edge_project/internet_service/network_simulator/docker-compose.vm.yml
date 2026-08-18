@@ -1,0 +1,59 @@
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    restart: unless-stopped
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2.1.2-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - type: bind
+        source: "${NETWORK_MOSQUITTO_CONFIG_PATH:?set NETWORK_MOSQUITTO_CONFIG_PATH to a VM-specific Mosquitto config}"
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-t", "network-simulator/health", "-m", "ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  network-controller:
+    image: network-simulator:3.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    network_mode: host
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_healthy
+    environment:
+      NETWORK_SIMULATOR_ROOT: /app
+      NETWORK_CONFIG_DIR: /app/config
+      NETWORK_LOG_DIR: /app/logs
+      TOXIPROXY_API_BASE_URL: "${TOXIPROXY_API_BASE_URL:-http://127.0.0.1:8474}"
+      NETWORK_SCHEDULER_URL: "${NETWORK_SCHEDULER_URL:-http://127.0.0.1:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt}"
+      NETWORK_REPORT_TOKEN: "${NETWORK_REPORT_TOKEN:-}"
+      NETWORK_LINK_UPSTREAMS_JSON: "${NETWORK_LINK_UPSTREAMS_JSON:-}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - type: bind
+        source: "${NETWORK_CONFIG_HOST_DIR:?set NETWORK_CONFIG_HOST_DIR to a VM-specific network config directory}"
+        target: /app/config
+        read_only: true
+      - network-simulator-logs:/app/logs
+    stop_grace_period: 30s
+
+volumes:
+  network-simulator-logs:

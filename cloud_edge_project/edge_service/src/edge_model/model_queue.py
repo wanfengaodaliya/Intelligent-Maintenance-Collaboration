@@ -86,6 +86,11 @@ class ModelTaskQueue:
         with self._cond:
             return not self._pending and self._inflight == 0
 
+    @property
+    def waiting_count(self) -> int:
+        with self._cond:
+            return len(self._pending)
+
     def wait_until_idle(self, timeout_s: float = 5.0) -> bool:
         deadline = self._clock() + timeout_s
         with self._cond:

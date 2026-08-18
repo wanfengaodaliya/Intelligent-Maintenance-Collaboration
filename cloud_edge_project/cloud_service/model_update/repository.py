@@ -9,6 +9,17 @@ from typing import Any
 from cloud_service.storage.database import connect, initialize_database
 
 
+JSON_FIELDS = {
+    "problem_context_json": "problem_context",
+    "evidence_snapshot_json": "evidence_snapshot",
+    "candidate_artifact_json": "candidate_artifact",
+    "validation_result_json": "validation_result",
+    "confirmation_result_json": "confirmation_result",
+    "distribution_result_json": "distribution_result",
+    "post_validation_result_json": "post_validation_result",
+}
+
+
 class ModelUpdateRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
@@ -17,30 +28,33 @@ class ModelUpdateRepository:
     def get_analysis(self, analysis_id: str) -> dict[str, Any] | None:
         with connect(self.database_path) as connection:
             row = connection.execute(
-                """SELECT analysis_id,scenario_type,subject_id,reviewed_packet_count,
-                          cloud_correction_rate,result_json
-                   FROM global_analysis_result WHERE analysis_id=?""",
+                "SELECT * FROM global_analysis_result WHERE analysis_id=?",
                 (analysis_id,),
             ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        result = dict(row)
+        result["result"] = json.loads(result.pop("result_json"))
+        return result
+
+    def find_by_analysis_problem(
+        self, analysis_id: str, problem_id: str
+    ) -> dict[str, Any] | None:
+        with connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM model_update_task WHERE analysis_id=? AND problem_id=?",
+                (analysis_id, problem_id),
+            ).fetchone()
+        return _decode(dict(row)) if row else None
 
     def create(self, task: dict[str, Any]) -> dict[str, Any]:
+        columns = tuple(task)
+        values = tuple(_encode_value(key, task[key]) for key in columns)
         with connect(self.database_path) as connection:
             connection.execute(
-                """
-                INSERT INTO model_update_task(
-                    update_id,analysis_id,scenario_type,subject_id,update_type,update_reason,
-                    old_version,new_version,update_file,update_file_sha256,target_edge_nodes_json,
-                    test_data_limit,status,created_at_ns,updated_at_ns
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    task["update_id"], task["analysis_id"], task["scenario_type"], task["subject_id"],
-                    task["update_type"], task["update_reason"], task["old_version"], task["new_version"],
-                    task["update_file"], task["update_file_sha256"],
-                    json.dumps(task["target_edge_nodes"], ensure_ascii=False), task["test_data_limit"],
-                    task["status"], task["created_at_ns"], task["updated_at_ns"],
-                ),
+                f"INSERT INTO model_update_task ({','.join(columns)}) "
+                f"VALUES ({','.join('?' for _ in values)})",
+                values,
             )
         return self.get(task["update_id"])
 
@@ -52,26 +66,31 @@ class ModelUpdateRepository:
         return _decode(dict(row)) if row else None
 
     def update(self, update_id: str, **changes: Any) -> dict[str, Any]:
-        encoded = {
-            key: json.dumps(value, ensure_ascii=False) if key.endswith("_json") and value is not None else value
-            for key, value in changes.items()
-        }
+        if not changes:
+            return self.get(update_id)
+        encoded = {key: _encode_value(key, value) for key, value in changes.items()}
         assignments = ", ".join(f"{key}=?" for key in encoded)
         with connect(self.database_path) as connection:
-            connection.execute(
+            cursor = connection.execute(
                 f"UPDATE model_update_task SET {assignments} WHERE update_id=?",
                 (*encoded.values(), update_id),
             )
+            if cursor.rowcount != 1:
+                raise KeyError(update_id)
         return self.get(update_id)
 
 
+def _encode_value(key: str, value: Any) -> Any:
+    if key in JSON_FIELDS and value is not None:
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    return value
+
+
 def _decode(task: dict[str, Any]) -> dict[str, Any]:
-    for source, target in (
-        ("target_edge_nodes_json", "target_edge_nodes"),
-        ("validation_result_json", "validation_result"),
-        ("confirmation_json", "confirmation"),
-        ("distribution_result_json", "distribution_result"),
-    ):
+    for source, target in JSON_FIELDS.items():
         value = task.pop(source)
         task[target] = json.loads(value) if value else None
+    task["rollback_requested"] = bool(task["rollback_requested"])
     return task

@@ -4,35 +4,61 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import Body, FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, UploadFile
+from fastapi.responses import JSONResponse
 
 from cloud_service.config import CloudSettings, load_cloud_settings
-from cloud_service.global_analysis.common_analyzer import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
+from scenarios.bearing.cloud.model_update.config import load_label_mapping
+from cloud_service.bearing_review.service import (
+    BearingReviewService,
+    BearingReviewConflictError,
+    BearingReviewValidationError,
+)
+from cloud_service.bearing_review.receiver import BearingRawContextReceiver
+from cloud_service.task_results import TaskResultService
+from cloud_service.device_arbitration.v12_contract import (
+    adapt_v12_device_arbitration_request,
+    attach_v12_identity,
+    is_v12_device_arbitration_request,
+)
+from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
 from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
 from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
+from cloud_service.service import get_moment_runner, preload_moment_runner
+from cloud_service.vllm_backend import infer_v01_vllm
+from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_context.receiver import RawContextReceiver
-from cloud_service.raw_context.transport import HttpRawContextTransport
+from cloud_service.raw_context.transport import RoutedRawContextTransport
+from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
 from cloud_service.storage.raw_context_repository import (
     RawContextRequestRepository,
 )
+from cloud_service.workflow_review import WorkflowReviewError, WorkflowReviewService
 from common.config import load_config
 from common.schemas import (
     ContractError,
     error_response,
+    is_v01_cloud_request,
+    require_confidence,
+    require_field,
+    require_mapping,
+    require_non_empty_string,
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
@@ -45,6 +71,33 @@ from core.arbitration_contracts import ArbitrationValidationError
 
 
 config = load_config()
+edge_status_registry = EdgeStatusRegistry()
+
+
+def build_cloud_status_reporter() -> CloudNodeStatusReporter:
+    scheduler_config = config["services"]["scheduler"]
+    scheduler_base_url = os.getenv(
+        "SCHEDULER_SERVICE_BASE_URL",
+        f"http://{scheduler_config['host']}:{scheduler_config['port']}",
+    )
+
+    def health_provider() -> tuple[str, str]:
+        result = health()
+        if isinstance(result, JSONResponse) and result.status_code >= 400:
+            return "DEGRADED", "FAILED"
+        return "ONLINE", "LOADED"
+
+    return CloudNodeStatusReporter(
+        scheduler_base_url=scheduler_base_url,
+        cloud_node_id=os.getenv("CLOUD_REVIEW_NODE_ID", "cloud_01").strip(),
+        settings_provider=load_cloud_settings,
+        queue_length_provider=lambda: 0,
+        health_provider=health_provider,
+        last_activity_provider=lambda: 0,
+    )
+
+
+status_reporter = build_cloud_status_reporter()
 
 
 def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
@@ -55,27 +108,38 @@ def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
     handler.run_enhanced_analysis(review_id)
 
 
-async def _expire_raw_context_requests() -> None:
+async def _run_background_workers() -> None:
     while True:
         try:
             settings = load_cloud_settings()
-            initialize_database(settings.database_path)
-            RawContextRequestRepository(
-                settings.database_path
-            ).expire_due()
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                initialize_database(settings.database_path)
+                RawContextRequestRepository(
+                    settings.database_path
+                ).expire_due()
+            if settings.legacy_bearing_window_review_enabled:
+                await asyncio.to_thread(
+                    WorkflowReviewService(settings.database_path).process_pending,
+                    20,
+                )
+            if settings.legacy_context_enhanced_pipeline_enabled:
+                await asyncio.to_thread(
+                    ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
+                    config_version="cloud-preprocess-v1",
+                    limit=20,
+                )
+                await asyncio.to_thread(
+                    AggregationReadyDispatcher(
+                        settings.database_path,
+                        handler=lambda payload: _run_enhanced_analysis(
+                            settings.database_path, payload["review_id"]
+                        ),
+                    ).dispatch_pending,
+                    limit=20,
+                )
             await asyncio.to_thread(
-                ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
-                config_version="cloud-preprocess-v1",
-                limit=20,
-            )
-            await asyncio.to_thread(
-                AggregationReadyDispatcher(
-                    settings.database_path,
-                    handler=lambda payload: _run_enhanced_analysis(
-                        settings.database_path, payload["review_id"]
-                    ),
-                ).dispatch_pending,
-                limit=20,
+                SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
+                now_ns=time.time_ns(),
             )
         except sqlite3.Error:
             pass
@@ -85,19 +149,110 @@ async def _expire_raw_context_requests() -> None:
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
+    if settings.backend == "moment_light_adapt":
+        await asyncio.to_thread(preload_moment_runner, settings)
     await asyncio.to_thread(
         WindowRecoveryScanner(settings.database_path).warn_orphan_files
     )
-    expiry_task = asyncio.create_task(_expire_raw_context_requests())
+    worker_task = asyncio.create_task(_run_background_workers())
+    status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        expiry_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await expiry_task
+        for task in (status_task, worker_task):
+            task.cancel()
+        for task in (status_task, worker_task):
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
+
+
+def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
+    """Produce the documented V0.1 CloudResult from an edge result."""
+
+    request = require_mapping(payload, "CloudRequest")
+    task_id = require_non_empty_string(require_field(request, "task_id"), "task_id")
+    scenario = require_field(request, "scenario", task_id)
+    if scenario not in {"industrial", "energy"}:
+        raise ContractError("INVALID_PACKET", "scenario must be industrial or energy", task_id)
+    for field in ("task_type", "source_node"):
+        require_non_empty_string(require_field(request, field, task_id), field, task_id)
+    data = require_mapping(require_field(request, "data", task_id), "data", task_id)
+    if not data:
+        raise ContractError("INVALID_PACKET", "data must be a non-empty object", task_id)
+    edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
+    label = require_field(edge_result, "label", task_id)
+    if label not in {"normal", "abnormal"}:
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", task_id)
+    edge_confidence = require_confidence(
+        require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id
+    )
+    risk_level = require_field(edge_result, "risk_level", task_id)
+    if risk_level not in {"low", "medium", "high"}:
+        raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", task_id)
+
+    settings = load_cloud_settings()
+    if settings.backend == "vllm":
+        return infer_v01_vllm(request, settings)
+    if settings.backend != "mock":
+        raise CloudServiceError(
+            "INVALID_CLOUD_BACKEND",
+            f"unsupported cloud backend: {settings.backend}",
+            500,
+        )
+
+    if label == "abnormal":
+        confidence = max(edge_confidence, 0.93)
+        decision = {"action": "send_alert", "description": "设备存在高风险异常，建议停机检查"}
+        final_risk = "high"
+    else:
+        confidence = max(edge_confidence, 0.9)
+        decision = {"action": "ignore", "description": "未发现高风险异常，建议持续监测"}
+        final_risk = "low"
+    return {
+        "task_id": task_id,
+        "node_id": "cloud_1",
+        "model_name": "cloud_full_model",
+        "label": label,
+        "confidence": round(confidence, 2),
+        "risk_level": final_risk,
+        "cloud_latency_ms": 1.0,
+        "decision": decision,
+    }
+
+
+def _workflow_review_service() -> WorkflowReviewService:
+    return WorkflowReviewService(load_cloud_settings().database_path)
+
+
+def _legacy_bearing_workflow_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_bearing_window_review_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_BEARING_WORKFLOW_DISABLED"},
+    )
+
+
+def _legacy_context_pipeline_disabled() -> JSONResponse | None:
+    if load_cloud_settings().legacy_context_enhanced_pipeline_enabled:
+        return None
+    return JSONResponse(
+        status_code=410,
+        content={"error_code": "LEGACY_CONTEXT_PIPELINE_DISABLED"},
+    )
+
+
+def _workflow_error_response(error: WorkflowReviewError) -> JSONResponse:
+    status = 404 if error.code == "REVIEW_NOT_FOUND" else 409 if error.code.endswith("CONFLICT") else 400
+    return JSONResponse(status_code=status, content={"error_code": error.code, "message": str(error)})
+
+
+def _workflow_job_response(job: dict[str, Any], status_code: int = 200) -> JSONResponse:
+    public = {key: value for key, value in job.items() if key not in {"request", "raw_packets"}}
+    return JSONResponse(status_code=status_code, content=public)
 
 
 def _edge_summary_repository() -> EdgeFeatureRepository:
@@ -115,13 +270,27 @@ def _models_url(settings: CloudSettings) -> str:
     return base_url + "/models"
 
 
-def _raw_context_transport() -> HttpRawContextTransport:
+def _raw_context_transport() -> RoutedRawContextTransport:
     edge = config["services"]["edge"]
-    return HttpRawContextTransport(
-        os.getenv(
+    edge_base_urls = json.loads(
+        os.getenv("EDGE_RAW_CONTEXT_BASE_URLS_JSON", "{}")
+    )
+    if not isinstance(edge_base_urls, dict) or any(
+        not isinstance(edge_node_id, str)
+        or not edge_node_id.strip()
+        or not isinstance(base_url, str)
+        or not base_url.startswith(("http://", "https://"))
+        for edge_node_id, base_url in edge_base_urls.items()
+    ):
+        raise ValueError(
+            "EDGE_RAW_CONTEXT_BASE_URLS_JSON must map edge node IDs to HTTP(S) URLs"
+        )
+    return RoutedRawContextTransport(
+        default_edge_base_url=os.getenv(
             "EDGE_RAW_CONTEXT_BASE_URL",
             f"http://{edge['host']}:{edge['port']}",
         ),
+        edge_base_urls=edge_base_urls,
         timeout_seconds=float(
             os.getenv("EDGE_RAW_CONTEXT_TIMEOUT_SECONDS", "3")
         ),
@@ -148,6 +317,13 @@ def health() -> dict[str, object] | JSONResponse:
     settings = load_cloud_settings()
     if settings.backend == "mock":
         return _health_payload(settings, "ok")
+    if settings.backend == "moment_light_adapt":
+        if get_moment_runner(settings).loaded:
+            return _health_payload(settings, "ok")
+        return JSONResponse(
+            status_code=503,
+            content=_health_payload(settings, "unavailable"),
+        )
     if settings.backend != "vllm":
         return JSONResponse(
             status_code=500,
@@ -172,18 +348,40 @@ def health() -> dict[str, object] | JSONResponse:
     return _health_payload(settings, "ok")
 
 
-@app.post("/cloud/infer", response_model=None)
-def cloud_infer(payload: dict) -> dict | JSONResponse:
+@app.post("/cloud/edge-status", response_model=None)
+def receive_edge_status(payload: dict) -> dict | JSONResponse:
     try:
+        return edge_status_registry.update(payload)
+    except EdgeStatusValidationError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_EDGE_STATUS", "message": str(error)},
+        )
+
+
+@app.get("/cloud/edge-status/{edge_node_id}", response_model=None)
+def get_edge_status(edge_node_id: str) -> dict | JSONResponse:
+    report = edge_status_registry.get(edge_node_id)
+    if report is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error_code": "EDGE_STATUS_NOT_FOUND"},
+        )
+    return report
+
+
+@app.post("/cloud/infer", response_model=None)
+def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    try:
+        request = require_mapping(payload, "CloudRequest")
+        if is_v01_cloud_request(request):
+            return infer_cloud_v01(request)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.infer(
-            payload,
-            context_transport=_raw_context_transport(),
-        )
+        return handler.infer(request)
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -195,7 +393,7 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except CloudServiceError as error:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         contract_error = ContractError(
             error.code,
             error.message,
@@ -206,20 +404,192 @@ def cloud_infer(payload: dict) -> dict | JSONResponse:
             content=error_response(contract_error),
         )
     except Exception as exc:
-        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload.get("cloud_raw_packet"), dict) else {}
+        packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/packet-reviews", response_model=None)
+def create_packet_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try:
+        service = _workflow_review_service()
+        job = service.submit("PACKET", payload)
+        background_tasks.add_task(service.process, job["review_id"])
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/packet-reviews/{review_id}", response_model=None)
+def get_packet_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-window-reviews", response_model=None)
+def create_bearing_window_review(payload: dict) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try:
+        return _workflow_job_response(
+            _workflow_review_service().submit("BEARING_WINDOW", payload), 202
+        )
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-window-reviews/{review_id}/raw-batch", response_model=None)
+def upload_bearing_window_raw(
+    review_id: str, payload: dict, background_tasks: BackgroundTasks
+) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try:
+        service = _workflow_review_service()
+        job = service.upload_window_raw(review_id, payload)
+        background_tasks.add_task(service.process, review_id)
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/bearing-window-reviews/{review_id}", response_model=None)
+def get_bearing_window_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/device-reviews", response_model=None)
+def create_device_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try:
+        service = _workflow_review_service()
+        job = service.submit("DEVICE", payload)
+        background_tasks.add_task(service.process, job["review_id"])
+        return _workflow_job_response(job, 202)
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.get("/cloud/device-reviews/{review_id}", response_model=None)
+def get_device_review(review_id: str) -> JSONResponse:
+    try:
+        return _workflow_job_response(_workflow_review_service().get(review_id))
+    except WorkflowReviewError as error:
+        return _workflow_error_response(error)
+
+
+@app.post("/cloud/bearing-review", response_model=None)
+def create_bearing_review(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try:
+        return BearingReviewService(
+            load_cloud_settings().database_path,
+            transport=_raw_context_transport(),
+        ).create(payload)
+    except BearingReviewValidationError as error:
+        return JSONResponse(status_code=400, content={"error_code": error.code})
+    except BearingReviewConflictError as error:
+        return JSONResponse(status_code=409, content={"error_code": error.code})
+
+
+@app.get("/cloud/bearing-review/{bearing_review_id}", response_model=None)
+def get_bearing_review(bearing_review_id: str) -> dict | JSONResponse:
+    result = BearingReviewService(
+        load_cloud_settings().database_path,
+        transport=_raw_context_transport(),
+    ).get(bearing_review_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error_code": "BEARING_REVIEW_NOT_FOUND"})
+    return result
+
+
+@app.post("/cloud/bearing-task-results", response_model=None)
+def bearing_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try: return TaskResultService(load_cloud_settings().database_path).ingest_bearing(payload)
+    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.post("/cloud/device-task-results", response_model=None)
+def device_task_results(payload: dict) -> dict | JSONResponse:
+    if disabled := _legacy_bearing_workflow_disabled():
+        return disabled
+    try: return TaskResultService(load_cloud_settings().database_path).ingest_device(payload)
+    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.post("/cloud/bearing-diagnosis-results", response_model=None)
+def bearing_diagnosis_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_bearing_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
+@app.post("/cloud/device-decision-results", response_model=None)
+def device_decision_results(payload: dict) -> dict | JSONResponse:
+    try:
+        return TaskResultService(load_cloud_settings().database_path).ingest_device_decision(payload)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
+            content={"error_code": str(error)},
+        )
+
+
+@app.post("/cloud/raw-analysis-samples", response_model=None)
+async def raw_analysis_samples(
+    metadata: str = Form(...), payload: UploadFile = File(...)
+) -> dict | JSONResponse:
+    try:
+        result = RawAnalysisSampleService(load_cloud_settings().database_path).accept(
+            json.loads(metadata), await payload.read(), received_at_ns=time.time_ns()
+        )
+        return result
+    except (ValueError, json.JSONDecodeError) as error:
+        return JSONResponse(status_code=400, content={"error_code": str(error)})
+
+
+@app.get("/cloud/raw-analysis-samples/{sample_id}", response_model=None)
+def get_raw_analysis_sample(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_sample(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "RAW_SAMPLE_NOT_FOUND"})
+
+
+@app.get("/cloud/physical-evidence/{sample_id}", response_model=None)
+def get_physical_evidence(sample_id: str) -> dict | JSONResponse:
+    result = RawAnalysisSampleService(load_cloud_settings().database_path).get_evidence(sample_id)
+    return result if result is not None else JSONResponse(status_code=404, content={"error_code": "PHYSICAL_EVIDENCE_NOT_FOUND"})
 
 
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
+        adapted = (
+            adapt_v12_device_arbitration_request(payload)
+            if is_v12_device_arbitration_request(payload)
+            else None
+        )
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            payload.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            (adapted or payload).get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        return handler.arbitrate_device_conflict(payload)
+        result = handler.arbitrate_device_conflict(adapted or payload)
+        return attach_v12_identity(result, adapted) if adapted is not None else result
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -303,13 +673,29 @@ def get_latest_global_analysis(
 
 
 def _model_update_service() -> ModelUpdateService:
-    return ModelUpdateService(load_cloud_settings().database_path)
+    settings = load_cloud_settings()
+    source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
+    label_mapping_path = os.getenv("PADERBORN_LABEL_MAPPING_PATH")
+    data_root = os.getenv("MODEL_UPDATE_DATA_ROOT")
+    return ModelUpdateService(
+        settings.database_path,
+        data_root=Path(data_root) if data_root else None,
+        packet_source_database_path=(
+            Path(source_database) if source_database else None
+        ),
+        label_mapping=load_label_mapping(
+            Path(label_mapping_path) if label_mapping_path else None
+        ),
+    )
 
 
 def _model_update_error_response(error: ModelUpdateError) -> JSONResponse:
     status_code = 404 if error.code in {
-        "GLOBAL_ANALYSIS_NOT_FOUND", "UPDATE_NOT_FOUND", "UPDATE_FILE_NOT_FOUND"
-    } else 409 if error.code in {"INVALID_UPDATE_STATE", "UPDATE_FILE_CHANGED"} else 400
+        "GLOBAL_ANALYSIS_NOT_FOUND",
+        "PROBLEM_CANDIDATE_NOT_FOUND",
+        "UPDATE_NOT_FOUND",
+        "DATASET_MANIFEST_NOT_FOUND",
+    } else 409 if error.code == "INVALID_UPDATE_STATE" else 400
     return JSONResponse(status_code=status_code, content={"error_code": error.code})
 
 
@@ -322,10 +708,49 @@ def create_model_update(payload: dict) -> dict | JSONResponse:
 
 
 @app.post("/cloud/model-update/{update_id}/validate", response_model=None)
-def validate_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSONResponse:
+def validate_model_update(update_id: str, payload: Any = Body(...)) -> dict | JSONResponse:
     try:
-        use_demo_data = bool(payload.get("use_demo_data", False)) if isinstance(payload, dict) else False
-        return _model_update_service().validate(update_id, use_demo_data=use_demo_data)
+        test_results = payload.get("test_results") if isinstance(payload, dict) else None
+        if not isinstance(test_results, list):
+            raise ModelUpdateError("INVALID_VALIDATION_RESULT")
+        return _model_update_service().validate(update_id, test_results)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/prepare-data", response_model=None)
+def prepare_model_update_data(
+    update_id: str, payload: Any = Body(None)
+) -> dict | JSONResponse:
+    try:
+        version = (
+            payload.get("feature_pipeline_version", "edge_feature_v1")
+            if isinstance(payload, dict)
+            else "edge_feature_v1"
+        )
+        return _model_update_service().prepare_data(
+            update_id, feature_pipeline_version=version
+        )
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/training-result", response_model=None)
+def register_model_training_result(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        if not isinstance(payload, dict):
+            raise ModelUpdateError("INVALID_TRAINING_RESULT")
+        return _model_update_service().register_training_result(update_id, payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/start-training", response_model=None)
+def start_model_update_training(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().start_training(update_id)
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
@@ -356,18 +781,48 @@ def reject_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSO
         return _model_update_error_response(error)
 
 
-@app.post("/cloud/model-update/{update_id}/distribute", response_model=None)
-def distribute_model_update(update_id: str) -> dict | JSONResponse:
+@app.post("/cloud/model-update/{update_id}/handoff-distribution", response_model=None)
+def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
     try:
-        return _model_update_service().distribute(update_id)
+        return _model_update_service().handoff_distribution(update_id)
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
 
-@app.get("/cloud/model-update/{update_id}/file", response_model=None)
-def download_model_update_file(update_id: str) -> FileResponse | JSONResponse:
+@app.post("/cloud/model-update/{update_id}/distribution-result", response_model=None)
+def record_model_update_distribution(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
     try:
-        return FileResponse(_model_update_service().download_path(update_id))
+        if not isinstance(payload, dict):
+            raise ModelUpdateError("INVALID_DISTRIBUTION_RESULT")
+        return _model_update_service().record_distribution_result(update_id, payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/post-validate", response_model=None)
+def post_validate_model_update(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        analysis_id = payload.get("analysis_id") if isinstance(payload, dict) else None
+        if not isinstance(analysis_id, str) or not analysis_id:
+            raise ModelUpdateError("INVALID_POST_VALIDATION_REQUEST")
+        return _model_update_service().post_validate(update_id, analysis_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/request-rollback", response_model=None)
+def request_model_update_rollback(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        requested_by = payload.get("requested_by") if isinstance(payload, dict) else None
+        return _model_update_service().request_rollback(
+            update_id, requested_by=requested_by
+        )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
@@ -378,7 +833,18 @@ def raw_context_batches(
 ) -> dict[str, object] | JSONResponse:
     """Receive one edge raw-context batch and acknowledge each packet."""
 
+    disabled = (
+        _legacy_bearing_workflow_disabled()
+        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review"
+        else _legacy_context_pipeline_disabled()
+    )
+    if disabled:
+        return disabled
     try:
+        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review":
+            return BearingRawContextReceiver(
+                load_cloud_settings().database_path
+            ).receive_batch(payload)
         return RawContextReceiver(
             load_cloud_settings().database_path
         ).receive_batch(payload)
@@ -387,6 +853,10 @@ def raw_context_batches(
             status_code=400,
             content={"error_code": error.code, "message": error.message},
         )
+    except BearingReviewValidationError as error:
+        return JSONResponse(status_code=400, content={"error_code": error.code})
+    except BearingReviewConflictError as error:
+        return JSONResponse(status_code=409, content={"error_code": error.code})
     except sqlite3.Error:
         return JSONResponse(
             status_code=503,

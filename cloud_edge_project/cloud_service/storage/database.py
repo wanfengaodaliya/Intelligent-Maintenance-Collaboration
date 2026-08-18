@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .schema import DDL, SCHEMA_VERSION
+from .schema import DDL, MODEL_UPDATE_TASK_DDL, SCHEMA_VERSION
 
 
 @contextmanager
@@ -36,6 +36,7 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v2_summary_to_document_schema(connection)
         legacy_summary_table = _migrate_v3_summary_to_ingestion_schema(connection)
         _migrate_v10_to_v11_identity_fields(connection)
+        _migrate_v15_model_update_table(connection)
         connection.executescript(DDL)
         _migrate_v5_to_v6(connection)
         _migrate_v10_to_v11_identity_fields(connection)
@@ -54,6 +55,15 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
+                14,
+                time.time_ns(),
+                "bearing review manifest and exact raw-context request storage",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
                 12,
                 time.time_ns(),
                 "global analysis result storage",
@@ -63,11 +73,108 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
-                SCHEMA_VERSION,
+                13,
                 time.time_ns(),
                 "model update task storage",
             ),
         )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "traceable offline model update workflow",
+            ),
+        )
+
+
+def _migrate_v15_model_update_table(connection: sqlite3.Connection) -> None:
+    """Atomically migrate v15 rows and resume a previously interrupted migration."""
+
+    current_table = _table_exists(connection, "model_update_task")
+    legacy_table = "model_update_task_legacy_v15"
+    legacy_exists = _table_exists(connection, legacy_table)
+    current_is_v16 = current_table and "problem_id" in _columns(
+        connection, "model_update_task"
+    )
+    if current_is_v16 and not legacy_exists:
+        return
+    if not current_table and not legacy_exists:
+        return
+    if current_table and not current_is_v16 and legacy_exists:
+        raise sqlite3.IntegrityError(
+            "both v15 model_update_task and its recovery table exist"
+        )
+
+    # Previous schema migrations may have pending work. Commit that work first so
+    # this table rebuild has its own all-or-nothing transaction boundary.
+    connection.commit()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if current_table and not current_is_v16:
+            connection.execute("DROP INDEX IF EXISTS idx_model_update_analysis")
+            connection.execute(
+                f"ALTER TABLE model_update_task RENAME TO {legacy_table}"
+            )
+        _create_model_update_task_schema(connection)
+        _copy_legacy_model_updates(connection, legacy_table)
+        connection.execute(f"DROP TABLE {legacy_table}")
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+def _create_model_update_task_schema(connection: sqlite3.Connection) -> None:
+    """Execute the static model-update DDL without SQLite's implicit script commit."""
+
+    for statement in MODEL_UPDATE_TASK_DDL.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
+def _copy_legacy_model_updates(
+    connection: sqlite3.Connection, legacy_table: str
+) -> None:
+    """Map candidate-first v15 rows into the final lifecycle contract."""
+
+    rows = connection.execute(f"SELECT * FROM {legacy_table}").fetchall()
+    for row in rows:
+        candidate = {
+            "artifact_path": row["update_file"],
+            "artifact_sha256": row["update_file_sha256"],
+        }
+        status = (
+            "handoff_to_distribution"
+            if row["status"] == "distribution_prepared"
+            else row["status"]
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO model_update_task(
+                   update_id,analysis_id,problem_id,scenario_type,subject_id,
+                   problem_type,problem_context_json,evidence_snapshot_json,
+                   baseline_version,candidate_version,candidate_artifact_json,
+                   status,validation_result_json,confirmation_result_json,
+                   distribution_result_json,created_at_ns,updated_at_ns
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["update_id"], row["analysis_id"],
+                f"legacy_{row['update_id']}", row["scenario_type"],
+                row["subject_id"], "legacy_update", "{}", "{}",
+                row["old_version"], row["new_version"],
+                _json(candidate), status, row["validation_result_json"],
+                row["confirmation_json"], row["distribution_result_json"],
+                row["created_at_ns"], row["updated_at_ns"],
+            ),
+        )
+
+
+def _json(value: object) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _migrate_v1_to_sender_schema(connection: sqlite3.Connection) -> None:

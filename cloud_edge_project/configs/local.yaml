@@ -5,18 +5,54 @@ services:
     host: "127.0.0.1"
     port: 8001
   scheduler:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8003
   cloud:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8004
+  consistency:
+    host: "127.0.0.1"
+    port: 8005
   log:
     host: "127.0.0.1"
     port: 8006
 
 model:
-  edge_backend: "mock"
-  cloud_backend: "mock"
+  edge_backend: "rule"
+  cloud_backend: "rule"
+
+mqtt:
+  host: "127.0.0.1"
+  port: 1883
+  qos: 1
+  input_topic: "edge/edge_01/input"
+  client_id: "edge_01-runtime"
+
+bearing_window_transfer:
+  cache_directory: "edge_service/data/bearing_windows"
+  hard_limit_gib: 20
+  warning_gib: 16
+  reserved_free_gib: 10
+  dispatch_interval_seconds: 1.0
+  # 本链路只做轴承级 20 包复核，不以前置单包云复核阻塞窗口落盘。
+  packet_cloud_confidence_threshold: 0.0
+
+packet_routing:
+  confidence_threshold: 0.80
+
+cloud_node:
+  max_queue_length: 5
+  status_ttl_seconds: 5
+
+cloud_network:
+  min_uplink_mbps: 2.0
+  max_rtt_p95_ms: 100.0
+  max_loss_rate: 0.10
+
+deferred_cloud_review:
+  retention_hours: 24
+  dispatcher_interval_seconds: 1.0
+  cleanup_interval_seconds: 60.0
 
 log:
   path: "logs/task_trace.jsonl"

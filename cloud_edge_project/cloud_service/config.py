@@ -7,6 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _artifact_path(env_name: str, relative_path: str) -> Path:
+    configured = os.getenv(env_name)
+    if configured:
+        return Path(configured).expanduser()
+    return PROJECT_ROOT / relative_path
+
+
 @dataclass(frozen=True)
 class CloudSettings:
     backend: str
@@ -15,6 +25,21 @@ class CloudSettings:
     vllm_api_key: str
     vllm_timeout_seconds: float
     database_path: Path = Path("data/cloud_review.db")
+    legacy_bearing_window_review_enabled: bool = False
+    legacy_context_enhanced_pipeline_enabled: bool = False
+    moment_checkpoint_path: Path = PROJECT_ROOT / (
+        "local_experiment/analysis/final_model/moment_final_chance/"
+        "SCL05/fold_3/best_model.pt"
+    )
+    moment_condition_norm_path: Path = PROJECT_ROOT / (
+        "local_experiment/analysis/final_model/moment_final_chance/"
+        "SCL05/fold_3/condition_norm.json"
+    )
+    moment_pretrained_path: Path = PROJECT_ROOT / (
+        "experiments/diagnosis_models/moment/pretrained/MOMENT-1-small"
+    )
+    moment_deployment_dir: Path = PROJECT_ROOT / "local_experiment/deploy/light_adapt"
+    moment_device: str = "auto"
 
 
 def load_cloud_settings() -> CloudSettings:
@@ -30,4 +55,35 @@ def load_cloud_settings() -> CloudSettings:
         vllm_api_key=os.getenv("VLLM_API_KEY", "").strip(),
         vllm_timeout_seconds=float(os.getenv("VLLM_TIMEOUT_SECONDS", "120")),
         database_path=Path(os.getenv("CLOUD_REVIEW_DB_PATH", "data/cloud_review.db")),
+        legacy_bearing_window_review_enabled=(
+            os.getenv("CLOUD_LEGACY_BEARING_WINDOW_REVIEW_ENABLED", "false")
+            .strip()
+            .lower()
+            == "true"
+        ),
+        legacy_context_enhanced_pipeline_enabled=(
+            os.getenv("CLOUD_LEGACY_CONTEXT_ENHANCED_PIPELINE_ENABLED", "false")
+            .strip()
+            .lower()
+            == "true"
+        ),
+        moment_checkpoint_path=_artifact_path(
+            "CLOUD_MOMENT_CHECKPOINT_PATH",
+            "local_experiment/analysis/final_model/moment_final_chance/"
+            "SCL05/fold_3/best_model.pt",
+        ),
+        moment_condition_norm_path=_artifact_path(
+            "CLOUD_MOMENT_CONDITION_NORM_PATH",
+            "local_experiment/analysis/final_model/moment_final_chance/"
+            "SCL05/fold_3/condition_norm.json",
+        ),
+        moment_pretrained_path=_artifact_path(
+            "CLOUD_MOMENT_PRETRAINED_PATH",
+            "experiments/diagnosis_models/moment/pretrained/MOMENT-1-small",
+        ),
+        moment_deployment_dir=_artifact_path(
+            "CLOUD_MOMENT_DEPLOYMENT_DIR",
+            "local_experiment/deploy/light_adapt",
+        ),
+        moment_device=os.getenv("CLOUD_MOMENT_DEVICE", "auto").strip().lower(),
     )

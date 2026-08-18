@@ -1,0 +1,17 @@
+{
+  "task_id": "task_0001",
+  "scenario": "industrial",
+  "source_node": "edge_1",
+  "task_type": "fault_detection",
+  "timestamp": "2026-06-20 10:00:00",
+  "deadline_ms": 200,
+  "priority": 0.8,
+  "data_size_kb": 128,
+  "data": {
+    "device_id": "machine_01",
+    "temperature": 78.5,
+    "vibration": 0.63,
+    "current": 13.2,
+    "load": 0.76
+  }
+}

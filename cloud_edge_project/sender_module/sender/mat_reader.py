@@ -34,6 +34,9 @@ class SignalWindow:
     sequence_number: int
     start_seconds: float
     end_seconds: float
+    start_index: int
+    end_index: int
+    window_index: int
     data: dict[str, object]
 
 
@@ -59,6 +62,8 @@ class MatRecord:
             start = zero_based_index * duration_seconds
             end = start + duration_seconds
             data: dict[str, object] = {}
+            vibration_start_index = 0
+            vibration_end_index = 0
 
             for name, signal in self.series.items():
                 samples_per_window = round(signal.sample_rate_hz * duration_seconds)
@@ -66,11 +71,17 @@ class MatRecord:
                 first = origin + zero_based_index * samples_per_window
                 last = min(first + samples_per_window, len(signal.values))
                 values = signal.values[first:last].astype(float, copy=False).tolist()
-                data[name] = {
+                if name == "vibration":
+                    vibration_start_index = first
+                    vibration_end_index = last
+                channel_data = {
                     "sample_rate_hz": signal.sample_rate_hz,
                     "sample_count": len(values),
                     "values": values,
                 }
+                if name in PACKET_UNITS:
+                    channel_data["unit"] = PACKET_UNITS[name]
+                data[name] = channel_data
 
             temperature_index = int(
                 np.searchsorted(self.temperature_times, end, side="right") - 1
@@ -85,6 +96,9 @@ class MatRecord:
                 sequence_number=zero_based_index + 1,
                 start_seconds=start,
                 end_seconds=end,
+                start_index=vibration_start_index,
+                end_index=vibration_end_index,
+                window_index=zero_based_index,
                 data=data,
             )
 
@@ -96,6 +110,11 @@ SOURCE_TO_PACKET = {
     "speed": ("shaft_speed_rpm", 4000),
     "torque": ("load_torque_nm", 4000),
     "force": ("bearing_radial_load_n", 4000),
+}
+PACKET_UNITS = {
+    "vibration": "mm/s",
+    "phase_current_1_A": "A",
+    "phase_current_2_A": "A",
 }
 TEMPERATURE_SOURCE = "temp_2_bearing_module"
 

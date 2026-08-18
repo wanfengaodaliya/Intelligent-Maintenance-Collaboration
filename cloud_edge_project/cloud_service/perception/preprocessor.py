@@ -42,7 +42,11 @@ def preprocess_packet(request: dict[str, Any]) -> dict[str, Any]:
         "edge_perception_result": request["edge_perception_result"],
         "cloud_raw_packet": {
             **{key: value for key, value in raw_packet.items() if key != "data"},
-            "start_timestamp_ns": raw_packet["end_generate_timestamp_ns"] - 50_000_000,
+            "start_timestamp_ns": raw_packet.get(
+                "start_timestamp_ns",
+                raw_packet["end_generate_timestamp_ns"]
+                - raw_packet.get("window_packet_count", 1) * 50_000_000,
+            ),
             "end_timestamp_ns": raw_packet["end_generate_timestamp_ns"],
         },
         "signals": prepared_signals,

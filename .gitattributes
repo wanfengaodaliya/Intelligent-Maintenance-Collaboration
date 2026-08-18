@@ -1,0 +1,5 @@
+# These files are integrity-checked as raw bytes at edge-model startup.
+# Keep a canonical LF checkout on every platform before computing SHA-256.
+cloud_edge_project/edge_service/models/bearing_random_forest/*.json text eol=lf
+cloud_edge_project/edge_service/models/bearing_random_forest/SHA256SUMS text eol=lf
+cloud_edge_project/edge_service/models/bearing_random_forest/*.joblib -text

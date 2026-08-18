@@ -19,9 +19,9 @@ class GlobalAnalysisResultRepository:
     def save_result(self, result: dict[str, Any]) -> None:
         """保存一份已计算完成的全局分析结果。"""
 
-        state_trend = result["common_analysis"]["state_trend"]
-        edge_model = result["common_analysis"]["edge_model"]
-        arbitration = result["common_analysis"]["arbitration"]
+        device_health = result["device_health_analysis"]
+        packet_diagnosis = result["packet_diagnosis_analysis"]
+        arbitration = result["device_arbitration_analysis"]
         with connect(self.database_path) as connection:
             connection.execute(
                 """
@@ -38,13 +38,13 @@ class GlobalAnalysisResultRepository:
                     result["scenario_type"],
                     result["subject_id"],
                     result["analysis_window"]["actual_task_count"],
-                    state_trend["trend"],
-                    state_trend["normal_rate"],
-                    state_trend["warning_rate"],
-                    state_trend["abnormal_rate"],
-                    edge_model["reviewed_packet_count"],
-                    edge_model["edge_cloud_agreement_rate"],
-                    edge_model["cloud_correction_rate"],
+                    device_health["trend"],
+                    device_health["normal_rate"],
+                    device_health["warning_rate"],
+                    device_health["abnormal_rate"],
+                    packet_diagnosis["reviewed_packet_count"],
+                    packet_diagnosis["edge_cloud_agreement_rate"],
+                    packet_diagnosis["cloud_correction_rate"],
                     arbitration["conflict_rate"],
                     arbitration["arbitration_success_rate"],
                     json.dumps(result, ensure_ascii=False, sort_keys=True),
@@ -68,3 +68,15 @@ class GlobalAnalysisResultRepository:
                 (scenario_type, subject_id),
             ).fetchone()
         return json.loads(row["result_json"]) if row else None
+
+    def get_recent(
+        self, scenario_type: str, subject_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        with connect(self.database_path) as connection:
+            rows = connection.execute(
+                """SELECT result_json FROM global_analysis_result
+                   WHERE scenario_type=? AND subject_id=?
+                   ORDER BY created_at_ns DESC, analysis_id DESC LIMIT ?""",
+                (scenario_type, subject_id, limit),
+            ).fetchall()
+        return [json.loads(row["result_json"]) for row in reversed(rows)]

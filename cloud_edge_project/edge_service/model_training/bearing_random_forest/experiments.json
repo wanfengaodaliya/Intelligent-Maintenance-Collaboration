@@ -1,0 +1,28 @@
+{
+  "schema_version": "bearing-rf-experiments/2.0",
+  "task": "binary_fault_detection",
+  "random_seed": 20260811,
+  "random_forest": {
+    "n_estimators": 300,
+    "criterion": "gini",
+    "max_depth": null,
+    "min_samples_split": 2,
+    "min_samples_leaf": 2,
+    "max_features": "sqrt",
+    "bootstrap": true,
+    "class_weight": "balanced",
+    "n_jobs": 6
+  },
+  "selection": {
+    "primary_metric": "window_macro_f1",
+    "macro_f1_tie_tolerance": 0.002,
+    "secondary_metric": "worst_bearing_accuracy",
+    "final_tiebreakers": ["feature_count", "model_bytes", "experiment"]
+  },
+  "experiments": [
+    {"name": "A1", "include_artificial": false, "feature_set": "vibration_6"},
+    {"name": "A2", "include_artificial": false, "feature_set": "full_27"},
+    {"name": "B1", "include_artificial": true, "feature_set": "vibration_6"},
+    {"name": "B2", "include_artificial": true, "feature_set": "full_27"}
+  ]
+}

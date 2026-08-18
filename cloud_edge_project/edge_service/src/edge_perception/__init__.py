@@ -4,6 +4,8 @@
 from .config import ConstantDetectionConfig, PerceptionConfig, file_sha256
 from .contracts import ModuleResult, ModuleStatus, PerceptionInvocationContext
 from .processor import EdgePerception
+from .protocol import PerceptionHandler
+from .registry import PerceptionRegistry
 
 __all__ = [
     "ConstantDetectionConfig",
@@ -11,6 +13,8 @@ __all__ = [
     "ModuleResult",
     "ModuleStatus",
     "PerceptionConfig",
+    "PerceptionHandler",
     "PerceptionInvocationContext",
+    "PerceptionRegistry",
     "file_sha256",
 ]

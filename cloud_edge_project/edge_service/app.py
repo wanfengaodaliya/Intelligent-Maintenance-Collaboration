@@ -1,21 +1,28 @@
 """FastAPI entry point for the edge inference service."""
+# 该模块提供边缘推理服务的 FastAPI 启动入口。
 
 from __future__ import annotations
 
+import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
-from common.config import load_config
-from common.schemas import ContractError, error_response
-from edge_service.model import EDGE_NODE_ID, infer_edge
 
-
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EDGE_RUNTIME_SRC = Path(__file__).resolve().parent / "src"
-if str(EDGE_RUNTIME_SRC) not in sys.path:
-    sys.path.insert(0, str(EDGE_RUNTIME_SRC))
+for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+from common.config import load_config, service_url
+from common.schemas import ContractError, error_response, is_v01_task_request
+from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
 from edge_task_ingress import (  # noqa: E402
     TASK_CONFLICT,
@@ -26,10 +33,85 @@ from edge_validation_cache import (  # noqa: E402
     EdgeValidationCache,
     ValidationCacheConfig,
 )
+from edge_aggregation import WindowTransferError  # noqa: E402
+from edge_diagnosis import (  # noqa: E402
+    DEFAULT_MODEL_DIR,
+    RUNTIME_MODEL_VERSION,
+    RandomForestDiagnosticModel,
+)
+from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
+from edge_model.code_fallback import TestRuleRunner  # noqa: E402
+from edge_model.contracts import EdgeResult, PacketInferenceTask  # noqa: E402
+from edge_model.model_client import ModelClient  # noqa: E402
+from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
+from edge_perception import PerceptionRegistry  # noqa: E402
+from scenarios.bearing.edge import (  # noqa: E402
+    BearingEdgePerceptionHandler,
+    build_bearing_perception_config,
+)
+from edge_runtime import (  # noqa: E402
+    ControlServerConfig,
+    EdgeRuntimeConfig,
+    MqttConfig,
+    PacketRouteErrorRecorder,
+    SchedulerConfig,
+    WindowTransferConfig,
+    build_edge_runtime,
+)
+from cloud_review import (  # noqa: E402
+    CloudReviewError,
+    CloudReviewCleanupWorker,
+    CloudReviewService,
+    CloudReviewStore,
+    HttpCloudClient,
+    SchedulerUploadReporter,
+    load_cloud_review_config,
+)
+from edge_status_reporter import build_edge_status_integration  # noqa: E402
+from model_input_contract import validate_model_input  # noqa: E402
 
 
 config = load_config()
-app = FastAPI(title="edge_service")
+diagnostic_backend = str(config["model"]["edge_backend"])
+if diagnostic_backend not in {"rule", "random_forest"}:
+    raise ValueError("unsupported edge diagnostic backend: %s" % diagnostic_backend)
+runtime_model_version = (
+    "edge_rule_test_v1"
+    if diagnostic_backend == "rule"
+    else RUNTIME_MODEL_VERSION
+)
+edge_status_integration = build_edge_status_integration(
+    edge_node_id=EDGE_NODE_ID,
+    default_model_version=runtime_model_version,
+)
+runtime_assembly = None
+cloud_review_cleanup = None
+EDGE_FEATURE_EXTRACTOR_VERSION = os.getenv(
+    "EDGE_PERCEPTION_FEATURE_EXTRACTOR_VERSION",
+    "edge-perception-v1",
+)
+EDGE_SCENARIO_TYPE = os.getenv("EDGE_SCENARIO_TYPE", "bearing")
+rf_evaluation_model = None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    if runtime_assembly is not None:
+        runtime_assembly.service.start()
+    if cloud_review_cleanup is not None:
+        cloud_review_cleanup.start()
+    try:
+        async with edge_status_integration.lifespan(app):
+            yield
+    finally:
+        if runtime_assembly is not None:
+            runtime_assembly.service.stop()
+        if cloud_review_cleanup is not None:
+            cloud_review_cleanup.stop()
+
+
+app = FastAPI(title="edge_service", lifespan=_lifespan)
+edge_status_integration.install(app)
 
 
 def _create_task_ingress() -> EdgeTaskIngress:
@@ -53,26 +135,230 @@ def _create_task_ingress() -> EdgeTaskIngress:
 task_ingress = _create_task_ingress()
 
 
+def _build_runtime(review_store: CloudReviewStore | None = None):
+    if review_store is None:
+        review_store = cloud_review_store
+
+    perception_registry = PerceptionRegistry()
+    perception_registry.register(
+        "bearing",
+        lambda: BearingEdgePerceptionHandler(build_bearing_perception_config()),
+    )
+    perception = perception_registry.create(EDGE_SCENARIO_TYPE)
+    model_config = EdgeModelConfig()
+    model_client = ModelClient(
+        ModelClientConfig(base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"))
+    )
+    pipeline = EdgeModelPipeline(
+        model_config,
+        model_client,
+        (
+            TestRuleRunner(runtime_model_version)
+            if diagnostic_backend == "rule"
+            else RandomForestDiagnosticModel(
+                os.getenv("EDGE_RF_MODEL_DIR", str(DEFAULT_MODEL_DIR))
+            )
+        ),
+        on_run_record=lambda _: None,
+        on_packet_result=lambda _: None,
+    )
+    mqtt_settings = config.get("mqtt", {})
+    transfer_settings = config.get("bearing_window_transfer", {})
+    mqtt = MqttConfig(
+        host=os.getenv("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1"))),
+        port=int(os.getenv("EDGE_MQTT_PORT", str(mqtt_settings.get("port", 1883)))),
+        qos=int(mqtt_settings.get("qos", 1)),
+        input_topic=os.getenv(
+            "EDGE_MQTT_INPUT_TOPIC",
+            str(mqtt_settings.get("input_topic", f"edge/{EDGE_NODE_ID}/input")),
+        ),
+        client_id=os.getenv(
+            "EDGE_MQTT_CLIENT_ID",
+            str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
+        ),
+    )
+    scheduler_base = os.getenv(
+        "SCHEDULER_SERVICE_BASE_URL",
+        service_url("scheduler", config),
+    )
+    cloud_base = os.getenv("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
+    runtime_config = EdgeRuntimeConfig(
+        edge_node_id=EDGE_NODE_ID,
+        mqtt=mqtt,
+        scheduler=SchedulerConfig(base_url=scheduler_base),
+        control=ControlServerConfig(
+            host=os.getenv("EDGE_CONTROL_HOST", "0.0.0.0"),
+            port=int(os.getenv("EDGE_CONTROL_PORT", "8011")),
+        ),
+        window_transfer=WindowTransferConfig(
+            cache_directory=Path(
+                os.getenv(
+                    "EDGE_BEARING_WINDOW_CACHE_DIR",
+                    str(
+                        Path(__file__).resolve().parents[1]
+                        / str(transfer_settings.get("cache_directory", "edge_service/data/bearing_windows"))
+                    ),
+                )
+            ),
+            cloud_base_url=cloud_base,
+            hard_limit_bytes=int(transfer_settings.get("hard_limit_gib", 20)) * 1024**3,
+            warning_bytes=int(transfer_settings.get("warning_gib", 16)) * 1024**3,
+            reserved_free_bytes=int(transfer_settings.get("reserved_free_gib", 10)) * 1024**3,
+            dispatch_interval_seconds=float(
+                transfer_settings.get("dispatch_interval_seconds", 1.0)
+            ),
+            packet_cloud_confidence_threshold=float(
+                transfer_settings.get("packet_cloud_confidence_threshold", 0.0)
+            ),
+        ),
+        cloud_node_urls={"cloud_01": cloud_base},
+    )
+    packet_route_error_recorder = PacketRouteErrorRecorder(
+        os.getenv(
+            "EDGE_PACKET_ROUTE_ERROR_LOG",
+            str(Path(__file__).resolve().parents[1] / "data" / "edge_packet_route_errors.jsonl"),
+        )
+    )
+    return build_edge_runtime(
+        config=runtime_config,
+        ingress=task_ingress,
+        cache=task_ingress.validation_cache,
+        perception=perception,
+        pipeline=pipeline,
+        cloud_review_store=review_store,
+        on_packet_route_error=packet_route_error_recorder,
+        enable_heartbeat=False,
+    )
+
+
+cloud_review_config = load_cloud_review_config()
+cloud_review_store = CloudReviewStore(
+    cloud_review_config.cache_directory,
+    retention_ns=cloud_review_config.retention_ns,
+)
+runtime_assembly = _build_runtime(cloud_review_store)
+cloud_review_service = CloudReviewService(
+    cloud_review_store,
+    cloud_client=HttpCloudClient(cloud_review_config.cloud_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
+    scheduler_reporter=SchedulerUploadReporter(cloud_review_config.scheduler_base_url, timeout_seconds=cloud_review_config.timeout_seconds),
+    edge_node_id=EDGE_NODE_ID,
+    cloud_result_handler=runtime_assembly.v12_flow,
+)
+cloud_review_cleanup = CloudReviewCleanupWorker(
+    cloud_review_store,
+    interval_seconds=cloud_review_config.cleanup_interval_seconds,
+)
+
 @app.get("/health")
 def health() -> dict[str, object]:
+    model = runtime_assembly.coordinator.pipeline.fallback
     return {
         "service": "edge_service",
         "node_id": EDGE_NODE_ID,
         "status": "ok",
         "port": config["services"]["edge"]["port"],
-        "model_backend": config["model"]["edge_backend"],
+        "model_backend": diagnostic_backend,
+        "model_version": model.model_version,
+        "model_deployment_status": model.deployment_status,
+        "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
+        "feature_schema_version": getattr(model, "feature_schema_version", None),
+        "model_input_schema_version": getattr(
+            model, "model_input_schema_version", None
+        ),
+        "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
+        "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
+        "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
+        "legacy_bearing_aggregation_enabled": runtime_assembly.window_review_store is not None,
+        "bearing_window_cache_bytes": (
+            None
+            if runtime_assembly.window_review_store is None
+            else runtime_assembly.window_review_store.usage_bytes()
+        ),
+        "bearing_window_cache_warning": (
+            False
+            if runtime_assembly.window_review_store is None
+            else runtime_assembly.window_review_store.warning
+        ),
     }
 
 
 @app.post("/edge/infer", response_model=None)
-def edge_infer(payload: dict) -> dict | JSONResponse:
+def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
+        if is_v01_task_request(payload):
+            return infer_edge_v01(payload)
         return infer_edge(payload)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except Exception as exc:
-        error = ContractError("MODEL_INFER_FAILED", str(exc), payload.get("packet_id"))
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
         return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/edge/rf/infer", response_model=None)
+def random_forest_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    try:
+        task = _packet_task_from_perception(payload)
+        started_at = perf_counter()
+        result = _random_forest_model().run(task)
+        latency_ms = max((perf_counter() - started_at) * 1000, 0.0)
+        return public_rf_result(task, result, edge_latency_ms=latency_ms)
+    except ValueError as exc:
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("INVALID_MODEL_INPUT", str(exc), packet_id)
+        return JSONResponse(status_code=400, content=error_response(error))
+    except Exception as exc:
+        packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
+        return JSONResponse(status_code=500, content=error_response(error))
+
+
+def _random_forest_model() -> RandomForestDiagnosticModel:
+    global rf_evaluation_model
+    model = runtime_assembly.coordinator.pipeline.fallback
+    if isinstance(model, RandomForestDiagnosticModel):
+        return model
+    if rf_evaluation_model is None:
+        rf_evaluation_model = RandomForestDiagnosticModel(
+            os.getenv("EDGE_RF_MODEL_DIR", str(DEFAULT_MODEL_DIR))
+        )
+    return rf_evaluation_model
+
+
+def _packet_task_from_perception(payload: Any) -> PacketInferenceTask:
+    validate_model_input(payload)
+    return PacketInferenceTask(
+        request_id="rf-http:%s" % payload["packet_id"],
+        device_id=payload["device_id"],
+        bearing_id=payload["bearing_id"],
+        task_id=payload["task_id"],
+        packet_id=payload["packet_id"],
+        sender_id=payload["sender_id"],
+        sequence_number=payload["sequence_number"],
+        perception=payload,
+    )
+
+
+def public_rf_result(
+    task: PacketInferenceTask, edge: EdgeResult, *, edge_latency_ms: float
+) -> dict[str, Any]:
+    model = _random_forest_model()
+    if edge.edge_result not in {"normal", "fault"}:
+        raise ValueError("RF result must be normal or fault")
+    return {
+        "task_id": task.task_id,
+        "node_id": EDGE_NODE_ID,
+        "model_name": edge.model_version,
+        "label": "abnormal" if edge.edge_result == "fault" else "normal",
+        "confidence": edge.confidence,
+        "risk_level": edge.edge_risk_level,
+        "edge_latency_ms": round(edge_latency_ms, 2),
+        "need_cloud": model.deployment_status == "evaluation_only",
+        "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
+        "feature_schema_version": model.feature_schema_version,
+        "model_input_schema_version": model.model_input_schema_version,
+    }
 
 
 @app.post("/edge/tasks", response_model=None)
@@ -85,3 +371,59 @@ def register_edge_task(payload: dict) -> JSONResponse:
     else:
         status_code = 400
     return JSONResponse(status_code=status_code, content=ack.as_dict())
+
+
+
+@app.post("/edge/packets", response_model=None)
+def submit_edge_packet(payload: dict) -> JSONResponse:
+    try:
+        accepted = runtime_assembly.coordinator.receive_raw_packet(payload)
+    except WindowTransferError as error:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"accepted": False, "error_code": error.code, "message": str(error)},
+        )
+    except Exception as error:
+        return JSONResponse(status_code=503, content={"accepted": False, "error_code": "EDGE_INGRESS_UNAVAILABLE", "message": str(error)})
+    if not accepted:
+        return JSONResponse(status_code=409, content={"accepted": False, "error_code": "EDGE_PACKET_REJECTED", "packet_id": payload.get("packet_id")})
+    return JSONResponse(status_code=202, content={"accepted": True, "packet_id": payload.get("packet_id")})
+
+
+@app.post("/edge/raw-context-requests", response_model=None)
+def raw_context_request(payload: dict) -> dict | JSONResponse:
+    if runtime_assembly.window_review_store is None:
+        return JSONResponse(
+            status_code=410,
+            content={"error_code": "LEGACY_BEARING_AGGREGATION_DISABLED"},
+        )
+    try:
+        record = runtime_assembly.window_review_store.attach_context_request(payload)
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "accepted",
+            "window_id": record["window_id"],
+        }
+    except WindowTransferError as error:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"error_code": error.code, "message": str(error)},
+        )
+
+@app.post("/edge/cloud-review-tasks", response_model=None)
+def submit_cloud_review_task(payload: dict) -> dict | JSONResponse:
+    try:
+        return cloud_review_service.handle(payload)
+    except CloudReviewError as error:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"error_code": error.code, "message": error.message},
+        )
+    except Exception as error:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error_code": "EDGE_CLOUD_REVIEW_UNAVAILABLE",
+                "message": str(error),
+            },
+        )

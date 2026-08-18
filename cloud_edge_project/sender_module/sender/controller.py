@@ -14,6 +14,7 @@ from sender.mat_reader import load_mat_record
 from sender.mqtt_publisher import MqttPublisher
 from sender.packet import build_sensor_packet, serialize_packet
 from sender.scheduler_client import SchedulerClient, SchedulerError
+from sender.source_mapping import PacketSourceMappingStore
 
 
 class SenderTaskError(RuntimeError):
@@ -89,6 +90,7 @@ def run_sender_task(
     publisher: Any | None = None,
     log_sink: LocalLogSink | None = None,
     task_ids: TaskIdStore | None = None,
+    source_mapping_store: PacketSourceMappingStore | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -102,6 +104,9 @@ def run_sender_task(
     )
 
     task_id = id_store.next_task_id()
+    source_store = source_mapping_store or PacketSourceMappingStore(
+        config.state_dir / "packet_source_mapping.db"
+    )
     started_ns = time.time_ns()
     record = load_mat_record(source_path)
     windows = record.windows(
@@ -194,7 +199,19 @@ def run_sender_task(
                 sender_id=node.sender_id,
                 sequence_number=sequence_number,
                 data=window.data,
-                end_generate_timestamp_ns=time.time_ns(),
+                end_generate_timestamp_ns=(
+                    started_ns
+                    + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
+                ),
+            )
+            source_store.save(
+                packet_id=packet["packet_id"],
+                task_id=task_id,
+                bearing_id=node.bearing_id,
+                source_path=record.source_path,
+                start_index=window.start_index,
+                end_index=window.end_index,
+                window_index=window.window_index,
             )
             mqtt_publisher.publish(packet, serialize_packet(packet), assignment.target_topic)
 

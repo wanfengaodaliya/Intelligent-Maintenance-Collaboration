@@ -16,6 +16,7 @@ from .contracts import (
     EXECUTION_LOCAL_MODEL,
     REASON_CODE_FALLBACK_FAILED,
     EdgeResult,
+    PacketExecutionCompleted,
     PacketInferenceTask,
     PacketResult,
     RunRecord,
@@ -29,13 +30,17 @@ class EdgeModelPipeline:
                  fallback: CodeFallbackRunner,
                  on_run_record: Callable[[RunRecord], None],
                  on_packet_result: Callable[[PacketResult], None],
-                 clock=time.monotonic):
+                 clock=time.monotonic,
+                 on_packet_completed: Optional[Callable[[PacketExecutionCompleted], None]] = None,
+                 clock_ns=time.time_ns):
         self.cfg = cfg
         self.model_client = model_client
         self.fallback = fallback
         self.on_run_record = on_run_record
         self.on_packet_result = on_packet_result
+        self.on_packet_completed = on_packet_completed or (lambda _: None)
         self._clock = clock
+        self._clock_ns = clock_ns
 
         self.queue = ModelTaskQueue(cfg.queue.max_waiting_requests,
                                     cfg.queue.full_policy, clock=clock)
@@ -53,6 +58,9 @@ class EdgeModelPipeline:
         errors = self.cfg.validate()
         if errors:
             raise ValueError("边缘模型配置校验失败: " + "; ".join(errors))
+        if self.cfg.diagnostic_backend == "local":
+            self.started = True
+            return
         url = (self.cfg.model_client.base_url or "").strip()
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError("模型服务地址非法: %r" % url)
@@ -60,7 +68,8 @@ class EdgeModelPipeline:
         self.started = True
 
     def stop(self, join_s: float = 5.0):
-        self.worker.stop(join_s=join_s)
+        if self.cfg.diagnostic_backend == "http":
+            self.worker.stop(join_s=join_s)
         self.started = False
 
     def wait_idle(self, timeout_s: float = 5.0) -> bool:
@@ -70,12 +79,20 @@ class EdgeModelPipeline:
     def max_observed_queued(self) -> int:
         return self.queue.max_observed_queued
 
+    @property
+    def queue_length(self) -> int:
+        return self.queue.waiting_count
+
     def ingest(self, sender_id: str, perception: dict) -> str:
         """立即为当前 PerceptionResult 创建一个独立包级推理任务。"""
 
         if not self.started:
             raise RuntimeError("边缘模型管线未启动")
         task = self._make_task(sender_id, perception)
+        if self.cfg.diagnostic_backend == "local":
+            task.submit_ts = self._clock()
+            self._run_local(task)
+            return task.request_id
         result = self.queue.submit(task)
         for fallback_task, reason in result.fallback_tasks:
             self._run_fallback(fallback_task, reason)
@@ -107,6 +124,7 @@ class EdgeModelPipeline:
             sender_id=sender_id,
             sequence_number=sequence_number,
             perception=copy.deepcopy(perception),
+            started_at_ns=self._clock_ns(),
         )
 
     def _run_fallback(self, task: PacketInferenceTask, reason: Optional[str],
@@ -132,6 +150,66 @@ class EdgeModelPipeline:
                 output_valid=False,
                 breaker_state=breaker_state,
                 note="model_route_reason=%s; fallback_error=%r" % (reason, exc),
+            ))
+            self.on_packet_completed(PacketExecutionCompleted(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                status="FAILED",
+                error_code=REASON_CODE_FALLBACK_FAILED,
+                started_at_ns=task.started_at_ns or self._clock_ns(),
+                finished_at_ns=self._clock_ns(),
+                edge=None,
+                data_quality_score=0.0,
+                perception=copy.deepcopy(task.perception),
+            ))
+
+    def _run_local(self, task: PacketInferenceTask) -> None:
+        try:
+            edge = self.fallback.run(task)
+            self._emit_result(
+                task,
+                edge,
+                EXECUTION_LOCAL_MODEL,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.on_run_record(RunRecord(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                execution_mode=EXECUTION_LOCAL_MODEL,
+                fallback_reason=REASON_CODE_FALLBACK_FAILED,
+                output_valid=False,
+                note="local_model_error=%r" % (exc,),
+            ))
+            self.on_packet_completed(PacketExecutionCompleted(
+                request_id=task.request_id,
+                device_id=task.device_id,
+                bearing_id=task.bearing_id,
+                task_id=task.task_id,
+                packet_id=task.packet_id,
+                sender_id=task.sender_id,
+                sequence_number=task.sequence_number,
+                status="FAILED",
+                error_code=REASON_CODE_FALLBACK_FAILED,
+                started_at_ns=task.started_at_ns or self._clock_ns(),
+                finished_at_ns=self._clock_ns(),
+                edge=None,
+                data_quality_score=0.0,
+                perception=copy.deepcopy(task.perception),
             ))
 
     def _on_model(self, task: PacketInferenceTask, edge: EdgeResult,
@@ -185,3 +263,30 @@ class EdgeModelPipeline:
             sequence_number=task.sequence_number,
             edge=edge,
         ))
+        self.on_packet_completed(PacketExecutionCompleted(
+            request_id=task.request_id,
+            device_id=task.device_id,
+            bearing_id=task.bearing_id,
+            task_id=task.task_id,
+            packet_id=task.packet_id,
+            sender_id=task.sender_id,
+            sequence_number=task.sequence_number,
+            status="SUCCEEDED",
+            error_code=None,
+            started_at_ns=task.started_at_ns or self._clock_ns(),
+            finished_at_ns=self._clock_ns(),
+            edge=edge,
+            data_quality_score=_quality_score(task.perception),
+            perception=copy.deepcopy(task.perception),
+        ))
+
+
+def _quality_score(perception: dict) -> float:
+    quality = perception.get("perception_quality") or {}
+    flags = quality.get("flags")
+    if quality.get("status") == "good" and flags == []:
+        return 1.0
+    if not isinstance(flags, list):
+        return 0.0
+    penalty = sum(0.2 if flag == "DEVICE_NOT_RUNNING" else 0.1 for flag in flags)
+    return round(max(0.0, 1.0 - penalty), 3)

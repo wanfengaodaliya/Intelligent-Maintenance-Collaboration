@@ -1,0 +1,1 @@
+"""Edge Status Reporter tests."""

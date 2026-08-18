@@ -10,12 +10,12 @@ class PacketValidationError(ValueError):
 
 
 ARRAY_SIGNALS = {
-    "vibration": 64000,
-    "phase_current_1_A": 64000,
-    "phase_current_2_A": 64000,
-    "shaft_speed_rpm": 4000,
-    "load_torque_nm": 4000,
-    "bearing_radial_load_n": 4000,
+    "vibration": (64000, "mm/s"),
+    "phase_current_1_A": (64000, "A"),
+    "phase_current_2_A": (64000, "A"),
+    "shaft_speed_rpm": (4000, None),
+    "load_torque_nm": (4000, None),
+    "bearing_radial_load_n": (4000, None),
 }
 TEMPERATURE_SIGNAL = "bearing_module_temperature_c"
 TASK_ID_PATTERN = re.compile(r"^sd_(\d{2,})_tk_(\d{4,})$")
@@ -27,7 +27,7 @@ def _validate_data(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise PacketValidationError("data must be an object")
 
-    for name, expected_rate in ARRAY_SIGNALS.items():
+    for name, (expected_rate, expected_unit) in ARRAY_SIGNALS.items():
         if name not in data:
             raise PacketValidationError(f"missing signal: {name}")
         signal = data[name]
@@ -42,6 +42,8 @@ def _validate_data(data: dict[str, Any]) -> None:
             raise PacketValidationError(f"{name}.sample_count does not match values")
         if signal.get("sample_rate_hz") != expected_rate:
             raise PacketValidationError(f"{name}.sample_rate_hz must be {expected_rate}")
+        if expected_unit is not None and signal.get("unit") != expected_unit:
+            raise PacketValidationError(f"{name}.unit must be {expected_unit}")
 
     temperature = data.get(TEMPERATURE_SIGNAL)
     if not isinstance(temperature, (int, float)):

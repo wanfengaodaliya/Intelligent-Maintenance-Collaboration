@@ -25,7 +25,10 @@ for _path in (_SRC, _REPO):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from edge_model.code_fallback import TestRuleRunner  # noqa: E402
+from edge_diagnosis import (  # noqa: E402
+    RUNTIME_MODEL_VERSION,
+    RandomForestDiagnosticModel,
+)
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.contracts import (  # noqa: E402
     EXECUTION_CODE_FALLBACK,
@@ -183,6 +186,7 @@ def _packet(sequence: int, signals: dict[str, np.ndarray]) -> dict:
 
 def _model_pipeline(mode: str, records: list, packet_results: list):
     cfg = EdgeModelConfig()
+    cfg.diagnostic_backend = "http" if mode in {"real", "fallback"} else "local"
     cfg.fallback.allow_test_rule = True
     if mode == "fallback":
         cfg.model_client = ModelClientConfig(
@@ -201,7 +205,7 @@ def _model_pipeline(mode: str, records: list, packet_results: list):
     pipeline = EdgeModelPipeline(
         cfg,
         client,
-        TestRuleRunner(cfg.fallback.rule_version),
+        RandomForestDiagnosticModel(),
         on_run_record=records.append,
         on_packet_result=packet_results.append,
     )
@@ -303,7 +307,7 @@ def run_minimal_loop(mode: str) -> dict:
         )
     else:
         _require(
-            all(version.startswith("edge_rule_test") for version in versions),
+            set(versions) == {RUNTIME_MODEL_VERSION},
             "代码替代结果未明确使用测试规则版本",
         )
 
@@ -339,7 +343,9 @@ def _require(condition: bool, message: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-mode", choices=("fallback", "real"), default="fallback")
+    parser.add_argument(
+        "--model-mode", choices=("local", "fallback", "real"), default="local"
+    )
     args = parser.parse_args()
     try:
         report = run_minimal_loop(args.model_mode)

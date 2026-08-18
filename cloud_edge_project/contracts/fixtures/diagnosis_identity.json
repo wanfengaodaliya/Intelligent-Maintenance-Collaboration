@@ -1,0 +1,13 @@
+{
+  "schema_version": "diagnosis-identity/1.0",
+  "identity": {
+    "device_id": "machine_01",
+    "task_id": "task_001",
+    "bearing_id": "bearing_02",
+    "sender_id": "sender_02",
+    "window_start_sequence": 1,
+    "window_end_sequence": 1
+  },
+  "diagnosis_window_id": "dw_80ea83ec918e2e085e7e2296",
+  "decision_round_id": "round_ec8ccdc359e5b415316f8d84"
+}

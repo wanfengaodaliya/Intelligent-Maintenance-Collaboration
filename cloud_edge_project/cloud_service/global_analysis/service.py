@@ -1,4 +1,4 @@
-"""云端全局分析流程编排。"""
+"""Orchestration for read-only historical global analysis."""
 
 from __future__ import annotations
 
@@ -7,89 +7,85 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from cloud_service.global_analysis.common_analyzer import (
-    DEFAULT_TASK_LIMIT,
-    analyze_arbitration_success,
-    analyze_conflict_rate,
-    analyze_edge_cloud_agreement,
-    analyze_state_trend,
-)
+from cloud_service.global_analysis.arbitration_analyzer import analyze_device_arbitration
+from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT, GlobalAnalysisConfig
+from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
+from cloud_service.global_analysis.packet_model_analyzer import analyze_packet_model
+from cloud_service.global_analysis.physical_evidence_analyzer import analyze_physical_evidence
+from cloud_service.global_analysis.problem_detector import detect_problem_candidates
 from cloud_service.global_analysis.result_repository import GlobalAnalysisResultRepository
 from core.scenario_errors import UnsupportedScenarioError
-from scenarios.bearing.cloud.global_analysis.analyzer import (
-    analyze_bearing_risk,
-    build_bearing_maintenance_recommendations,
+from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import (
+    analyze_bearing_aggregation as analyze_cloud_bearing_review,
 )
-from scenarios.bearing.cloud.global_analysis.data_loader import load_bearing_scenario_data
+from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyze_bearing_risk
+from scenarios.bearing.cloud.global_analysis.config import DEFAULT_GLOBAL_ANALYSIS_CONFIG
+from scenarios.bearing.cloud.global_analysis.data_source import GlobalAnalysisDataSource
+from cloud_service.global_analysis.v12_data_source import V12GlobalAnalysisDataSource
 
 
 class GlobalAnalysisService:
-    """协调公共统计、场景分析和最终结果保存。"""
+    """Coordinates data loading, pure analysis, candidate detection and storage."""
 
-    def __init__(self, database_path: Path):
+    def __init__(
+        self,
+        database_path: Path,
+        data_source: GlobalAnalysisDataSource | None = None,
+        config: GlobalAnalysisConfig = DEFAULT_GLOBAL_ANALYSIS_CONFIG,
+    ) -> None:
         self.database_path = Path(database_path)
         self.repository = GlobalAnalysisResultRepository(self.database_path)
+        self.data_source = data_source or V12GlobalAnalysisDataSource(self.database_path)
+        self.config = config
 
-    def analyze(
-        self,
-        scenario_type: str,
-        subject_id: str,
-        task_limit: int = DEFAULT_TASK_LIMIT,
-    ) -> dict[str, Any]:
-        """执行一次指定场景和分析对象的全局分析。"""
-
-        normalized_scenario = _required_identifier(scenario_type, "scenario_type")
-        normalized_subject = _required_identifier(subject_id, "subject_id")
-        if normalized_scenario != "bearing":
-            raise UnsupportedScenarioError(normalized_scenario)
+    def analyze(self, scenario_type: str, subject_id: str, task_limit: int = DEFAULT_TASK_LIMIT) -> dict[str, Any]:
+        scenario = _required_identifier(scenario_type, "scenario_type")
+        subject = _required_identifier(subject_id, "subject_id")
+        if scenario != "bearing":
+            raise UnsupportedScenarioError(scenario)
         if isinstance(task_limit, bool) or not isinstance(task_limit, int) or task_limit < 1:
             raise ValueError("task_limit 必须是正整数")
-
-        data = load_bearing_scenario_data(
-            self.database_path, normalized_subject, task_limit
+        data = self.data_source.load(subject, task_limit)
+        availability = data.get("availability", {})
+        device_health = analyze_device_health(data["device_tasks"], self.config)
+        bearing_risk = analyze_bearing_risk(data["bearing_tasks"], self.config)
+        packet_diagnosis = analyze_packet_model(
+            data["packet_review_pairs"], self.config,
+            available=availability.get("packet_review_pairs", True),
         )
-        state_trend = analyze_state_trend(data["device_tasks"])
-        missing_tables = data["missing_upstream_tables"]
-        if missing_tables:
-            state_trend = {
-                **state_trend,
-                "trend": "insufficient_data",
-                "trend_delta": None,
-                "missing_upstream_tables": missing_tables,
-            }
-        bearing_risk = analyze_bearing_risk(data["bearing_tasks"])
-        edge_model = analyze_edge_cloud_agreement(data["edge_cloud_pairs"])
-        arbitration = {
-            **analyze_conflict_rate(data["device_tasks"]),
-            **analyze_arbitration_success(data["arbitrations"]),
-        }
+        cloud_bearing_review = analyze_cloud_bearing_review(data["bearing_review_pairs"], self.config)
+        device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
+        physical_evidence = analyze_physical_evidence(
+            data.get("physical_evidence", []),
+            edge_summary_count=len(data.get("edge_summaries", [])),
+            available=availability.get("physical_evidence", False),
+        )
+        previous = self.repository.get_recent(scenario, subject, 3)
+        candidates = detect_problem_candidates(
+            device_health=device_health, bearing_risk=bearing_risk,
+            packet_diagnosis=packet_diagnosis, cloud_bearing_review=cloud_bearing_review,
+            device_arbitration=device_arbitration, previous_analysis=previous, config=self.config,
+        )
         result = {
-            "schema_version": "global_analysis_result/1.0",
+            "schema_version": "global_analysis_result/2.0",
             "analysis_id": f"ga_{uuid4().hex}",
-            "status": (
-                "insufficient_data"
-                if state_trend["trend"] == "insufficient_data"
-                else "succeeded"
-            ),
-            "scenario_type": normalized_scenario,
-            "subject_id": normalized_subject,
-            "analysis_window": {
-                "task_limit": task_limit,
-                "actual_task_count": len(data["device_tasks"]),
+            "status": "succeeded" if device_health["status"] == "succeeded" else "insufficient_data",
+            "scenario_type": scenario,
+            "subject_id": subject,
+            "analysis_window": {"task_limit": task_limit, "actual_task_count": len(data["device_tasks"])},
+            "device_health_analysis": device_health,
+            "bearing_risk_analysis": bearing_risk,
+            "packet_diagnosis_analysis": packet_diagnosis,
+            "device_arbitration_analysis": device_arbitration,
+            "cloud_bearing_review_analysis": {
+                **cloud_bearing_review,
+                "reviewed_bearing_count": cloud_bearing_review["bearing_review_count"],
             },
-            "common_analysis": {
-                "state_trend": state_trend,
-                "edge_model": edge_model,
-                "arbitration": arbitration,
-            },
-            "scenario_result": {"bearing_risk": bearing_risk},
-            "recommendations": {
-                "maintenance": build_bearing_maintenance_recommendations(
-                    state_trend, bearing_risk
-                ),
-                "model": _build_model_recommendations(edge_model),
-            },
-            "summary": None,
+            "physical_evidence_analysis": physical_evidence,
+            "revision_deduplication": data.get("revision_deduplication", {}),
+            "round_closure_analysis": data.get("round_closure_analysis", {}),
+            "problem_candidates": candidates,
+            "maintenance_recommendations": _maintenance_recommendations(device_health, bearing_risk),
             "created_at_ns": time.time_ns(),
         }
         self.repository.save_result(result)
@@ -102,9 +98,11 @@ def _required_identifier(value: object, field_name: str) -> str:
     return value.strip()
 
 
-def _build_model_recommendations(edge_model: dict[str, Any]) -> list[str]:
-    if edge_model["reviewed_packet_count"] < 10:
-        return ["当前云端复核样本较少，建议继续积累数据。"]
-    if edge_model["cloud_correction_rate"] >= 0.15:
-        return ["边缘模型在云端复核样本中的修正比例较高，建议进一步评估模型更新。"]
-    return []
+def _maintenance_recommendations(device_health: dict[str, Any], bearing_risk: dict[str, Any]) -> list[str]:
+    recommendations = []
+    if device_health.get("trend") == "degrading":
+        recommendations.append("设备近期健康状态呈恶化趋势，建议重点关注。")
+    primary = bearing_risk.get("primary_risk_bearing_id")
+    if primary:
+        recommendations.append(f"建议优先检查风险最高的轴承 {primary}。")
+    return recommendations

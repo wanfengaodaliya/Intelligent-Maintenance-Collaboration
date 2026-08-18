@@ -1,0 +1,28 @@
+states:
+  GOOD:
+    latency_ms: {min: 8, max: 25}
+    jitter_ms: {min: 1, max: 5}
+    bandwidth_kbps: {min: 40000, max: 80000}
+    packet_loss_percent: {min: 0.0, max: 0.2}
+    disconnect_mode: none
+
+  MEDIUM:
+    latency_ms: {min: 35, max: 90}
+    jitter_ms: {min: 5, max: 20}
+    bandwidth_kbps: {min: 4000, max: 10000}
+    packet_loss_percent: {min: 0.1, max: 1.0}
+    disconnect_mode: none
+
+  BAD:
+    latency_ms: {min: 140, max: 350}
+    jitter_ms: {min: 25, max: 80}
+    bandwidth_kbps: {min: 500, max: 2500}
+    packet_loss_percent: {min: 1.0, max: 5.0}
+    disconnect_mode: none
+
+  DISCONNECTED:
+    latency_ms: null
+    jitter_ms: null
+    bandwidth_kbps: null
+    packet_loss_percent: 100.0
+    disconnect_mode: timeout

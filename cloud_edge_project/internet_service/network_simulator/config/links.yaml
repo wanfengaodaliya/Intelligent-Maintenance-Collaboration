@@ -1,0 +1,196 @@
+toxiproxy:
+  api_base_url: "http://toxiproxy:8474"
+  connect_timeout_seconds: 1
+  read_timeout_seconds: 2
+  retry_count: 3
+  backoff_base_seconds: 0.2
+  startup_wait_seconds: 30
+
+controller:
+  update_interval_seconds: 1
+  initial_state: GOOD
+  refresh_parameters_when_state_unchanged: true
+  clear_toxics_on_exit: true
+  max_parallel_updates: 8
+
+availability:
+  disconnected_is_unavailable: true
+  max_consecutive_apply_failures: 3
+  stale_after_seconds: 3
+
+link_generation:
+  mode: cartesian
+  protocol: mqtt
+  id_template: "{sender_id}__to__{edge_id}__mqtt"
+  proxy_name_template: "{sender_id}__to__{edge_id}__mqtt"
+  listen_host: "0.0.0.0"
+  seed_offset_start: 1
+  latency_stream: upstream
+  bandwidth_stream: upstream
+  disconnect_stream: upstream
+  disconnect_mode: auto
+  report_enabled: true
+
+# Sender-to-Edge MQTT links are generated from entities.yaml. These explicit
+# HTTP links map the communication directions that exist in the current code.
+links:
+  - link_id: sender_01__to__scheduler__http
+    link_type: sender_to_scheduler
+    sender_id: sender_01
+    protocol: http
+    proxy_name: sender_01__to__scheduler__http
+    listen: "0.0.0.0:18031"
+    advertised_host: toxiproxy
+    advertised_port: 18031
+    upstream: "host.docker.internal:8003"
+    seed_offset: 101
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: sender_02__to__scheduler__http
+    link_type: sender_to_scheduler
+    sender_id: sender_02
+    protocol: http
+    proxy_name: sender_02__to__scheduler__http
+    listen: "0.0.0.0:18032"
+    advertised_host: toxiproxy
+    advertised_port: 18032
+    upstream: "host.docker.internal:8003"
+    seed_offset: 102
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: sender_03__to__scheduler__http
+    link_type: sender_to_scheduler
+    sender_id: sender_03
+    protocol: http
+    proxy_name: sender_03__to__scheduler__http
+    listen: "0.0.0.0:18033"
+    advertised_host: toxiproxy
+    advertised_port: 18033
+    upstream: "host.docker.internal:8003"
+    seed_offset: 103
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: edge_01__to__scheduler__http
+    link_type: edge_to_scheduler
+    edge_id: edge_01
+    protocol: http
+    proxy_name: edge_01__to__scheduler__http
+    listen: "0.0.0.0:18011"
+    advertised_host: toxiproxy
+    advertised_port: 18011
+    upstream: "host.docker.internal:8003"
+    seed_offset: 104
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: scheduler__to__edge_01__http
+    link_type: scheduler_to_edge
+    edge_id: edge_01
+    protocol: http
+    proxy_name: scheduler__to__edge_01__http
+    listen: "0.0.0.0:18042"
+    advertised_host: toxiproxy
+    advertised_port: 18042
+    upstream: "host.docker.internal:8001"
+    seed_offset: 105
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: edge_01__to__cloud__http
+    link_type: edge_to_cloud
+    edge_id: edge_01
+    protocol: http
+    proxy_name: edge_01__to__cloud__http
+    listen: "0.0.0.0:18021"
+    advertised_host: toxiproxy
+    advertised_port: 18021
+    upstream: "host.docker.internal:8004"
+    seed_offset: 106
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: cloud__to__edge_01__http
+    link_type: cloud_to_edge
+    edge_id: edge_01
+    protocol: http
+    proxy_name: cloud__to__edge_01__http
+    listen: "0.0.0.0:18044"
+    advertised_host: toxiproxy
+    advertised_port: 18044
+    upstream: "host.docker.internal:8001"
+    seed_offset: 107
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: cloud__to__scheduler__http
+    link_type: cloud_to_scheduler
+    protocol: http
+    proxy_name: cloud__to__scheduler__http
+    listen: "0.0.0.0:18045"
+    advertised_host: toxiproxy
+    advertised_port: 18045
+    upstream: "host.docker.internal:8003"
+    seed_offset: 108
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: edge_02__to__scheduler__http
+    link_type: edge_to_scheduler
+    edge_id: edge_02
+    protocol: http
+    proxy_name: edge_02__to__scheduler__http
+    listen: "0.0.0.0:18051"
+    advertised_host: toxiproxy
+    advertised_port: 18051
+    upstream: "host.docker.internal:8003"
+    seed_offset: 109
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: scheduler__to__edge_02__http
+    link_type: scheduler_to_edge
+    edge_id: edge_02
+    protocol: http
+    proxy_name: scheduler__to__edge_02__http
+    listen: "0.0.0.0:18052"
+    advertised_host: toxiproxy
+    advertised_port: 18052
+    upstream: "host.docker.internal:8002"
+    seed_offset: 110
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: edge_02__to__cloud__http
+    link_type: edge_to_cloud
+    edge_id: edge_02
+    protocol: http
+    proxy_name: edge_02__to__cloud__http
+    listen: "0.0.0.0:18053"
+    advertised_host: toxiproxy
+    advertised_port: 18053
+    upstream: "host.docker.internal:8004"
+    seed_offset: 111
+    disconnect_mode: auto
+    report_enabled: true
+
+  - link_id: cloud__to__edge_02__http
+    link_type: cloud_to_edge
+    edge_id: edge_02
+    protocol: http
+    proxy_name: cloud__to__edge_02__http
+    listen: "0.0.0.0:18054"
+    advertised_host: toxiproxy
+    advertised_port: 18054
+    upstream: "host.docker.internal:8002"
+    seed_offset: 112
+    disconnect_mode: auto
+    report_enabled: true
+
+# Intentionally not configured:
+# - Scheduler-to-Sender: sender processes expose no HTTP server.
+# - Scheduler-to-Cloud: no matching outbound call exists in the current scheduler.
+# - Network-to-Scheduler: the simulator reporter uses /api/v1/network/reports,
+#   which the project scheduler does not expose.

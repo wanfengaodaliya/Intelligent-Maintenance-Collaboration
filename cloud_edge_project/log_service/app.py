@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from typing import Any
+
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from common.config import load_config
@@ -26,13 +28,14 @@ def health() -> dict[str, object]:
 
 
 @app.post("/logs/task_trace", response_model=None)
-def logs_task_trace(payload: dict) -> dict | JSONResponse:
+def logs_task_trace(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         return append_task_trace(payload, config)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
     except Exception as exc:
-        error = ContractError("LOG_SAVE_FAILED", str(exc), payload.get("packet_id"))
+        identifier = payload.get("task_id", payload.get("packet_id")) if isinstance(payload, dict) else None
+        error = ContractError("LOG_SAVE_FAILED", str(exc), identifier)
         return JSONResponse(status_code=500, content=error_response(error))
 
 
@@ -44,18 +47,31 @@ def dashboard_metrics() -> dict[str, object]:
 @app.get("/dashboard/tasks")
 def dashboard_tasks(limit: int = 20) -> dict[str, object]:
     traces = read_task_traces(config)
-    rows = [
-        {
-            "packet_id": trace["packet_id"],
-            "device_id": trace["device_id"],
+    rows = [_project_task(trace) for trace in traces[-limit:]]
+    return {"tasks": rows}
+
+
+def _project_task(trace: dict[str, object]) -> dict[str, object]:
+    if "packet_id" not in trace:
+        return {
+            "task_id": trace["task_id"],
+            "scenario": trace["scenario"],
+            "source_node": trace["source_node"],
             "route": trace["route"],
-            "final_label": trace["final_label"],
-            "final_confidence": trace["final_confidence"],
-            "risk_level": trace["risk_level"],
+            "label": trace.get("final_label"),
+            "confidence": trace.get("final_confidence"),
             "total_latency_ms": trace["total_latency_ms"],
             "success": trace["success"],
-            "log_timestamp": trace["log_timestamp"],
+            "timestamp": trace["timestamp"],
         }
-        for trace in traces[-limit:]
-    ]
-    return {"tasks": rows}
+    return {
+        "packet_id": trace["packet_id"],
+        "device_id": trace["device_id"],
+        "route": trace["route"],
+        "final_label": trace["final_label"],
+        "final_confidence": trace["final_confidence"],
+        "risk_level": trace["risk_level"],
+        "total_latency_ms": trace["total_latency_ms"],
+        "success": trace["success"],
+        "log_timestamp": trace["log_timestamp"],
+    }

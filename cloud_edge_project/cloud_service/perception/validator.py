@@ -22,6 +22,7 @@ _CONTEXT_SIGNALS = ("shaft_speed_rpm", "load_torque_nm", "bearing_radial_load_n"
 _CONTEXT_STATS = ("mean", "last", "minimum", "maximum", "standard_deviation")
 _HIGH_RATE = (64_000, 3_200)
 _CONTEXT_RATE = (4_000, 200)
+_ALLOWED_WINDOW_PACKET_COUNTS = {1, 2, 3}
 
 
 def validate_cloud_review_quality(payload: dict[str, Any]) -> ValidationResult:
@@ -112,23 +113,40 @@ def _validate_raw_data(raw: dict[str, Any], blocking: list[str]) -> None:
     data = _mapping(raw.get("data"), "cloud_raw_packet.data", blocking)
     if data is None:
         return
+    counts: list[int] = []
     for name in _HIGH_RATE_SIGNALS:
-        _validate_series(data.get(name), f"cloud_raw_packet.data.{name}", _HIGH_RATE, blocking)
+        result = _validate_series(data.get(name), f"cloud_raw_packet.data.{name}", _HIGH_RATE, blocking)
+        if result is not None:
+            counts.append(result[0])
     for name in _CONTEXT_SIGNALS:
-        values = _validate_series(data.get(name), f"cloud_raw_packet.data.{name}", _CONTEXT_RATE, blocking)
+        result = _validate_series(data.get(name), f"cloud_raw_packet.data.{name}", _CONTEXT_RATE, blocking)
+        if result is not None:
+            count, values = result
+            counts.append(count * (_HIGH_RATE[1] // _CONTEXT_RATE[1]))
+        else:
+            values = None
         if values is not None and name in {"shaft_speed_rpm", "bearing_radial_load_n"} and any(value < 0 for value in values):
             blocking.append(f"INVALID_OPERATING_CONTEXT: {name} values must be non-negative")
+    if counts and len(set(counts)) != 1:
+        blocking.append("INVALID_SAMPLE_CONFIG: all channels must cover the same diagnosis window")
     _finite_number(data.get("bearing_module_temperature_c"), "cloud_raw_packet.data.bearing_module_temperature_c", blocking)
 
 
-def _validate_series(value: Any, name: str, configuration: tuple[int, int], blocking: list[str]) -> list[float] | None:
+def _validate_series(value: Any, name: str, configuration: tuple[int, int], blocking: list[str]) -> tuple[int, list[float]] | None:
     signal = _mapping(value, name, blocking)
     if signal is None:
         return None
     rate = _positive_int(signal.get("sample_rate_hz"), f"{name}.sample_rate_hz", blocking)
     count = _positive_int(signal.get("sample_count"), f"{name}.sample_count", blocking)
-    if (rate, count) != configuration:
-        blocking.append(f"INVALID_SAMPLE_CONFIG: {name} must be {configuration[0]} Hz/{configuration[1]} samples")
+    if rate != configuration[0] or (
+        count is not None and (
+            count % configuration[1]
+            or count // configuration[1] not in _ALLOWED_WINDOW_PACKET_COUNTS
+        )
+    ):
+        blocking.append(
+            f"INVALID_SAMPLE_CONFIG: {name} must be {configuration[0]} Hz and cover 50/100/150ms"
+        )
     values = signal.get("values")
     if not isinstance(values, list) or any(isinstance(item, list) for item in values):
         blocking.append(f"INVALID_SIGNAL_SHAPE: {name}.values must be a one-dimensional array")
@@ -140,7 +158,7 @@ def _validate_series(value: Any, name: str, configuration: tuple[int, int], bloc
         number = _finite_number(item, f"{name}.values[{index}]", blocking)
         if number is not None:
             numbers.append(number)
-    return numbers
+    return (count, numbers) if count is not None else None
 
 
 def _positive_int(value: Any, name: str, blocking: list[str]) -> int | None:

@@ -64,6 +64,22 @@ class CloudReviewRepository:
             if result.rowcount != 1:
                 raise KeyError(f"unknown review_id: {review_id}")
 
+    def complete_packet_review(
+        self, review_id: str, *, cloud_recomputed_features: dict
+    ) -> None:
+        """Mark an independent packet review complete without any context window."""
+
+        with connect(self.database_path) as connection:
+            result = connection.execute(
+                "UPDATE cloud_review SET review_status='complete', context_status='not_requested', "
+                "packet_count=1, cloud_recomputed_features_json=?, "
+                "cloud_enhanced_features_json=NULL, advanced_features_json=NULL, "
+                "context_features_json=NULL, updated_at_ns=? WHERE review_id=?",
+                (_json(cloud_recomputed_features), time.time_ns(), review_id),
+            )
+            if result.rowcount != 1:
+                raise KeyError(f"unknown review_id: {review_id}")
+
     def mark_insufficient_context(self, review_id: str) -> None:
         with connect(self.database_path) as connection:
             result = connection.execute(

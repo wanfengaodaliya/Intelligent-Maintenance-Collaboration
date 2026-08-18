@@ -1,203 +1,118 @@
 # Scheduler 调度器说明
 
-## 1. 模块作用
+## 当前职责
 
-`scheduler` 是云边协同项目中的调度器模块。
-
-当前版本是一个最小可运行的规则调度器，用于根据任务信息、边缘模型结果、网络状态和节点状态，判断任务应该：
-
-- 留在边缘节点执行：`edge`
-- 上传云端执行：`cloud`
-- 云不可用或网络较差时边缘降级执行：`fallback_edge`
-
-当前版本不包含雾节点调度，也不是完整训练版 PER-DDPG 模型，而是保留 PER-DDPG 的状态输入和动作选择思想，用规则先跑通项目主流程。
-
-## 2. 文件结构
+当前 HTTP 调度服务首先实现发送器的边缘节点申请流程：
 
 ```text
-scheduler/
-  api.py              HTTP 接口入口
-  rule_scheduler.py   核心规则调度逻辑
-  __init__.py         Python 包导出入口
-  __pycache__/        Python 自动生成的缓存目录
+边缘节点上报实时状态
+→ 网络模块提交链路快照（当前只预留接收）
+→ 发送器提交任务级调度请求
+→ 调度器过滤并评分边缘节点
+→ 调度器向候选边缘节点请求任务确认
+→ 节点返回 ACCEPTED
+→ 调度器保存任务绑定并向发送器返回该轴承的 MQTT Topic
 ```
 
-## 3. 主要文件说明
+实时节点状态和链路快照只保存在内存中。任务分配、分配尝试和执行结果保存在 SQLite 中。
 
-### `api.py`
+## HTTP 接口
 
-负责对外提供 HTTP 接口。
-
-主要接口：
+调度服务默认运行在 `127.0.0.1:8003`。
 
 ```text
 GET  /health
+POST /scheduler/edge-nodes/status
+POST /scheduler/link-snapshots
 POST /scheduler/decide
+POST /scheduler/tasks/result
 ```
 
-如果安装了 FastAPI，可以作为 FastAPI 应用使用；如果没有安装 FastAPI，也可以直接运行：
-
-```powershell
-python api.py
-```
-
-默认服务地址：
-
-```text
-http://127.0.0.1:8003
-```
-
-### `rule_scheduler.py`
-
-负责核心调度决策。
-
-主要类：
-
-```python
-PreDDPGScheduler
-```
-
-主要方法：
-
-```python
-decide(request)
-```
-
-该方法接收接口文档规定的输入字段，然后返回调度结果。
-
-### `__init__.py`
-
-用于把 `scheduler` 目录声明为 Python 包，并导出常用对象：
-
-```python
-PreDDPGScheduler
-ScheduleDecision
-decide_schedule
-```
-
-其他模块可以这样导入：
-
-```python
-from scheduler import decide_schedule
-```
-
-## 4. 调度接口
-
-### 请求地址
+发送器调用：
 
 ```text
 POST http://127.0.0.1:8003/scheduler/decide
 ```
 
-### 请求体示例
+请求示例：
 
 ```json
 {
-  "task": {
-    "task_id": "task_0001",
-    "source_node": "edge_1",
-    "deadline_ms": 200,
-    "priority": 0.8,
-    "data_size_kb": 128
-  },
-  "edge_result": {
-    "label": "abnormal",
-    "confidence": 0.72,
-    "edge_latency_ms": 38,
-    "need_cloud": true
-  },
-  "network_state": {
-    "latency_ms": 30,
-    "bandwidth_mbps": 20,
-    "packet_loss": 0.01,
-    "cloud_available": true
-  },
-  "node_state": {
-    "edge_cpu_usage": 0.55,
-    "edge_memory_usage": 0.62,
-    "cloud_queue_length": 3,
-    "fog_available": false
-  }
+  "device_id": "machine_01",
+  "sender_id": "sender_01",
+  "task_id": "sd_01_tk_0001",
+  "bearing_id": "bearing_01",
+  "packet_size_bytes": 100000,
+  "expected_packet_count": 80,
+  "expected_duration_ms": 4000,
+  "created_timestamp_ns": 1781920800000000000
 }
 ```
 
-### 响应体示例
+成功响应：
 
 ```json
 {
-  "task_id": "task_0001",
-  "route": "cloud",
-  "target_node": "cloud_1",
-  "reason": "edge confidence 0.72 is below 0.80",
-  "estimated_total_latency_ms": 187.8,
-  "upload_required": true,
-  "scheduler": "PER-DDPG-rule-minimal",
-  "policy_score": {
-    "edge": 0.4861,
-    "cloud": 0.5139
-  }
+  "device_id": "machine_01",
+  "sender_id": "sender_01",
+  "task_id": "sd_01_tk_0001",
+  "bearing_id": "bearing_01",
+  "target_topic": "edge/edge_1/input"
 }
 ```
 
-## 5. 当前调度规则
+调度器只接受上述八字段单轴承请求。旧的 `bearings` 数组请求会返回 `INVALID_REQUEST`；无法表示为新单轴承接口的历史任务在重复查询时会返回 `TASK_ID_CONFLICT`。
 
-当前规则调度器的主要判断逻辑如下：
+## 节点配置
+
+默认只注册当前真实边缘节点：
 
 ```text
-cloud_available = false → fallback_edge
-packet_loss 太高 → fallback_edge
-bandwidth 太低 → fallback_edge
-confidence < 0.8 → cloud
-need_cloud = true → cloud
-规则分数支持 cloud 且 cloud 预计更快 → cloud
-边缘预计时延超过 deadline 且 cloud 更快 → cloud
-其他情况 → edge
+edge_1 → http://127.0.0.1:8001 → edge/edge_1/input
 ```
 
-## 6. 关键字段含义
+部署时可通过 `SCHEDULER_EDGE_NODES_JSON` 整体替换。例如：
 
-| 字段 | 含义 |
-|---|---|
-| `deadline_ms` | 任务最大允许完成时间，单位毫秒 |
-| `priority` | 任务优先级，范围通常为 0 到 1 |
-| `data_size_kb` | 任务数据大小，单位 KB |
-| `confidence` | 边缘模型置信度 |
-| `edge_latency_ms` | 边缘模型推理耗时，来自边缘模型服务 |
-| `need_cloud` | 边缘模型是否建议上云 |
-| `latency_ms` | 当前网络延迟 |
-| `bandwidth_mbps` | 当前网络带宽 |
-| `packet_loss` | 当前网络丢包率 |
-| `cloud_available` | 云端是否可达 |
-| `edge_cpu_usage` | 边缘节点 CPU 占用率 |
-| `edge_memory_usage` | 边缘节点内存占用率 |
-| `cloud_queue_length` | 云端当前排队任务数量 |
+```json
+{
+  "edge_1": {
+    "control_url": "http://10.0.0.11:8001",
+    "target_topic": "edge/edge_1/input"
+  }
+}
+```
 
-## 7. 运行方式
+调度器向选中节点发送：
 
-启动服务：
+```text
+POST {control_url}/edge/tasks
+```
+
+边缘节点接口由边缘模块提供，本目录只负责发出请求和校验 ACK。
+该接口必须以 `task_id` 为幂等键；重复收到同一任务时应返回原确认结果，不能重复创建任务上下文。
+
+网络模块尚未提交某个“发送器—边缘节点”快照时，调度器暂时使用 50 分的中性网络分；收到有效快照后，最终评分会改用实际 RTT、吞吐量和 MQTT 发布成功率。
+
+## 运行
+
+项目统一启动：
 
 ```powershell
-python api.py
+python start_all.py
 ```
 
-健康检查：
+只启动调度器：
 
-```text
-GET http://127.0.0.1:8003/health
+```powershell
+python start_all.py --service scheduler_service
 ```
 
-调度决策：
+也可以直接运行：
 
-```text
-POST http://127.0.0.1:8003/scheduler/decide
+```powershell
+python scheduler/api.py
 ```
 
-## 8. 后续扩展方向
+## 旧任务调度逻辑
 
-当前版本用于先跑通接口和主流程。后续可以逐步扩展为：
-
-1. 增加更精细的时延估算模型。
-2. 接入真实云端队列和边缘资源监控。
-3. 加入完整 PER-DDPG 训练环境。
-4. 用训练好的 Actor 网络替换当前规则分数。
-5. 根据项目需要重新加入雾节点调度。
+`rule_scheduler.py` 仍保留边缘初检后的 edge/cloud 规则代码。本次没有修改该部分，也没有继续占用 `/scheduler/decide` 接口。

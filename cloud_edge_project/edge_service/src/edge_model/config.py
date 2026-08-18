@@ -44,12 +44,13 @@ class ModelClientConfig:
 
 @dataclass
 class FallbackConfig:
-    rule_version: str = "edge_rule_test_v1"
+    rule_version: str = "bearing-rf-a2-evaluation-v1"
     allow_test_rule: bool = True
 
 
 @dataclass
 class EdgeModelConfig:
+    diagnostic_backend: str = "local"
     queue: QueueConfig = field(default_factory=QueueConfig)
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
     breaker: BreakerConfig = field(default_factory=BreakerConfig)
@@ -58,6 +59,8 @@ class EdgeModelConfig:
 
     def validate(self) -> List[str]:
         errors: List[str] = []
+        if self.diagnostic_backend not in {"local", "http"}:
+            errors.append("diagnostic_backend must be local or http")
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):
@@ -83,6 +86,7 @@ class EdgeModelConfig:
 
     def as_dict(self) -> Dict:
         return {
+            "diagnostic_backend": self.diagnostic_backend,
             "queue": _asdict(self.queue),
             "timeout": _asdict(self.timeout),
             "breaker": _asdict(self.breaker),

@@ -34,6 +34,16 @@ class CloudReviewPersistence:
             self.reviews.mark_insufficient_context(review_id)
         return review_id
 
+    def persist_packet(self, request: dict[str, Any], perception_result: dict[str, Any]) -> str:
+        """Persist one complete packet review without creating any context work."""
+
+        review_id = self.persist_preliminary(request, perception_result)
+        self.reviews.complete_packet_review(
+            review_id,
+            cloud_recomputed_features=perception_result["cloud_recomputed_features"],
+        )
+        return review_id
+
     def persist_preliminary(
         self,
         request: dict[str, Any],
@@ -64,6 +74,21 @@ class CloudReviewPersistence:
 def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
     """Adapt a cloud-review edge result to the documented summary shape."""
 
+    if edge.get("execution_status") in {"FAILED", "TIMEOUT"}:
+        return {
+            "device_id": edge["device_id"],
+            "bearing_id": edge["bearing_id"],
+            "sender_id": edge["sender_id"],
+            "packet_id": edge["packet_id"],
+            "task_id": edge["task_id"],
+            "sequence_number": edge["sequence_number"],
+            "edge_node_id": edge.get("edge_node_id", "cloud_review_edge"),
+            "end_timestamp_ns": edge["end_generate_timestamp_ns"],
+            "summary_generated_at_ns": edge["feature_generated_at_ns"],
+            "processing_status": "perception_rejected",
+            "perception_error_codes": [edge.get("error_code") or "EDGE_EXECUTION_FAILED"],
+        }
+
     edge_features = edge["features"]
     vibration, current_1 = edge_features["vibration"], edge_features["phase_current_1"]
     current_2, relationship = edge_features["phase_current_2"], edge_features["current_relationship"]
@@ -72,6 +97,9 @@ def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
         "edge_inference",
         {"edge_result": "warning", "confidence": 0.0, "edge_risk_level": "medium"},
     )
+    inference = dict(inference or {})
+    if inference.get("edge_result") == "fault":
+        inference["edge_result"] = "abnormal"
     return {
         "device_id": edge["device_id"], "bearing_id": edge["bearing_id"],
         "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],

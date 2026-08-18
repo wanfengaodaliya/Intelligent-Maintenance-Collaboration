@@ -101,36 +101,42 @@ class EdgePerception:
             identity = self._read_identity(raw_packet)
             data = raw_packet["data"]
             output_data: dict[str, Any] = {}
+            window_packets = _window_packet_count(
+                data["vibration"].get("sample_count"), 3200, "vibration.sample_count"
+            )
 
             for channel, unit in _HIGH_CHANNELS:
                 source = data[channel]
-                values = _float_array(source["values"], 3200, channel)
-                if source.get("sample_rate_hz") != 64000 or source.get("sample_count") != 3200:
-                    raise _ProcessingError(f"{channel}.source_spec", "64000Hz/3200", _spec(source))
+                expected_count = 3200 * window_packets
+                values = _float_array(source["values"], expected_count, channel)
+                if source.get("sample_rate_hz") != 64000 or source.get("sample_count") != expected_count:
+                    raise _ProcessingError(f"{channel}.source_spec", f"64000Hz/{expected_count}", _spec(source))
                 if source.get("unit") != unit:
                     raise _ProcessingError(f"{channel}.unit", unit, source.get("unit"))
                 filtered = np.convolve(
                     np.pad(values, (184, 184), mode="reflect"), self._fir, mode="valid"
                 )
                 reduced = _readonly(filtered[::4].astype(np.float64, copy=True))
-                if reduced.shape != (800,) or not np.isfinite(reduced).all():
-                    raise _ProcessingError(f"{channel}.downsampled", "800 finite values", reduced.shape)
+                analysis_count = 800 * window_packets
+                if reduced.shape != (analysis_count,) or not np.isfinite(reduced).all():
+                    raise _ProcessingError(f"{channel}.downsampled", f"{analysis_count} finite values", reduced.shape)
                 output_data[channel] = {
                     "unit": unit,
                     "source_sample_rate_hz": 64000,
                     "analysis_sample_rate_hz": 16000,
-                    "sample_count": 800,
+                    "sample_count": analysis_count,
                     "values": reduced,
                 }
 
             for channel in _OPERATING_CHANNELS:
                 source = data[channel]
-                values = _float_array(source["values"], 200, channel)
-                if source.get("sample_rate_hz") != 4000 or source.get("sample_count") != 200:
-                    raise _ProcessingError(f"{channel}.source_spec", "4000Hz/200", _spec(source))
+                expected_count = 200 * window_packets
+                values = _float_array(source["values"], expected_count, channel)
+                if source.get("sample_rate_hz") != 4000 or source.get("sample_count") != expected_count:
+                    raise _ProcessingError(f"{channel}.source_spec", f"4000Hz/{expected_count}", _spec(source))
                 output_data[channel] = {
                     "sample_rate_hz": 4000,
-                    "sample_count": 200,
+                    "sample_count": expected_count,
                     "values": _readonly(values.copy()),
                 }
 
@@ -282,21 +288,26 @@ class EdgePerception:
     @staticmethod
     def _validate_downsampled_data(data: dict[str, Any]) -> dict[str, np.ndarray]:
         arrays: dict[str, np.ndarray] = {}
+        window_packets = _window_packet_count(
+            data["vibration"].get("sample_count"), 800, "vibration.sample_count"
+        )
         for channel, unit in _HIGH_CHANNELS:
             source = data[channel]
+            expected_count = 800 * window_packets
             if (
                 source.get("source_sample_rate_hz") != 64000
                 or source.get("analysis_sample_rate_hz") != 16000
-                or source.get("sample_count") != 800
+                or source.get("sample_count") != expected_count
                 or source.get("unit") != unit
             ):
-                raise _ProcessingError(f"{channel}.downsampled_spec", "64000/16000/800/valid unit", _spec(source))
-            arrays[channel] = _float_array(source["values"], 800, channel)
+                raise _ProcessingError(f"{channel}.downsampled_spec", f"64000/16000/{expected_count}/valid unit", _spec(source))
+            arrays[channel] = _float_array(source["values"], expected_count, channel)
         for channel in _OPERATING_CHANNELS:
             source = data[channel]
-            if source.get("sample_rate_hz") != 4000 or source.get("sample_count") != 200:
-                raise _ProcessingError(f"{channel}.spec", "4000Hz/200", _spec(source))
-            arrays[channel] = _float_array(source["values"], 200, channel)
+            expected_count = 200 * window_packets
+            if source.get("sample_rate_hz") != 4000 or source.get("sample_count") != expected_count:
+                raise _ProcessingError(f"{channel}.spec", f"4000Hz/{expected_count}", _spec(source))
+            arrays[channel] = _float_array(source["values"], expected_count, channel)
         if not _finite_number(data.get("bearing_module_temperature_c")):
             raise _ProcessingError("bearing_module_temperature_c", "finite number", type(data.get("bearing_module_temperature_c")).__name__)
         return arrays
@@ -425,6 +436,17 @@ def _float_array(values: object, expected_size: int, scope: str) -> np.ndarray:
     if array.shape != (expected_size,) or not np.isfinite(array).all():
         raise _ProcessingError(scope, f"{expected_size} finite values", array.shape)
     return array
+
+
+def _window_packet_count(value: object, base_count: int, scope: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value % base_count
+        or value // base_count not in {1, 2, 3}
+    ):
+        raise _ProcessingError(scope, f"{base_count}, {base_count * 2}, or {base_count * 3}", value)
+    return value // base_count
 
 
 def _readonly(array: np.ndarray) -> np.ndarray:

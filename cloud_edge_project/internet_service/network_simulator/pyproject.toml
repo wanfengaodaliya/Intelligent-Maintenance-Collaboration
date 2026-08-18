@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-edge-network-simulator"
+version = "3.1.0"
+description = "Portable network-link simulator for cloud-edge deployments"
+requires-python = ">=3.11"
+dependencies = [
+    "requests==2.34.2",
+    "PyYAML==6.0.3",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.1",
+    "pydantic==2.13.4",
+]
+
+[project.scripts]
+network-simulator = "controller.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["controller*", "domain*", "plugins*", "scheduler_stub*"]
