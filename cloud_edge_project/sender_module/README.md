@@ -29,14 +29,13 @@ git pull origin main
 cd cloud_edge_project\sender_module
 ```
 
-### 2.2 创建 Python 环境
+### 2.2 使用统一 Conda 环境
 
-要求 Python 3.10 或更高版本。
+项目统一使用已冻结的 Conda `moment` 环境（Python 3.11.15）。
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+conda activate moment
+python -m pip install -r ..\requirements-moment.txt
 ```
 
 ### 2.3 准备 Mosquitto

@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Callable
 
 from core.diagnosis_contracts import (
+    BearingLifecycleStatus,
     CloudBearingResult,
     DeviceDecisionStatus,
     DeviceDecisionResult,
@@ -29,18 +30,22 @@ class V12DecisionFlow:
         device_rounds: DeviceDecisionRoundRepository,
         *,
         round_timeout_ns: int = 3_500_000_000,
+        late_correction_retention_ns: int | None = None,
         on_bearing_result: Callable[[Any], None] | None = None,
         on_device_result: Callable[[DeviceDecisionResult], None] | None = None,
         on_device_conflict: Callable[[dict[str, Any]], None] | None = None,
+        on_manual_review: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if round_timeout_ns <= 0:
             raise ValueError("round_timeout_ns must be positive")
         self.lifecycle = lifecycle
         self.device_rounds = device_rounds
         self.round_timeout_ns = round_timeout_ns
+        self.late_correction_retention_ns = late_correction_retention_ns
         self._on_device_result = on_device_result or (lambda _: None)
         self._on_bearing_result = on_bearing_result or (lambda _: None)
         self._on_device_conflict = on_device_conflict or (lambda _: None)
+        self._on_manual_review = on_manual_review or (lambda _: None)
         self._revisions = DeviceDecisionRevisionService(
             device_rounds, lifecycle.repository
         )
@@ -105,7 +110,9 @@ class V12DecisionFlow:
             )
             if device is not None:
                 self._emit_device_result(device)
-        self._emit_bearing_result(bearing)
+        if bearing.lifecycle_state is not BearingLifecycleStatus.LATE_CLOUD_CONFIRMED:
+            # 迟到且结论一致的确认不向下游重复通知。
+            self._emit_bearing_result(bearing)
         return bearing, device
 
     def promote_cloud_now_timeouts(
@@ -256,6 +263,12 @@ class V12DecisionFlow:
         decision_round_id = _required_text(payload, "decision_round_id")
         revision = _required_positive_int(payload, "device_result_revision")
         arbitration_id = _required_text(payload, "arbitration_id")
+        receipt = self.device_rounds.get_arbitration_receipt(arbitration_id)
+        if receipt is not None:
+            # 重复回调：直接返回已处理结果，不再修改状态也不再发布。
+            return self.device_rounds.get_current_result(
+                device_id, task_id, decision_round_id
+            )
         current = self.device_rounds.get_current_result(
             device_id, task_id, decision_round_id
         )
@@ -266,6 +279,24 @@ class V12DecisionFlow:
             raise ValueError("cloud arbitration result is stale")
         if round_state["closure_reason"] == RoundClosureReason.ROUND_TIMEOUT.value:
             return None
+        closed_at_ns = round_state.get("closed_at_ns")
+        if (
+            self.late_correction_retention_ns is not None
+            and isinstance(closed_at_ns, int)
+            and accepted_at_ns - closed_at_ns > self.late_correction_retention_ns
+        ):
+            self._on_manual_review(
+                {
+                    "stage": "late_correction_retention",
+                    "device_id": device_id,
+                    "task_id": task_id,
+                    "decision_round_id": decision_round_id,
+                    "arbitration_id": arbitration_id,
+                    "error_code": "LATE_CORRECTION_BEYOND_RETENTION",
+                    "action": "manual_review_required",
+                }
+            )
+            raise ValueError("cloud arbitration arrived beyond the retention window")
         action = _required_text(payload, "final_action")
         action_grade = grade_for_action(action)
         confidence = _score(payload.get("confidence"), "confidence")
@@ -290,6 +321,14 @@ class V12DecisionFlow:
             closed_at_ns=accepted_at_ns,
         )
         saved = self.device_rounds.save_revision(revised)
+        self.device_rounds.save_arbitration_receipt(
+            arbitration_id=arbitration_id,
+            device_id=device_id,
+            task_id=task_id,
+            decision_round_id=decision_round_id,
+            result_id=saved.result_id,
+            processed_at_ns=accepted_at_ns,
+        )
         self._emit_device_result(saved)
         return saved
 

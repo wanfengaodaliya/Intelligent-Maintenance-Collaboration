@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import Literal
+from typing import Literal, Mapping
 
 
 class PacketRoute(str, Enum):
@@ -19,6 +19,7 @@ class BearingLifecycleStatus(str, Enum):
     PROVISIONAL = "PROVISIONAL"
     FINAL_EDGE = "FINAL_EDGE"
     FINAL_CLOUD = "FINAL_CLOUD"
+    LATE_CLOUD_CONFIRMED = "LATE_CLOUD_CONFIRMED"
     LATE_CLOUD_CORRECTED = "LATE_CLOUD_CORRECTED"
 
 
@@ -72,6 +73,8 @@ class EdgeBearingResult:
     recommended_action: str
     model_version: str
     created_at_ns: int
+    diagnosis_label: str | None = None
+    class_probabilities: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         _validate_identity(self)

@@ -49,14 +49,21 @@ class EdgeResult:
     confidence: float
     edge_risk_level: str
     model_version: str
+    diagnosis_label: Optional[str] = None
+    class_probabilities: Optional[Dict[str, float]] = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "edge_result": self.edge_result,
             "confidence": self.confidence,
             "edge_risk_level": self.edge_risk_level,
             "model_version": self.model_version,
         }
+        if self.diagnosis_label is not None:
+            result["diagnosis_label"] = self.diagnosis_label
+        if self.class_probabilities is not None:
+            result["class_probabilities"] = dict(self.class_probabilities)
+        return result
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,7 @@ class PacketInferenceTask:
     sender_id: str
     sequence_number: int
     perception: Dict[str, Any]
+    raw_packet: Optional[Dict[str, Any]] = None
     submit_ts: Optional[float] = None
     started_at_ns: Optional[int] = None
 

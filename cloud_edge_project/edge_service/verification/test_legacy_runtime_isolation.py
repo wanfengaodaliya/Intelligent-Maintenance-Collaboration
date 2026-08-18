@@ -55,7 +55,6 @@ def test_default_runtime_does_not_construct_legacy_aggregation(monkeypatch, tmp_
         config=_config(tmp_path, legacy_enabled=False),
         ingress=_Ingress(),
         cache=object(),
-        perception=object(),
         pipeline=_Pipeline(),
         enable_heartbeat=False,
     )
@@ -72,7 +71,6 @@ def test_explicit_legacy_flag_keeps_aggregation_available(monkeypatch, tmp_path:
         config=_config(tmp_path, legacy_enabled=True),
         ingress=_Ingress(),
         cache=object(),
-        perception=object(),
         pipeline=_Pipeline(),
         enable_heartbeat=False,
     )

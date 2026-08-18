@@ -10,6 +10,7 @@ from edge_validation_cache import EdgeValidationCache
 
 from .config import EdgeRuntimeConfig
 from .http import EdgeControlApplication, HeartbeatLoop, make_control_server
+from .maintenance import EdgeMaintenanceWorker
 from .mqtt import MqttIngress
 from edge_aggregation.window_transfer import WindowReviewDispatcher
 
@@ -27,6 +28,7 @@ class EdgeRuntimeService:
         control_application: EdgeControlApplication,
         heartbeat: HeartbeatLoop | None,
         window_dispatcher: WindowReviewDispatcher | None,
+        maintenance: EdgeMaintenanceWorker | None = None,
     ):
         errors = config.validate()
         if errors:
@@ -38,6 +40,7 @@ class EdgeRuntimeService:
         self.control_application = control_application
         self.heartbeat = heartbeat
         self.window_dispatcher = window_dispatcher
+        self.maintenance = maintenance
         self._server: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._started = False
@@ -64,12 +67,18 @@ class EdgeRuntimeService:
                 self.window_dispatcher.start()
             if self.heartbeat is not None:
                 self.heartbeat.start()
+            # 维护线程最后启动：确保 MQTT 与控制通道就绪后再推进业务维护。
+            if self.maintenance is not None:
+                self.maintenance.start()
         except Exception:
             self.stop()
             raise
         self._started = True
 
     def stop(self) -> None:
+        # 维护线程最先停止：不再领取新的维护任务，并等待当前轮次结束。
+        if self.maintenance is not None:
+            self.maintenance.stop()
         if self.heartbeat is not None:
             self.heartbeat.stop()
         if self.window_dispatcher is not None:

@@ -37,6 +37,14 @@ class DeviceDecisionRevisionService:
             closure_reason=RoundClosureReason(round_state["closure_reason"]),
             closed_at_ns=now_ns,
         )
+        current = self._rounds.get_current_result(device_id, task_id, decision_round_id)
+        if (
+            current is not None
+            and current.status is DeviceDecisionStatus.CORRECTED
+            and _conclusion_unchanged(current, aggregate)
+        ):
+            # 重复的迟到结果只是确认了已有修正结论，不产生新的修正版本，也不重复发布。
+            return None
         corrected = replace(
             aggregate,
             status=DeviceDecisionStatus.CORRECTED,
@@ -45,3 +53,13 @@ class DeviceDecisionRevisionService:
             created_at_ns=now_ns,
         )
         return self._rounds.save_revision(corrected)
+
+
+def _conclusion_unchanged(current, candidate) -> bool:
+    """比较两个设备级结果的结论字段是否实质一致。"""
+    return (
+        current.final_state == candidate.final_state
+        and current.final_action_grade == candidate.final_action_grade
+        and current.final_action == candidate.final_action
+        and current.has_conflict == candidate.has_conflict
+    )

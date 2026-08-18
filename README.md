@@ -25,13 +25,12 @@
 
 ## 安装与启动
 
-需要 Python 3.11+。在仓库根目录执行：
+H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权重和冻结归一化参数已随仓库分发，并镜像到 [Hugging Face](https://huggingface.co/wanfengaodaliya/intelligent-maintenance-distilled-h5)。在仓库根目录执行：
 
 ```powershell
+conda activate moment
 cd cloud_edge_project
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt -r requirements-dev.txt -r edge_service\requirements.txt
+python -m pip install -r requirements-moment.txt
 python start_all.py
 ```
 

@@ -3,11 +3,6 @@
 
 # 本地 Python 虚拟环境。
 .venv/
-
-# Bearing-model source data and regenerated training outputs stay local.
-cloud_edge_project/edge_service/model_training/bearing_random_forest/data/
-cloud_edge_project/edge_service/model_training/bearing_random_forest/generated/
-
 # Python bytecode caches.
 **/__pycache__/
 *.py[cod]
@@ -28,6 +23,12 @@ local_experiment/
 # 缓存目录。
 .cache/
 .pytest_cache/
+
+# pytest 本地临时目录（--basetemp）。
+.pytest_tmp/
+
+# 本地运行产生的根级数据目录（SQLite 等运行时产物）。
+/data/
 
 # 环境变量文件（可能含密钥，仅保留不含密钥的 .env.example）。
 .env

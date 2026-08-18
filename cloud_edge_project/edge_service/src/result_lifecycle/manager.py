@@ -108,11 +108,13 @@ class BearingResultLifecycleManager:
             if round_open is None
             else round_open
         )
-        lifecycle_state = (
-            BearingLifecycleStatus.FINAL_CLOUD
-            if accepted_before_round_close
-            else BearingLifecycleStatus.LATE_CLOUD_CORRECTED
-        )
+        if accepted_before_round_close:
+            lifecycle_state = BearingLifecycleStatus.FINAL_CLOUD
+        elif _conclusion_matches(current, cloud_result):
+            # 迟到结果与暂定结论一致：记录确认，不产生实质性修正。
+            lifecycle_state = BearingLifecycleStatus.LATE_CLOUD_CONFIRMED
+        else:
+            lifecycle_state = BearingLifecycleStatus.LATE_CLOUD_CORRECTED
         draft = BearingDecisionResult(
             result_id="pending",
             revision=1,
@@ -173,6 +175,16 @@ class BearingResultLifecycleManager:
         ):
             if route_decision.get(field) != getattr(edge_result, field):
                 raise ValueError(f"route decision identity mismatch: {field}")
+
+
+def _conclusion_matches(current: BearingDecisionResult, cloud_result: CloudBearingResult) -> bool:
+    """判断迟到云端结论与当前暂定结论是否实质一致。"""
+    return (
+        current.bearing_state == cloud_result.bearing_state
+        and current.risk_level == cloud_result.risk_level
+        and current.action_grade == cloud_result.action_grade
+        and current.recommended_action == cloud_result.recommended_action
+    )
 
 
 _ROUTE_LIFECYCLE = {

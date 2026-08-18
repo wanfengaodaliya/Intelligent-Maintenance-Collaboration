@@ -7,7 +7,6 @@ from typing import Callable, Optional
 
 from cloud_review import CloudReviewStore
 from edge_model.pipeline import EdgeModelPipeline
-from core.edge_perception_contracts import PerceptionHandler
 from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
 from edge_aggregation import (
@@ -21,6 +20,8 @@ from edge_aggregation import (
 
 from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
+from .device_result_outbox import DeviceResultOutbox
+from .maintenance import EdgeMaintenanceWorker
 from .http import (
     EdgeControlApplication,
     HeartbeatLoop,
@@ -52,6 +53,8 @@ class EdgeRuntimeAssembly:
     coordinator: EdgeRuntimeCoordinator
     window_review_store: WindowReviewStore | None
     v12_flow: V12DecisionFlow | None
+    device_result_outbox: DeviceResultOutbox | None = None
+    maintenance: EdgeMaintenanceWorker | None = None
 
 
 def build_edge_runtime(
@@ -59,7 +62,6 @@ def build_edge_runtime(
     config: EdgeRuntimeConfig,
     ingress: EdgeTaskIngress,
     cache: EdgeValidationCache,
-    perception: PerceptionHandler,
     pipeline: EdgeModelPipeline,
     cloud_review_store: Optional[CloudReviewStore] = None,
     on_packet_route_error: Optional[Callable[[dict], None]] = None,
@@ -116,6 +118,7 @@ def build_edge_runtime(
                 ),
             )
     v12_flow = None
+    device_result_outbox = None
     raw_sample_capture = None
     raw_sample_uploader = None
     result_uploader = None
@@ -144,9 +147,15 @@ def build_edge_runtime(
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
         result_uploader = ResultUploader(config.v12.database_path, scheduler_client.post)
+        device_result_outbox = DeviceResultOutbox(
+            config.v12.database_path,
+            device_result_publisher.publish,
+            max_attempts=config.v12.device_result_publish_max_attempts,
+        )
 
         def on_device_result(result):
-            device_result_publisher.publish(result.as_dict())
+            # 先持久化到 outbox，再由后台维护轮次负责实际发送。
+            device_result_outbox.enqueue(result)
             try:
                 result_uploader.enqueue_device(result)
             except Exception:
@@ -176,17 +185,18 @@ def build_edge_runtime(
             BearingResultLifecycleManager(bearing_results),
             DeviceDecisionRoundRepository(config.v12.database_path),
             round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
+            late_correction_retention_ns=config.v12.late_correction_retention_ms * 1_000_000,
             on_bearing_result=result_uploader.enqueue_bearing,
             on_device_result=on_device_result,
             on_device_conflict=lambda payload: device_arbitration_reporter.report(
                 {**payload, "edge_node_id": config.edge_node_id}
             ),
+            on_manual_review=on_packet_route_error,
         )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,
         ingress=ingress,
         cache=cache,
-        perception=perception,
         pipeline=pipeline,
         scheduler=scheduler,
         aggregation_workflow=aggregation_workflow,
@@ -216,6 +226,7 @@ def build_edge_runtime(
         legacy_realtime_aggregation=config.v12.legacy_realtime_aggregation,
         cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
+        device_result_outbox=device_result_outbox,
         on_packet_route_error=on_packet_route_error,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
@@ -237,6 +248,14 @@ def build_edge_runtime(
         if enable_heartbeat
         else None
     )
+    maintenance = (
+        EdgeMaintenanceWorker(
+            coordinator.run_maintenance_once,
+            interval_seconds=config.maintenance.interval_seconds,
+        )
+        if config.maintenance.enabled
+        else None
+    )
     service = EdgeRuntimeService(
         config=config,
         cache=cache,
@@ -245,10 +264,13 @@ def build_edge_runtime(
         control_application=control_application,
         heartbeat=heartbeat,
         window_dispatcher=dispatcher,
+        maintenance=maintenance,
     )
     return EdgeRuntimeAssembly(
         service=service,
         coordinator=coordinator,
         window_review_store=window_review_store,
         v12_flow=v12_flow,
+        device_result_outbox=device_result_outbox,
+        maintenance=maintenance,
     )

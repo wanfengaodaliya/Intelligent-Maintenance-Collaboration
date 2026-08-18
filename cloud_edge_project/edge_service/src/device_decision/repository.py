@@ -227,6 +227,41 @@ class DeviceDecisionRoundRepository:
             ).fetchone()
         return None if row is None else _deserialize_result(str(row["payload_json"]))
 
+    def get_arbitration_receipt(self, arbitration_id: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM device_arbitration_receipt WHERE arbitration_id=?",
+                (arbitration_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def save_arbitration_receipt(
+        self,
+        *,
+        arbitration_id: str,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        result_id: str,
+        processed_at_ns: int,
+    ) -> bool:
+        """幂等记录已处理的云仲裁回调，重复回调不再产生新修订。"""
+        with self._connect() as connection:
+            changed = connection.execute(
+                """INSERT OR IGNORE INTO device_arbitration_receipt(
+                arbitration_id, device_id, task_id, decision_round_id, result_id, processed_at_ns
+                ) VALUES (?,?,?,?,?,?)""",
+                (arbitration_id, device_id, task_id, decision_round_id, result_id, processed_at_ns),
+            ).rowcount
+        return changed == 1
+
+    def count_open_rounds(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM device_decision_round WHERE state='OPEN'"
+            ).fetchone()
+        return int(row["total"])
+
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -274,6 +309,12 @@ class DeviceDecisionRoundRepository:
                 """CREATE UNIQUE INDEX IF NOT EXISTS uq_device_decision_current
                 ON device_decision_result(device_id,task_id,decision_round_id)
                 WHERE is_current=1"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS device_arbitration_receipt(
+                arbitration_id TEXT PRIMARY KEY, device_id TEXT NOT NULL,
+                task_id TEXT NOT NULL, decision_round_id TEXT NOT NULL,
+                result_id TEXT NOT NULL, processed_at_ns INTEGER NOT NULL)"""
             )
 
     def _connect(self) -> sqlite3.Connection:

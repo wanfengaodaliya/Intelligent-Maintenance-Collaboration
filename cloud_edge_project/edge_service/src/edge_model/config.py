@@ -44,7 +44,7 @@ class ModelClientConfig:
 
 @dataclass
 class FallbackConfig:
-    rule_version: str = "bearing-rf-a2-evaluation-v1"
+    rule_version: str = "distilled_h5_kd_fold3_a9f20442"
     allow_test_rule: bool = True
 
 

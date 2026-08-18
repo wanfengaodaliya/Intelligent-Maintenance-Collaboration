@@ -47,6 +47,17 @@ class CodeFallbackRunner:
             raise ValueError("code_fallback: 非法 confidence=%s" % edge.confidence)
         if not edge.model_version:
             raise ValueError("code_fallback: model_version 为空")
+        if edge.diagnosis_label is not None:
+            if edge.diagnosis_label not in {"healthy", "outer_ring_damage", "inner_ring_damage"}:
+                raise ValueError("code_fallback: 非法 diagnosis_label=%s" % edge.diagnosis_label)
+            probabilities = edge.class_probabilities
+            if not isinstance(probabilities, dict) or set(probabilities) != {
+                "healthy", "outer_ring_damage", "inner_ring_damage"
+            }:
+                raise ValueError("code_fallback: 非法 class_probabilities")
+            if any(not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0
+                   for value in probabilities.values()):
+                raise ValueError("code_fallback: 非法 class_probabilities")
 
 
 def _num(x: object) -> Optional[float]:

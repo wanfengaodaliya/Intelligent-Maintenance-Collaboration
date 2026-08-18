@@ -110,7 +110,7 @@ def _band_energy(
         mask = (frequencies >= low) & (frequencies < upper)
         if np.any(mask):
             result[f"{int(low)}_hz_{int(high)}_hz"] = float(
-                np.trapezoid(psd[mask], frequencies[mask])
+                np.trapz(psd[mask], frequencies[mask])
             )
         else:
             result[f"{int(low)}_hz_{int(high)}_hz"] = 0.0

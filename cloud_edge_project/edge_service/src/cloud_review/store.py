@@ -83,6 +83,19 @@ class CloudReviewStore:
         with self._lock:
             return self._read(self._decision_path(decision_id))
 
+    def list_decisions(self, *, phase: str | None = None) -> tuple[dict[str, Any], ...]:
+        """列出当前决策检查点，可按阶段过滤。"""
+        records: list[dict[str, Any]] = []
+        with self._lock:
+            for path in sorted(self.decision_root.glob("*.json")):
+                record = self._read(path)
+                if record is None:
+                    continue
+                if phase is not None and record.get("phase") != phase:
+                    continue
+                records.append(record)
+        return tuple(records)
+
     def save_decision(
         self,
         control: Mapping[str, Any],
@@ -90,6 +103,8 @@ class CloudReviewStore:
         phase: str,
         review_id: str | None = None,
         response: Mapping[str, Any] | None = None,
+        attempt_count: int | None = None,
+        next_retry_at_ns: int | None = None,
     ) -> dict[str, Any]:
         decision_id = str(control["decision_id"])
         path = self._decision_path(decision_id)
@@ -102,6 +117,8 @@ class CloudReviewStore:
                 "phase": phase,
                 "review_id": review_id,
                 "response": dict(response) if response is not None else None,
+                "attempt_count": attempt_count,
+                "next_retry_at_ns": next_retry_at_ns,
                 "updated_at_ns": time.time_ns(),
             }
             self._write(path, record)

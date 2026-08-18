@@ -21,7 +21,12 @@ class CloudUploadError(RuntimeError):
 
 
 class HttpCloudClient:
-    def __init__(self, base_url: str, *, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float | tuple[float, float] = 3.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
@@ -33,6 +38,8 @@ class HttpCloudClient:
                 json=dict(payload),
                 timeout=self.timeout_seconds,
             )
+        except requests.ConnectTimeout as error:
+            raise CloudUploadError("CLOUD_CONNECT_TIMEOUT", retryable=True) from error
         except requests.Timeout as error:
             raise CloudUploadError("CLOUD_TIMEOUT", retryable=True) from error
         except requests.RequestException as error:
@@ -51,7 +58,12 @@ class HttpCloudClient:
 
 
 class SchedulerUploadReporter:
-    def __init__(self, base_url: str, *, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float | tuple[float, float] = 3.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
@@ -78,14 +90,20 @@ class CloudReviewService:
         edge_node_id: str,
         result_lifecycle: Any | None = None,
         cloud_result_handler: Any | None = None,
+        max_retry_attempts: int = 3,
+        retry_backoff_ns: int = 500_000_000,
         clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
+        if max_retry_attempts <= 0:
+            raise ValueError("max_retry_attempts must be positive")
         self.store = store
         self.cloud_client = cloud_client
         self.scheduler_reporter = scheduler_reporter
         self.edge_node_id = edge_node_id
         self.result_lifecycle = result_lifecycle
         self.cloud_result_handler = cloud_result_handler
+        self.max_retry_attempts = max_retry_attempts
+        self.retry_backoff_ns = retry_backoff_ns
         self.clock_ns = clock_ns
         self._decision_locks_guard = threading.Lock()
         self._decision_locks: dict[str, threading.Lock] = {}
@@ -95,6 +113,27 @@ class CloudReviewService:
         lock = self._decision_lock(control["decision_id"])
         with lock:
             return self._handle_control(control)
+
+    def retry_due(self, now_ns: int | None = None) -> int:
+        """后台扫描到期的可重试云复核任务并执行一轮重试。"""
+        now = self.clock_ns() if now_ns is None else now_ns
+        processed = 0
+        for record in self.store.list_decisions(phase="CLOUD_RETRY_WAIT"):
+            next_at = record.get("next_retry_at_ns")
+            if isinstance(next_at, int) and next_at > now:
+                continue
+            control = record.get("control")
+            if not isinstance(control, Mapping):
+                continue
+            lock = self._decision_lock(str(control["decision_id"]))
+            with lock:
+                try:
+                    self._handle_control(dict(control))
+                except Exception:
+                    # 单条重试失败只影响本条，等待下一轮维护再试。
+                    pass
+            processed += 1
+        return processed
 
     def _handle_control(self, control: Mapping[str, Any]) -> dict[str, Any]:
         checkpoint = self.store.get_decision(control["decision_id"])
@@ -167,6 +206,31 @@ class CloudReviewService:
             return self._decision_locks.setdefault(decision_id, threading.Lock())
 
     def _report_failure(self, control: Mapping[str, Any], error: CloudUploadError) -> dict[str, Any]:
+        checkpoint = self.store.get_decision(control["decision_id"])
+        attempts = int(checkpoint.get("attempt_count") or 0) + 1 if checkpoint is not None else 1
+        if error.retryable and attempts < self.max_retry_attempts:
+            # 可重试错误：持久化重试状态，由后台维护任务再次领取，不在请求线程内等待。
+            backoff = self.retry_backoff_ns * (2 ** (attempts - 1))
+            self.scheduler_reporter.report(
+                self._result_report(
+                    control,
+                    upload_status="RETRYABLE_FAILED",
+                    review_id=None,
+                    reason_code=error.reason_code,
+                )
+            )
+            response = self._response(
+                control, "RETRYABLE_FAILED", None, reason_code=error.reason_code
+            )
+            self.store.save_decision(
+                control,
+                phase="CLOUD_RETRY_WAIT",
+                review_id=None,
+                response=response,
+                attempt_count=attempts,
+                next_retry_at_ns=self.clock_ns() + backoff,
+            )
+            return response
         status = "RETRYABLE_FAILED" if error.retryable else "PERMANENT_FAILED"
         report = self._result_report(
             control,
@@ -176,9 +240,13 @@ class CloudReviewService:
         )
         self.scheduler_reporter.report(report)
         response = self._response(control, status, None, reason_code=error.reason_code)
-        if not error.retryable:
-            self.store.release(control["task_id"], control["bearing_id"], control["packet_id"])
-            self.store.save_decision(control, phase="COMPLETED", response=response)
+        self.store.release(control["task_id"], control["bearing_id"], control["packet_id"])
+        self.store.save_decision(
+            control,
+            phase="COMPLETED",
+            response=response,
+            attempt_count=attempts,
+        )
         return response
 
     def _validate_source(self, control: Mapping[str, Any]) -> None:
