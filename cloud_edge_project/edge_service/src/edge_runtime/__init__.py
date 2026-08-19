@@ -18,6 +18,7 @@ from .error_log import PacketRouteErrorRecorder
 from .factory import EdgeRuntimeAssembly, build_edge_runtime
 from .maintenance import EdgeMaintenanceWorker
 from .service import EdgeRuntimeService
+from .trace_identity import build_trace_identity, trace_id_for_task, with_trace_identity
 
 __all__ = [
     "ControlServerConfig",
@@ -35,5 +36,8 @@ __all__ = [
     "V12RuntimeConfig",
     "SchedulerConfig",
     "action_level_for",
+    "build_trace_identity",
     "build_edge_runtime",
+    "trace_id_for_task",
+    "with_trace_identity",
 ]

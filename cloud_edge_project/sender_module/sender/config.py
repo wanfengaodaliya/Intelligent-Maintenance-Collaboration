@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 class ConfigError(ValueError):
@@ -17,6 +17,9 @@ class SenderNodeConfig:
     scheduler_url: str
     mqtt_host: str
     mqtt_port: int
+    # 阶段 4：目标 Edge 节点 ID → MQTT 代理端口映射（网络模拟按链路分端口）。
+    # 为空时所有目标都使用 mqtt_port。
+    edge_mqtt_proxy_ports: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -40,7 +43,11 @@ class SenderConfig:
 
 
 REQUIRED_FIELDS = tuple(SenderConfig.__dataclass_fields__)
-SENDER_REQUIRED_FIELDS = tuple(SenderNodeConfig.__dataclass_fields__)
+SENDER_REQUIRED_FIELDS = tuple(
+    name
+    for name, member in SenderNodeConfig.__dataclass_fields__.items()
+    if member.default is MISSING and member.default_factory is MISSING
+)
 
 
 def _non_empty_text(value: Any, field: str) -> str:
@@ -69,7 +76,30 @@ def _load_sender(raw: Any, index: int) -> SenderNodeConfig:
     if not 1 <= mqtt_port <= 65535:
         raise ConfigError(f"senders[{index}].mqtt_port is outside the valid range")
 
-    return SenderNodeConfig(sender_id, bearing_id, scheduler_url, mqtt_host, mqtt_port)
+    proxy_ports_raw = raw.get("edge_mqtt_proxy_ports", {})
+    if not isinstance(proxy_ports_raw, dict):
+        raise ConfigError(f"senders[{index}].edge_mqtt_proxy_ports must be an object")
+    edge_mqtt_proxy_ports: dict[str, int] = {}
+    for edge_id, port in proxy_ports_raw.items():
+        if not isinstance(edge_id, str) or not edge_id.strip():
+            raise ConfigError(
+                f"senders[{index}].edge_mqtt_proxy_ports keys must be non-empty strings"
+            )
+        try:
+            proxy_port = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"senders[{index}].edge_mqtt_proxy_ports.{edge_id} must be an integer"
+            ) from exc
+        if not 1 <= proxy_port <= 65535:
+            raise ConfigError(
+                f"senders[{index}].edge_mqtt_proxy_ports.{edge_id} is outside the valid range"
+            )
+        edge_mqtt_proxy_ports[edge_id] = proxy_port
+
+    return SenderNodeConfig(
+        sender_id, bearing_id, scheduler_url, mqtt_host, mqtt_port, edge_mqtt_proxy_ports
+    )
 
 
 def load_config(path: Path | str) -> SenderConfig:

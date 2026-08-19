@@ -40,6 +40,24 @@ def _delivery_error_code(status: str) -> str | None:
     return "PACKET_DELIVERY_FAILED"
 
 
+def resolve_target_edge_node_id(target_topic: str) -> str | None:
+    """Extract the edge node id from `edge/{edge_node_id}/input` topics."""
+    parts = target_topic.split("/")
+    if len(parts) == 3 and parts[0] == "edge" and parts[1] and parts[2] == "input":
+        return parts[1]
+    return None
+
+
+def _mqtt_port_for_target(
+    node: SenderNodeConfig, target_topic: str
+) -> tuple[int, str | None]:
+    """Choose the per-link proxy port when the target edge has a mapped port."""
+    target_edge = resolve_target_edge_node_id(target_topic)
+    if target_edge is not None and target_edge in node.edge_mqtt_proxy_ports:
+        return node.edge_mqtt_proxy_ports[target_edge], target_edge
+    return node.mqtt_port, target_edge
+
+
 def _summary(
     *,
     config: SenderConfig,
@@ -55,6 +73,7 @@ def _summary(
     realtime: bool,
     error_code: str | None,
     error_message: str | None = None,
+    target_edge_node_id: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "device_id": config.device_id,
@@ -62,6 +81,7 @@ def _summary(
         "bearing_id": node.bearing_id,
         "task_id": task_id,
         "target_topic": target_topic,
+        "target_edge_node_id": target_edge_node_id,
         "expected_packet_count": config.expected_packet_count,
         "confirmed_packet_count": counts.get("confirmed", 0),
         "failed_packet_count": counts.get("failed", 0),
@@ -160,10 +180,13 @@ def run_sender_task(
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
 
+    # 阶段 4：按 Scheduler 分配的目标 Edge 选择对应网络模拟代理端口，
+    # 使 Sender→Edge 流量经过 per-link 的 Toxiproxy 链路。
+    mqtt_port, target_edge_node_id = _mqtt_port_for_target(node, assignment.target_topic)
     mqtt_publisher = publisher or MqttPublisher(
         sender_id=node.sender_id,
         host=node.mqtt_host,
-        port=node.mqtt_port,
+        port=mqtt_port,
         keepalive_seconds=config.mqtt_keepalive_seconds,
         qos=config.qos,
         retain=config.retain,
@@ -235,6 +258,7 @@ def run_sender_task(
             realtime=realtime,
             error_code="MQTT_TASK_ERROR",
             error_message=str(exc),
+            target_edge_node_id=target_edge_node_id,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
@@ -256,6 +280,7 @@ def run_sender_task(
         status=status,
         realtime=realtime,
         error_code=_delivery_error_code(status),
+        target_edge_node_id=target_edge_node_id,
     )
     sink.write_task(summary)
     return summary

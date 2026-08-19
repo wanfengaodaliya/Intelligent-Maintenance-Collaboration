@@ -31,6 +31,7 @@ from .http import (
 from .mqtt import MqttIngress, MqttJsonPublisher
 from .service import EdgeRuntimeService
 from .packet_route_reporter import DeviceArbitrationReporter, PacketRouteReporter
+from .trace_identity import with_trace_identity
 from packet_routing_bridge import PacketRoutingBridge
 from device_decision import DeviceDecisionRoundRepository
 from result_lifecycle import BearingResultLifecycleManager, BearingResultRepository
@@ -56,6 +57,25 @@ class EdgeRuntimeAssembly:
     v12_flow: V12DecisionFlow | None
     device_result_outbox: DeviceResultOutbox | None = None
     maintenance: EdgeMaintenanceWorker | None = None
+
+
+class TracedDeviceResultPublisher:
+    """Publish device results with the unified trace identity fields."""
+
+    def __init__(self, inner, *, edge_node_id: str, route_id: str) -> None:
+        self._inner = inner
+        self._edge_node_id = edge_node_id
+        self._route_id = route_id
+
+    def publish(self, payload, **kwargs):
+        return self._inner.publish(
+            with_trace_identity(
+                payload,
+                edge_node_id=self._edge_node_id,
+                route_id=self._route_id,
+            ),
+            **kwargs,
+        )
 
 
 def build_edge_runtime(
@@ -105,6 +125,25 @@ def build_edge_runtime(
         topic=config.mqtt.suggestion_topic,
         qos=config.mqtt.qos,
     )
+
+    def _publish_device_result_with_identity(payload):
+        # 阶段 4：设备级结果发布统一携带 trace 身份字段，
+        # route_id 使用设备结果主题，便于跨模块按链路追踪。
+        return device_result_publisher.publish(
+            with_trace_identity(
+                payload,
+                edge_node_id=config.edge_node_id,
+                route_id=config.mqtt.device_result_topic,
+            )
+        )
+
+    def _enrich_uploaded_payload(payload, route_id: str):
+        # 阶段 4：轴承/设备结果上报 Scheduler 时统一携带 trace 身份字段。
+        return with_trace_identity(
+            payload,
+            edge_node_id=config.edge_node_id,
+            route_id=route_id,
+        )
     transfer = config.window_transfer
     window_review_store = None
     dispatcher = None
@@ -161,10 +200,14 @@ def build_edge_runtime(
         )
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
-        result_uploader = ResultUploader(config.v12.database_path, scheduler_client.post)
+        result_uploader = ResultUploader(
+            config.v12.database_path,
+            scheduler_client.post,
+            payload_enricher=_enrich_uploaded_payload,
+        )
         device_result_outbox = DeviceResultOutbox(
             config.v12.database_path,
-            device_result_publisher.publish,
+            _publish_device_result_with_identity,
             max_attempts=config.v12.device_result_publish_max_attempts,
         )
 
@@ -215,7 +258,11 @@ def build_edge_runtime(
         pipeline=pipeline,
         scheduler=scheduler,
         aggregation_workflow=aggregation_workflow,
-        device_result_publisher=device_result_publisher,
+        device_result_publisher=TracedDeviceResultPublisher(
+            device_result_publisher,
+            edge_node_id=config.edge_node_id,
+            route_id=config.mqtt.device_result_topic,
+        ),
         window_review_store=window_review_store,
         packet_router=(
             PacketRoutingBridge(

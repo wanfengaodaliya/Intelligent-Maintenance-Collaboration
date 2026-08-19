@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from dataclasses import asdict
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from core.diagnosis_contracts import BearingDecisionResult, DeviceDecisionResult
 
@@ -14,13 +14,17 @@ from core.diagnosis_contracts import BearingDecisionResult, DeviceDecisionResult
 class ResultUploader:
     def __init__(
         self, database_path, post: Callable[[str, dict], Mapping[str, object]],
-        *, max_backoff_seconds: int = 300,
+        *,
+        max_backoff_seconds: int = 300,
+        payload_enricher: Callable[[Mapping[str, Any], str], Mapping[str, Any]] | None = None,
     ) -> None:
         if max_backoff_seconds <= 0:
             raise ValueError("max_backoff_seconds must be positive")
         self.database_path = str(database_path)
         self.post = post
         self.max_backoff_seconds = max_backoff_seconds
+        # 阶段 4：出站上报载荷统一附加 trace 身份字段（route_id 为上报路径）。
+        self._payload_enricher = payload_enricher
         self._initialize()
 
     def enqueue_bearing(self, result: BearingDecisionResult) -> None:
@@ -71,6 +75,8 @@ class ResultUploader:
         return 1
 
     def _enqueue(self, path: str, payload: dict) -> None:
+        if self._payload_enricher is not None:
+            payload = dict(self._payload_enricher(payload, path))
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as connection:
             existing = connection.execute("SELECT payload_json FROM v12_result_upload WHERE result_id=?", (payload["result_id"],)).fetchone()

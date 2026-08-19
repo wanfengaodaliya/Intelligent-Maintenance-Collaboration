@@ -163,7 +163,6 @@ def test_maintenance_round_is_decoupled_from_status_reporting() -> None:
         edge_node_id="edge_01",
         ingress=object(),
         cache=object(),
-        perception=object(),
         pipeline=SimpleNamespace(queue_length=0),
         scheduler=scheduler,
     )

@@ -269,6 +269,18 @@ def health() -> dict[str, object]:
         ),
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
+        "outbound_routes": {
+            # 阶段 4：暴露出站链路地址，便于确认流量是否经过网络模拟代理。
+            "scheduler_base_url": runtime_assembly.service.config.scheduler.base_url,
+            "cloud_base_url": runtime_assembly.service.config.window_transfer.cloud_base_url,
+            "cloud_node_urls": dict(runtime_assembly.service.config.cloud_node_urls),
+            "mqtt_host": runtime_assembly.service.config.mqtt.host,
+            "mqtt_port": runtime_assembly.service.config.mqtt.port,
+            "device_result_topic": runtime_assembly.service.config.mqtt.device_result_topic,
+            "network_link_id": os.getenv(
+                "EDGE_NETWORK_LINK_ID", f"{EDGE_NODE_ID}__to__scheduler__http"
+            ),
+        },
         "http_timeout_ms": {
             "connect": runtime_assembly.service.config.v12.http_connect_timeout_ms,
             "read": runtime_assembly.service.config.v12.http_read_timeout_ms,
