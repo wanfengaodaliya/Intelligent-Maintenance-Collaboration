@@ -37,6 +37,9 @@ services:
       dockerfile: edge_service/Dockerfile
     image: cloud-edge/edge-service:latest
     container_name: edge_sim_01
+    extra_hosts:
+      # 阶段 6：正式模型服务运行在宿主机（WSL），容器经 host-gateway 访问。
+      - "host.docker.internal:host-gateway"
     environment:
       EDGE_NODE_ID: edge_01
       EDGE_MQTT_HOST: mqtt-broker
@@ -47,6 +50,11 @@ services:
       # 出站 HTTP 全部经过 Toxiproxy 链路，指向 links.yaml 中对应代理端口。
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18011
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18021
+      # 阶段 6：诊断推理唯一路线为宿主机上的正式模型服务。
+      EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
+      # 阶段 7.2（可选）：pin 模型版本；与模型服务 readiness 上报不一致时
+      # 本节点 readiness 不通过，调度方停止派发新任务。
+      # EDGE_MODEL_VERSION: qwen2.5-1.5b-instruct/phase1
       # 状态上报 URL 从统一基址推导，同样经过 edge→scheduler / edge→cloud 链路。
       EDGE_NETWORK_LINK_ID: edge_01__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_01__to__scheduler__http
@@ -64,6 +72,8 @@ services:
       dockerfile: edge_service/Dockerfile
     image: cloud-edge/edge-service:latest
     container_name: edge_sim_02
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       EDGE_NODE_ID: edge_02
       EDGE_MQTT_HOST: mqtt-broker
@@ -73,6 +83,7 @@ services:
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18053
+      EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       EDGE_NETWORK_LINK_ID: edge_02__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
     ports:

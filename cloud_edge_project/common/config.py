@@ -19,7 +19,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "consistency": {"host": "127.0.0.1", "port": 8005},
         "log": {"host": "127.0.0.1", "port": 8006},
     },
-    "model": {"edge_backend": "rule", "cloud_backend": "mock"},
+    # 阶段 6：边缘诊断唯一后端为正式模型服务（旧本地模型后端已删除）。
+    "model": {"edge_backend": "official", "cloud_backend": "mock"},
     "log": {"path": "logs/task_trace.jsonl"},
     "demo": {
         "network_state": {

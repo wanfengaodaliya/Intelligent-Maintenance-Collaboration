@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 import time
 import uuid
 from typing import Callable, Optional
@@ -32,7 +33,8 @@ class EdgeModelPipeline:
                  on_packet_result: Callable[[PacketResult], None],
                  clock=time.monotonic,
                  on_packet_completed: Optional[Callable[[PacketExecutionCompleted], None]] = None,
-                 clock_ns=time.time_ns):
+                 clock_ns=time.time_ns,
+                 evidence_builder: Optional[Callable[[dict], dict]] = None):
         self.cfg = cfg
         self.model_client = model_client
         self.fallback = fallback
@@ -41,6 +43,9 @@ class EdgeModelPipeline:
         self.on_packet_completed = on_packet_completed or (lambda _: None)
         self._clock = clock
         self._clock_ns = clock_ns
+        # 阶段 6：单包特征提取（raw packet → perception）与降级执行器解耦。
+        # 未注入时保持旧行为：若 fallback 自带 build_evidence 则使用之。
+        self._evidence_builder = evidence_builder
 
         self.queue = ModelTaskQueue(cfg.queue.max_waiting_requests,
                                     cfg.queue.full_policy, clock=clock)
@@ -53,6 +58,11 @@ class EdgeModelPipeline:
             clock=clock,
         )
         self.started = False
+        # 阶段 7.4：模型服务就绪探针（http 后端专用），结果缓存供 readiness 使用。
+        self._readiness_lock = threading.Lock()
+        self._readiness_snapshot: dict = {"probed": False, "ok": False}
+        self._probe_stop = threading.Event()
+        self._probe_thread: Optional[threading.Thread] = None
 
     def start(self):
         errors = self.cfg.validate()
@@ -65,12 +75,60 @@ class EdgeModelPipeline:
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError("模型服务地址非法: %r" % url)
         self.worker.start()
+        self._start_readiness_probe()
         self.started = True
 
     def stop(self, join_s: float = 5.0):
         if self.cfg.diagnostic_backend == "http":
             self.worker.stop(join_s=join_s)
+            self._stop_readiness_probe(join_s=join_s)
         self.started = False
+
+    # ---- 阶段 7.4：模型就绪探针 ----
+
+    def _start_readiness_probe(self) -> None:
+        if self._probe_thread is not None:
+            return
+        self._probe_stop.clear()
+        self._probe_thread = threading.Thread(
+            target=self._readiness_probe_loop,
+            name="edge-model-readiness-probe",
+            daemon=True,
+        )
+        self._probe_thread.start()
+
+    def _stop_readiness_probe(self, join_s: float = 5.0) -> None:
+        self._probe_stop.set()
+        thread = self._probe_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_s)
+        self._probe_thread = None
+
+    def _readiness_probe_loop(self) -> None:
+        interval = self.cfg.model_client.readiness_probe_interval_s
+        while not self._probe_stop.is_set():
+            self.probe_readiness_once()
+            self._probe_stop.wait(interval)
+
+    def probe_readiness_once(self) -> dict:
+        """执行一次就绪探测并更新缓存（也供测试与维护轮次主动调用）。"""
+        result = self.model_client.readiness()
+        snapshot = {
+            "probed": True,
+            "ok": bool(result.ok),
+            "model_version": result.model_version,
+            "version_mismatch": bool(result.version_mismatch),
+            "detail": result.detail,
+            "checked_at_ns": time.time_ns(),
+        }
+        with self._readiness_lock:
+            self._readiness_snapshot = snapshot
+        return snapshot
+
+    def model_readiness(self) -> dict:
+        """缓存的就绪快照；未探测过时返回 {probed: False, ok: False}。"""
+        with self._readiness_lock:
+            return dict(self._readiness_snapshot)
 
     def wait_idle(self, timeout_s: float = 5.0) -> bool:
         return self.queue.wait_until_idle(timeout_s)
@@ -100,9 +158,12 @@ class EdgeModelPipeline:
 
     def _make_task(self, sender_id: str, model_input: dict) -> PacketInferenceTask:
         raw_packet = None
-        if callable(getattr(self.fallback, "build_evidence", None)):
+        builder = self._evidence_builder
+        if builder is None:
+            builder = getattr(self.fallback, "build_evidence", None)
+        if callable(builder):
             raw_packet = copy.deepcopy(model_input)
-            perception = self.fallback.build_evidence(raw_packet)
+            perception = builder(raw_packet)
         else:
             perception = model_input
         validate_model_input(perception)

@@ -53,6 +53,16 @@ hf download AutonLab/MOMENT-1-small --local-dir experiments/diagnosis_models/mom
 | `CLOUD_MOMENT_DEPLOYMENT_DIR` | `local_experiment/deploy/light_adapt` |
 | `CLOUD_MOMENT_DEVICE` | `auto` |
 
-## 默认小模型（随仓库分发）
+## 默认小模型（已废弃，仅存档说明）
 
-`edge_service/models/bearing_random_forest/random_forest.joblib`（约 6.3MB）为默认边缘随机森林模型，是当前运行与测试所需资产，保持 Git 跟踪，不受上述大模型缺失影响。
+> **阶段 6 收口（2026-08）**：边缘本地诊断模型路线已全部淘汰，以下资产仅作历史归档，
+> **不可运行**，仓库中已删除对应代码与制品：
+>
+> - `edge_service/models/bearing_random_forest/random_forest.joblib`（早期随机森林模型）
+> - `edge_service/models/distilled_h5/`（蒸馏三分支 H5 模型，含 `best_model.pt`）
+> - `edge_service/src/edge_diagnosis/`（H5 推理运行时代码）
+>
+> 当前边缘诊断唯一路线为**正式模型服务**（`model.edge_backend: "official"`，
+> HTTP `/infer`，见 `edge_service/src/model_service/`）。降级语义为"诊断不可用/待云复核"，
+> 不允许回退旧模型。训练流水线产出的 checkpoint 归档见上文 LIGHT_ADAPT 章节，
+> 与边缘运行时不再耦合。

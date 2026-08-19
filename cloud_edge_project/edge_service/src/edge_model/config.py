@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -40,11 +40,16 @@ class ModelClientConfig:
     readiness_path: str = "/readiness"
     connect_timeout_ms: int = 500
     read_timeout_ms: int = 1500
+    # 阶段 7.2：模型版本 pin；设置后 readiness 校验服务端版本，不一致视为未就绪。
+    expected_version: Optional[str] = None
+    # 阶段 7.4：后台就绪探针周期（秒）。
+    readiness_probe_interval_s: float = 5.0
 
 
 @dataclass
 class FallbackConfig:
-    rule_version: str = "distilled_h5_kd_fold3_a9f20442"
+    # 阶段 6：正式模型路线的降级语义是"诊断不可用"（不再回退旧模型）。
+    rule_version: str = "diagnosis_unavailable_v1"
     allow_test_rule: bool = True
 
 
@@ -78,6 +83,8 @@ class EdgeModelConfig:
             errors.append("breaker.consecutive_failure_threshold 必须 >= 1")
         if self.breaker.recovery_probe_interval_s <= 0:
             errors.append("breaker.recovery_probe_interval_s 必须为正数")
+        if self.model_client.readiness_probe_interval_s <= 0:
+            errors.append("model_client.readiness_probe_interval_s 必须为正数")
         if not self.fallback.rule_version:
             errors.append("fallback.rule_version 不能为空")
         if self.fallback.rule_version.startswith("edge_rule_test") and not self.fallback.allow_test_rule:

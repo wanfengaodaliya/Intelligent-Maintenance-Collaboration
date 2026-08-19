@@ -51,10 +51,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             self._send_json(200, {"status": "ok"})
         elif self.path.rstrip("/") == "/readiness":
-            runner = self.runner
-            ready = bool(runner and runner.ready)
-            self._send_json(200, {"ready": ready,
-                                  "load_error": runner.load_error if runner else None})
+            self._send_json(200, readiness_payload(self.runner))
         else:
             self._send_json(404, {"error": "not_found"})
 
@@ -101,6 +98,19 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             status = 502
         self._send_json(status, result)
+
+
+def readiness_payload(runner: Optional[ModelRunner]) -> dict:
+    """阶段 7.2：readiness 响应体构造（独立函数便于校验测试）。
+
+    携带 model_version，供边缘侧版本对齐（EDGE_MODEL_VERSION pin 校验）。
+    """
+    ready = bool(runner and runner.ready)
+    return {
+        "ready": ready,
+        "load_error": runner.load_error if runner else None,
+        "model_version": getattr(runner, "model_version", None) if runner else None,
+    }
 
 
 def make_server(host: str, port: int, runner: ModelRunner) -> ThreadingHTTPServer:

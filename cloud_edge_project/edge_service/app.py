@@ -33,10 +33,11 @@ from edge_validation_cache import (  # noqa: E402
     ValidationCacheConfig,
 )
 from edge_aggregation import WindowTransferError  # noqa: E402
-from edge_diagnosis import H5_RUNTIME_MODEL_VERSION, DistilledH5DiagnosticModel  # noqa: E402
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
+from edge_model.perception_evidence import PerceptionEvidenceBuilder  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
+from edge_model.unavailable_runner import DiagnosisUnavailableRunner  # noqa: E402
 from edge_runtime import (  # noqa: E402
     EdgeRuntimeConfig,
     PacketRouteErrorRecorder,
@@ -55,17 +56,23 @@ from edge_status_reporter import ModelStatus, build_edge_status_integration  # n
 
 
 config = load_config()
+# 阶段 6 收口：诊断推理只允许正式模型服务后端。
+# 旧值（random_forest / distilled_h5 等本地模型路线）一律拒绝启动。
 diagnostic_backend = str(config["model"]["edge_backend"])
-if diagnostic_backend != "distilled_h5":
-    raise ValueError("unsupported edge diagnostic backend: %s" % diagnostic_backend)
-runtime_model_version = H5_RUNTIME_MODEL_VERSION
+if diagnostic_backend != "official":
+    raise ValueError(
+        "unsupported edge diagnostic backend: %s (only 'official' is allowed; "
+        "legacy local model backends have been removed)" % diagnostic_backend
+    )
+# 正式模型版本以部署时显式声明为准（方案 7.2 将由模型服务 manifest 对齐）。
+runtime_model_version = os.getenv("EDGE_MODEL_VERSION", "official-model-unpinned")
 edge_status_integration = build_edge_status_integration(
     edge_node_id=EDGE_NODE_ID,
     default_model_version=runtime_model_version,
 )
 runtime_assembly = None
 cloud_review_cleanup = None
-EDGE_FEATURE_EXTRACTOR_VERSION = "distilled-h5-three-branch-v1"
+EDGE_FEATURE_EXTRACTOR_VERSION = PerceptionEvidenceBuilder.version
 
 
 @asynccontextmanager
@@ -114,15 +121,25 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         review_store = cloud_review_store
 
     model_config = EdgeModelConfig()
+    model_config.diagnostic_backend = "http"
+    # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
+    # 设置后模型服务上报版本不一致 → readiness 不通过，不接新任务。
+    pinned_model_version = os.getenv("EDGE_MODEL_VERSION") or None
     model_client = ModelClient(
-        ModelClientConfig(base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"))
+        ModelClientConfig(
+            base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
+            expected_version=pinned_model_version,
+        )
     )
+    # 阶段 6：唯一诊断路线是正式模型服务（HTTP）；降级语义为"诊断不可用"，
+    # 不再构造任何本地旧模型。特征提取独立注入，与降级执行器解耦。
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
-        DistilledH5DiagnosticModel(),
+        DiagnosisUnavailableRunner(),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
+        evidence_builder=PerceptionEvidenceBuilder().build_evidence,
     )
     mqtt_settings = config.get("mqtt", {})
     transfer_settings = config.get("bearing_window_transfer", {})
@@ -204,8 +221,10 @@ if edge_status_integration.state is not None:
 
     def _runtime_models() -> tuple[ModelStatus, ...]:
         coordinator = runtime_assembly.coordinator
-        fallback = coordinator.pipeline.fallback
-        version = getattr(fallback, "model_version", runtime_model_version)
+        # 阶段 7.2：状态上报优先采用模型服务上报的真实版本。
+        probe = coordinator.pipeline.model_readiness()
+        reported = probe.get("model_version")
+        version = reported if isinstance(reported, str) and reported else runtime_model_version
         return (ModelStatus(version, coordinator.model_load_status),)
 
     edge_status_integration.state.attach_runtime_providers(
@@ -242,7 +261,11 @@ def _liveness_snapshot() -> dict[str, object]:
 
 
 def _readiness_snapshot() -> dict[str, object]:
-    """阶段 5：readiness 表示当前是否满足接收新任务的条件。"""
+    """阶段 5/7.4：readiness 表示当前是否满足接收新任务的条件。
+
+    阶段 7.4：模型服务就绪纳入判定——模型不可用（或版本 pin 不一致）时
+    readiness 不通过，调度方应停止派发新任务（隔离故障，而非接单后失败）。
+    """
     maintenance = runtime_assembly.maintenance
     service = runtime_assembly.service
     maintenance_running = True if maintenance is None else maintenance.running
@@ -251,6 +274,10 @@ def _readiness_snapshot() -> dict[str, object]:
         "maintenance_worker_running": bool(maintenance_running),
         "mqtt_connected": bool(service.mqtt_ingress.connected),
     }
+    pipeline = runtime_assembly.coordinator.pipeline
+    if pipeline.cfg.diagnostic_backend == "http":
+        probe = pipeline.model_readiness()
+        checks["model_service_ready"] = bool(probe.get("probed") and probe.get("ok"))
     return {
         "ready": all(checks.values()),
         "checks": checks,
@@ -273,12 +300,18 @@ def health_ready() -> JSONResponse:
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    model = runtime_assembly.coordinator.pipeline.fallback
     maintenance = runtime_assembly.maintenance
     outbox = runtime_assembly.device_result_outbox
     maintenance_health = maintenance.health() if maintenance is not None else None
     readiness = _readiness_snapshot()
     ready = readiness["ready"]
+    # 阶段 7.2：优先使用模型服务 readiness 上报的真实版本（未 pin 且未探测到时回退）。
+    probe = runtime_assembly.coordinator.pipeline.model_readiness()
+    reported_version = probe.get("model_version")
+    displayed_version = (
+        reported_version if isinstance(reported_version, str) and reported_version
+        else runtime_model_version
+    )
     return {
         "service": "edge_service",
         "node_id": EDGE_NODE_ID,
@@ -288,13 +321,16 @@ def health() -> dict[str, object]:
         "readiness": readiness,
         "port": config["services"]["edge"]["port"],
         "model_backend": diagnostic_backend,
-        "model_version": model.model_version,
-        "model_deployment_status": model.deployment_status,
+        # 阶段 6：正式模型版本来自部署声明；本地不再持有模型制品。
+        "model_version": displayed_version,
+        "model_version_pinned": runtime_model_version if os.getenv("EDGE_MODEL_VERSION") else None,
+        "model_deployment_status": "official_model_service",
+        # 阶段 7.4：模型服务就绪探针快照（含版本 pin 校验结论）。
+        "model_service": {
+            "base_url": os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
+            **probe,
+        },
         "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
-        "feature_schema_version": getattr(model, "feature_schema_version", None),
-        "model_input_schema_version": getattr(
-            model, "model_input_schema_version", None
-        ),
         "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
         "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
@@ -313,6 +349,15 @@ def health() -> dict[str, object]:
         ),
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
+        # 阶段 5：关键外部发送队列指标（积压、死信、最老记录年龄）。
+        "result_upload": (
+            runtime_assembly.coordinator.result_uploader.health()
+            if runtime_assembly.coordinator.result_uploader is not None else None
+        ),
+        "raw_sample_queue": (
+            runtime_assembly.coordinator.raw_sample_capture.repository.health()
+            if runtime_assembly.coordinator.raw_sample_capture is not None else None
+        ),
         "outbound_routes": {
             # 阶段 4：暴露出站链路地址，便于确认流量是否经过网络模拟代理。
             "scheduler_base_url": runtime_assembly.service.config.scheduler.base_url,

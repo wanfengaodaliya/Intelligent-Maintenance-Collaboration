@@ -40,6 +40,24 @@ class HealthResult:
     detail: str = ""
 
 
+@dataclass
+class ReadinessResult:
+    """阶段 7.2/7.4：结构化就绪结果（含模型版本与 pin 校验结论）。"""
+
+    ok: bool
+    model_version: Optional[str] = None
+    version_mismatch: bool = False
+    detail: str = ""
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "model_version": self.model_version,
+            "version_mismatch": self.version_mismatch,
+            "detail": self.detail,
+        }
+
+
 class ModelClient:
     def __init__(self, cfg: ModelClientConfig, clock=time.monotonic):
         self.cfg = cfg
@@ -76,12 +94,35 @@ class ModelClient:
         except Exception as exc:  # noqa: BLE001
             return HealthResult(ok=False, detail="%s: %s" % (type(exc).__name__, exc))
 
-    def readiness(self) -> HealthResult:
+    def readiness(self) -> ReadinessResult:
+        """阶段 7.2/7.4：就绪检查 + 版本对齐。
+
+        - 服务端 ready 且（若配置了版本 pin）model_version 一致 → ok=True；
+        - pin 不一致 → ok=False 且 version_mismatch=True（边缘不接新任务）。
+        """
         try:
-            body = self._request_json(self.cfg.readiness_path, read_timeout_s=self.cfg.connect_timeout_ms / 1000.0)
-            return HealthResult(ok=body.get("ready") is True, detail=str(body))
+            body = self._request_json(
+                self.cfg.readiness_path,
+                read_timeout_s=self.cfg.connect_timeout_ms / 1000.0,
+            )
         except Exception as exc:  # noqa: BLE001
-            return HealthResult(ok=False, detail="%s: %s" % (type(exc).__name__, exc))
+            return ReadinessResult(ok=False, detail="%s: %s" % (type(exc).__name__, exc))
+        version = body.get("model_version")
+        version = version if isinstance(version, str) and version else None
+        ready = body.get("ready") is True
+        mismatch = (
+            ready
+            and self.cfg.expected_version is not None
+            and version != self.cfg.expected_version
+        )
+        ok = ready and not mismatch
+        detail = "model service ready" if ok else (
+            "model_version mismatch: expected=%s reported=%s"
+            % (self.cfg.expected_version, version) if mismatch else str(body)
+        )
+        return ReadinessResult(
+            ok=ok, model_version=version, version_mismatch=mismatch, detail=detail,
+        )
 
     # ---- 推理 ----
     def infer(self, model_input: dict, inference_timeout_ms: Optional[int] = None,
