@@ -159,7 +159,8 @@ def run_checks(strict: bool = False) -> dict:
         "environment": {
             "edge_model_base_url": _env("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
             "edge_model_version_pin": os.environ.get("EDGE_MODEL_VERSION") or "(unpinned)",
-            "model_edge_backend": "official",
+            # 正式路线 local_h5（容器内三通道并行）；故障演练矩阵用 official。
+            "model_edge_backend": _env("EDGE_DIAGNOSTIC_BACKEND", "local_h5"),
         },
         "healthy": healthy,
         "strict": strict,

@@ -49,9 +49,12 @@ class EdgeModelPipeline:
 
         self.queue = ModelTaskQueue(cfg.queue.max_waiting_requests,
                                     cfg.queue.full_policy, clock=clock)
+        # 任务级客户端（如 local_h5）没有 infer(perception) 入口：直接把客户端
+        # 本身作为 infer_fn，worker 会优先使用其 infer_task(task) 钩子。
+        infer_fn = model_client.infer if hasattr(model_client, "infer") else model_client
         self.worker = InferenceWorker(
             self.queue,
-            infer_fn=model_client.infer,
+            infer_fn=infer_fn,
             cfg=cfg,
             on_model=self._on_model,
             on_fallback=self._on_fallback,
@@ -71,15 +74,17 @@ class EdgeModelPipeline:
         if self.cfg.diagnostic_backend == "local":
             self.started = True
             return
-        url = (self.cfg.model_client.base_url or "").strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            raise ValueError("模型服务地址非法: %r" % url)
+        if self.cfg.diagnostic_backend == "http":
+            url = (self.cfg.model_client.base_url or "").strip()
+            if not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError("模型服务地址非法: %r" % url)
+        # local_h5：本地 H5 三通道并行路线，走同一 worker 队列（无外部 URL）。
         self.worker.start()
         self._start_readiness_probe()
         self.started = True
 
     def stop(self, join_s: float = 5.0):
-        if self.cfg.diagnostic_backend == "http":
+        if self.cfg.diagnostic_backend in ("http", "local_h5"):
             self.worker.stop(join_s=join_s)
             self._stop_readiness_probe(join_s=join_s)
         self.started = False
@@ -141,6 +146,16 @@ class EdgeModelPipeline:
     @property
     def queue_length(self) -> int:
         return self.queue.waiting_count
+
+    def queue_snapshot(self) -> dict:
+        """阶段 7：模型队列容量与满载指标（供 /health 暴露）。"""
+        return {
+            "waiting": self.queue.waiting_count,
+            "capacity": self.queue.capacity,
+            "full_policy": self.queue.full_policy,
+            "max_observed_queued": self.queue.max_observed_queued,
+            "queue_full_total": self.queue.queue_full_total,
+        }
 
     def ingest(self, sender_id: str, model_input: dict) -> str:
         """Create an independent packet inference task from the active backend input."""

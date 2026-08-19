@@ -5,15 +5,19 @@
   ① 网络模拟器已启动（Toxiproxy/MQTT/network-controller）
   ② 宿主机 8012 端口空闲（运行器自带可控 Fake 模型服务）
   ③ 双 Edge 容器已启动（compose.network-sim.yml，端口 8001/8002）
-  Scheduler/Cloud 可不启动（暂定结果路径正是无 Cloud 时的预期行为）。
+  Cloud 可不启动（暂定结果路径正是无 Cloud 时的预期行为）；
+  Scheduler 必须启动（决策流依赖 /scheduler/packet-route 路由，指南第 ③ 步）。
 
 固定演示场景：
-  task_flow_baseline_provisional  双节点任务注册 → 80 包/轴承确定性数据 →
-                                  Cloud 缺席下的暂定设备结果（含 trace 身份字段）
+  task_flow_baseline_provisional  经 Scheduler /decide 派发双任务（真实调度链路）→
+                                  80 包/轴承确定性数据 → Cloud 缺席下的
+                                  暂定设备结果（含 trace 身份字段）
   model_unavailable_isolation     模型服务停止 → 双节点 readiness 503 隔离 → 恢复
   sender_link_fault_isolation     Sender→Edge MQTT 链路 down → 故障隔离不串扰 → 恢复
   edge_node_restart_isolation     节点容器停止 → 对端无影响 → 重启恢复
   duplicate_packet_stability      重复包幂等（无拒绝计数增长、节点稳定）
+  model_queue_saturation          模型推理挂起 + 80 包突发 → 队列满载拒绝可观测
+                                  （/health model_queue）→ 恢复后排空，节点存活
 
 用法（在 cloud_edge_project 下）：
   python edge_service/scripts/run_delivery_experiments.py --json report.json
@@ -59,6 +63,11 @@ PACKETS_PER_BEARING = 80
 COMPOSE_FILE = "edge_service/compose.network-sim.yml"
 # 运行 nonce：任务 ID 唯一化，避免跨运行触发任务冲突（Edge 任务态为进程内存态）。
 RUN_TOKEN = time.strftime("%Y%m%d%H%M%S")
+# 本脚本的故障演练矩阵（model_unavailable / queue_saturation 等）依赖可注入
+# 故障的 Fake 模型服务（8012），因此脚本启动的 Edge 容器固定 official 后端
+# （覆盖 compose 的 local_h5 默认）。H5 三通道正式路线的验证见
+# verification/test_local_h5_route.py 与 compose 手工演练。
+os.environ["EDGE_DIAGNOSTIC_BACKEND"] = "official"
 
 
 # ---------- 工具 ----------
@@ -286,66 +295,104 @@ def wait_for(predicate, timeout_s: float, interval_s: float = 0.5,
 
 
 def scenario_task_flow_baseline(context: dict) -> dict:
-    """双节点任务注册 + 确定性数据 + Cloud 缺席暂定结果。"""
+    """经 Scheduler 派发双任务 + 确定性数据 + Cloud 缺席暂定结果。
+
+    真实链路：Sender 请求 /scheduler/decide（按轴承，task_id 合同
+    sd_<sender>_tk_<0001-9999>）→ Scheduler 选节点并推送 Edge 注册 →
+    Sender 经 Toxiproxy 链路发 80 包/轴承 → Cloud 缺席下 Edge 在业务
+    截止时间降级发布暂定设备结果。
+    """
     started = _now_ms()
-    task_e1 = "task_sim_e1_%s" % RUN_TOKEN
-    task_e2 = "task_sim_e2_%s" % RUN_TOKEN
-    tasks = [
-        (task_e1, "edge_01", EDGE_01_BASE, "device_sim_01",
-         [("bearing_01", "sender_01"), ("bearing_02", "sender_02")]),
-        (task_e2, "edge_02", EDGE_02_BASE, "device_sim_02",
-         [("bearing_01", "sender_01"), ("bearing_02", "sender_02")]),
+    # 决策流依赖 Scheduler 路由（packet-route）；缺席时本场景必失败，先行明示。
+    scheduler_status, _ = _http(
+        "GET", os.getenv("SCHEDULER_HEALTH_URL", "http://127.0.0.1:8003/health"))
+    scheduler_base = os.getenv(
+        "SCHEDULER_SERVICE_URL", "http://127.0.0.1:8003").rstrip("/")
+    # 任务号取 RUN_TOKEN 的 HHMMSS（%10000），跨运行基本不重复且符合合同。
+    task_base = int(RUN_TOKEN[-6:]) % 10000 or 1
+    specs = [
+        {"device_id": "device_sim_01", "sender_id": "sender_01",
+         "task_id": "sd_01_tk_%04d" % (task_base % 9999 or 1),
+         "bearing_id": "bearing_01"},
+        {"device_id": "device_sim_02", "sender_id": "sender_02",
+         "task_id": "sd_02_tk_%04d" % ((task_base + 1) % 9999 or 1),
+         "bearing_id": "bearing_01"},
     ]
-    acks = {}
-    for task_id, edge_id, base, device_id, bearings in tasks:
-        status, body = _http("POST", base + "/edge/tasks",
-                             build_dispatch(task_id, edge_id, device_id, bearings))
-        acks[edge_id] = {"http": status, "ack": body}
-    assertions = {"task_ack_edge_01": acks["edge_01"]["http"] == 200
-                  and acks["edge_01"]["ack"].get("ack_status") == "ACCEPTED",
-                  "task_ack_edge_02": acks["edge_02"]["http"] == 200
-                  and acks["edge_02"]["ack"].get("ack_status") == "ACCEPTED"}
+    decisions = {}
+    for spec in specs:
+        payload = {
+            **spec,
+            "packet_size_bytes": 64_000,
+            "expected_packet_count": PACKETS_PER_BEARING,
+            "expected_duration_ms": 4_000,
+            "created_timestamp_ns": time.time_ns(),
+        }
+        # Scheduler 侧节点视图依赖周期性状态上报（模型加载/资源），就绪存在
+        # 滞后；503 NO_AVAILABLE_EDGE_NODE 时按节奏重试至状态刷新。
+        for attempt in range(20):
+            status, body = _http("POST", scheduler_base + "/scheduler/decide", payload)
+            if status == 200 or attempt == 19:
+                break
+            time.sleep(1.5)
+        decisions[spec["task_id"]] = {"http": status, "decision": body}
+    assertions = {"scheduler_available": scheduler_status == 200}
+    for task_id, entry in decisions.items():
+        ok = entry["http"] == 200 and isinstance(entry["decision"], dict) \
+            and entry["decision"].get("target_topic")
+        assertions["decide_ack_%s" % task_id] = ok
 
     sent, publish_errors = 0, []
     send_started = _now_ms()
-    with DeviceResultCollector() as collector, \
-            MqttLinkPublisher("sender_01", "edge_01") as p1a, \
-            MqttLinkPublisher("sender_02", "edge_01") as p2a, \
-            MqttLinkPublisher("sender_01", "edge_02") as p1b, \
-            MqttLinkPublisher("sender_02", "edge_02") as p2b:
-        publishers = {("sender_01", "edge_01"): p1a, ("sender_02", "edge_01"): p2a,
-                      ("sender_01", "edge_02"): p1b, ("sender_02", "edge_02"): p2b}
-        for sequence in range(1, PACKETS_PER_BEARING + 1):
-            for task_id, edge_id, base, device_id, bearings in tasks:
-                for bearing, sender in bearings:
-                    ok, err = publishers[(sender, edge_id)].publish(
-                        build_packet(device_id, bearing, sender, task_id, sequence))
+    send_elapsed, wait_elapsed, results = 0.0, 0.0, {s["task_id"]: [] for s in specs}
+    decide_ok = all(a for k, a in assertions.items() if k.startswith("decide_ack"))
+    collector: DeviceResultCollector | None = None
+    publishers: dict[tuple[str, str], MqttLinkPublisher] = {}
+    if decide_ok:
+        collector = DeviceResultCollector().__enter__()
+        # 按派发结论动态建链：target_topic 形如 edge/edge_XX/input。
+        publishers: dict[tuple[str, str], MqttLinkPublisher] = {}
+        try:
+            for spec in specs:
+                decision = decisions[spec["task_id"]]["decision"]
+                edge_id = str(decision.get("target_topic", "")).split("/")[1]
+                key = (spec["sender_id"], edge_id)
+                if key not in publishers:
+                    publishers[key] = MqttLinkPublisher(*key).__enter__()
+            for sequence in range(1, PACKETS_PER_BEARING + 1):
+                for spec in specs:
+                    decision = decisions[spec["task_id"]]["decision"]
+                    edge_id = str(decision.get("target_topic", "")).split("/")[1]
+                    publisher = publishers[(spec["sender_id"], edge_id)]
+                    ok, err = publisher.publish(build_packet(
+                        spec["device_id"], spec["bearing_id"], spec["sender_id"],
+                        spec["task_id"], sequence))
                     sent += 1
                     if not ok:
                         publish_errors.append(err)
-            time.sleep(0.01)  # 加速节奏（演示允许，正式 Sender 为 50ms）
-        send_elapsed = _now_ms() - send_started
+                time.sleep(0.01)  # 加速节奏（演示允许，正式 Sender 为 50ms）
+            send_elapsed = _now_ms() - send_started
 
-        # 等待双节点暂定设备结果（round 超时 3.5s + 发布重试预算）。
-        def _both_published() -> bool:
-            return len(collector.for_task(task_e1)) >= 1 \
-                and len(collector.for_task(task_e2)) >= 1
-        got, wait_elapsed = wait_for(_both_published, timeout_s=60.0,
-                                     interval_s=1.0, what="provisional device results")
-        results_e1 = collector.for_task(task_e1)
-        results_e2 = collector.for_task(task_e2)
+            def _both_published() -> bool:
+                return all(len(collector.for_task(s["task_id"])) >= 1 for s in specs)
+            got, wait_elapsed = wait_for(_both_published, timeout_s=60.0,
+                                         interval_s=1.0,
+                                         what="provisional device results")
+            results = {s["task_id"]: collector.for_task(s["task_id"]) for s in specs}
+        finally:
+            for publisher in publishers.values():
+                publisher.__exit__(None, None, None)
 
-    def _trace_ok(results: list[dict]) -> bool:
-        return bool(results) and all(
+    def _trace_ok(task_results: list[dict]) -> bool:
+        return bool(task_results) and all(
             all(k in r["payload"] for k in
                 ("trace_id", "task_id", "edge_node_id", "decision_round_id"))
-            for r in results)
+            for r in task_results)
 
     assertions.update({
         "all_packets_published": not publish_errors,
-        "provisional_result_edge_01": len(results_e1) >= 1,
-        "provisional_result_edge_02": len(results_e2) >= 1,
-        "trace_identity_present": _trace_ok(results_e1) and _trace_ok(results_e2),
+        "provisional_result_task_1": len(results[specs[0]["task_id"]]) >= 1,
+        "provisional_result_task_2": len(results[specs[1]["task_id"]]) >= 1,
+        "trace_identity_present": all(_trace_ok(results[s["task_id"]]) for s in specs),
         "edges_remain_live": all(edge_health(b).get("liveness", {}).get("alive")
                                  is True for b in (EDGE_01_BASE, EDGE_02_BASE)),
     })
@@ -354,18 +401,18 @@ def scenario_task_flow_baseline(context: dict) -> dict:
         "started_at_epoch_ms": started, "packets_sent": sent,
         "publish_errors": publish_errors[:5],
         "send_elapsed_ms": round(send_elapsed), "result_wait_ms": round(wait_elapsed),
-        "task_acks": {k: {"http": v["http"], "ack_status":
-                          (v["ack"] or {}).get("ack_status") if isinstance(v["ack"], dict) else None}
-                      for k, v in acks.items()},
+        "decisions": {k: {"http": v["http"],
+                          "target_topic": (v["decision"] or {}).get("target_topic")
+                          if isinstance(v["decision"], dict) else None}
+                      for k, v in decisions.items()},
         "device_results": {
-            "edge_01": [{"decision_source": r["payload"].get("decision_source"),
-                         "action_grade": r["payload"].get("action_grade"),
-                         "trace_id": r["payload"].get("trace_id")} for r in results_e1],
-            "edge_02": [{"decision_source": r["payload"].get("decision_source"),
-                         "action_grade": r["payload"].get("action_grade"),
-                         "trace_id": r["payload"].get("trace_id")} for r in results_e2],
-        },
+            s["task_id"]: [{"decision_source": r["payload"].get("decision_source"),
+                            "action_grade": r["payload"].get("action_grade"),
+                            "trace_id": r["payload"].get("trace_id"),
+                            "edge_node_id": r["payload"].get("edge_node_id")}
+                           for r in results[s["task_id"]]] for s in specs},
         "mqtt_capacity_edge_01": h1.get("mqtt_capacity"),
+        "scheduler": {"http": scheduler_status},
         "assertions": assertions,
     }
 
@@ -494,12 +541,68 @@ def scenario_duplicate_packet_stability(context: dict) -> dict:
     }
 
 
+def scenario_model_queue_saturation(context: dict) -> dict:
+    """队列满载（方案矩阵"队列满载"项）：推理挂起 + 80 包零间隔突发。
+
+    观测路径：/health model_queue（waiting/capacity/max_observed_queued/
+    queue_full_total）。满载包走"诊断不可用"降级（不伪造诊断），节点存活；
+    恢复后队列排空、readiness 恢复。
+    """
+    fake: FakeModelService = context["fake"]
+    base = EDGE_01_BASE
+    task_id = "task_queue_sat_%s" % RUN_TOKEN
+    before = edge_health(base).get("model_queue") or {}
+    full_before = before.get("queue_full_total") or 0
+
+    status, _ = _http("POST", base + "/edge/tasks", build_dispatch(
+        task_id, "edge_01", "device_queue_sat", [("bearing_01", "sender_01")]))
+    # timeout 模式仅挂起 /infer（/readiness 保持就绪），推理预算 1.5s 内不返回。
+    fake.set_mode("timeout")
+    publish_errors = []
+    try:
+        with MqttLinkPublisher("sender_01", "edge_01") as publisher:
+            for sequence in range(1, PACKETS_PER_BEARING + 1):
+                ok, err = publisher.publish(
+                    build_packet("device_queue_sat", "bearing_01", "sender_01",
+                                 task_id, sequence), timeout_s=5.0)
+                if not ok:
+                    publish_errors.append(err)
+        during = edge_health(base).get("model_queue") or {}
+        live_during = _safe_live(base)
+    finally:
+        fake.set_mode("ok")
+
+    def _drained() -> bool:
+        return (edge_health(base).get("model_queue") or {}).get("waiting") == 0
+    drained, drain_ms = wait_for(_drained, timeout_s=30.0, interval_s=1.0,
+                                 what="model queue drain")
+    ready_ok, _ = wait_for(
+        lambda: edge_health(base).get("readiness", {}).get("ready") is True,
+        timeout_s=15.0, what="readiness after saturation recovery")
+    after = edge_health(base).get("model_queue") or {}
+    return {
+        "assertions": {
+            "task_accepted": status == 200,
+            "burst_all_published": not publish_errors,
+            "saturation_rejects_observed": (during.get("queue_full_total") or 0) > full_before,
+            "queue_peak_observed": (during.get("max_observed_queued") or 0) >= 32,
+            "edge_live_during_saturation": live_during,
+            "queue_drained_after_recovery": drained,
+            "readiness_recovered": ready_ok,
+        },
+        "model_queue": {"before": before, "during": during, "after": after},
+        "drain_ms": round(drain_ms),
+        "publish_errors": publish_errors[:3],
+    }
+
+
 SCENARIOS = {
     "task_flow_baseline_provisional": scenario_task_flow_baseline,
     "model_unavailable_isolation": scenario_model_unavailable_isolation,
     "sender_link_fault_isolation": scenario_sender_link_fault_isolation,
     "edge_node_restart_isolation": scenario_edge_node_restart_isolation,
     "duplicate_packet_stability": scenario_duplicate_packet_stability,
+    "model_queue_saturation": scenario_model_queue_saturation,
 }
 
 

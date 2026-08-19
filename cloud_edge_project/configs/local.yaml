@@ -18,9 +18,11 @@ services:
     port: 8006
 
 model:
-  # 阶段 6 收口：边缘诊断唯一后端为正式模型服务（HTTP /infer），
-  # 旧本地模型后端（random_forest / distilled_h5）已删除。
-  edge_backend: "official"
+  # 正式边缘诊断路线：蒸馏模型 H5 三通道并行（本地推理）。
+  # 阶段 6 曾收口为 official（模型服务 HTTP）；H5 恢复后按最新数据处理
+  # 方式接回为默认路线，official 保留供对照与故障演练（可经
+  # EDGE_DIAGNOSTIC_BACKEND 环境变量切换）。
+  edge_backend: "local_h5"
   cloud_backend: "rule"
 
 mqtt:

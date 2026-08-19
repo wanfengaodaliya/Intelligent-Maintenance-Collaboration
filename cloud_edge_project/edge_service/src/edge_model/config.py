@@ -64,8 +64,8 @@ class EdgeModelConfig:
 
     def validate(self) -> List[str]:
         errors: List[str] = []
-        if self.diagnostic_backend not in {"local", "http"}:
-            errors.append("diagnostic_backend must be local or http")
+        if self.diagnostic_backend not in {"local", "http", "local_h5"}:
+            errors.append("diagnostic_backend must be local, http or local_h5")
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):

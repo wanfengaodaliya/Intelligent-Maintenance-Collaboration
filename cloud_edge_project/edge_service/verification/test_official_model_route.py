@@ -14,6 +14,8 @@ import importlib.util
 import math
 from pathlib import Path
 
+import yaml
+
 import pytest
 
 from edge_model.config import EdgeModelConfig, ModelClientConfig
@@ -181,9 +183,26 @@ def test_distilled_h5_model_restored_intact() -> None:
     assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == expected
 
 
-def test_runtime_config_only_accepts_official_backend() -> None:
-    import yaml
+def test_runtime_config_declares_local_h5_as_default_backend() -> None:
+    """H5 恢复后正式边缘诊断路线为 local_h5（三通道并行本地推理）。
 
+    official（模型服务 HTTP）保留为对照/故障演练路线，可经
+    EDGE_DIAGNOSTIC_BACKEND 覆盖；不再接受的旧值（random_forest 等）
+    仍会被 app.py 启动守卫拒绝。
+    """
     config_path = EDGE_SERVICE_ROOT.parent / "configs" / "local.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["model"]["edge_backend"] == "official"
+    assert config["model"]["edge_backend"] == "local_h5"
+
+
+def test_local_h5_backend_is_configurable_without_torch() -> None:
+    """local_h5 后端声明与客户端模块均不得在导入期依赖 torch。"""
+    cfg = EdgeModelConfig()
+    cfg.diagnostic_backend = "local_h5"
+    assert cfg.validate() == []
+
+    from edge_model.local_h5_client import H5_RUNTIME_MODEL_VERSION, LocalH5ModelClient
+
+    client = LocalH5ModelClient()
+    assert client.model_version == H5_RUNTIME_MODEL_VERSION
+    assert H5_RUNTIME_MODEL_VERSION.startswith("distilled_h5_kd_")

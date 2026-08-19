@@ -48,6 +48,8 @@ class ModelTaskQueue:
         self._inflight = 0
         self.stopped = False
         self.max_observed_queued = 0
+        # 阶段 7：满载可观测——因队列满而被拒绝/置换的提交累计数。
+        self.queue_full_total = 0
 
     def submit(self, task: PacketInferenceTask) -> SubmitResult:
         with self._cond:
@@ -60,6 +62,7 @@ class ModelTaskQueue:
                 self.max_observed_queued = max(self.max_observed_queued, len(self._pending))
                 self._cond.notify()
                 return SubmitResult(True)
+            self.queue_full_total += 1
             if self.full_policy == FULL_POLICY_REPLACE and self._pending:
                 replaced = self._pending.pop(0)
                 self._pending.append(task)
@@ -239,12 +242,17 @@ class InferenceWorker:
 
         def _run():
             try:
-                holder["result"] = self.infer_fn(
-                    task.perception,
-                    int(model_budget_ms),
-                    request_id=task.request_id,
-                    remaining_timeout_ms=model_budget_ms,
-                )
+                # local_h5 路线：本地模型需要 raw packet，通过任务级钩子传入。
+                infer_task = getattr(self.infer_fn, "infer_task", None)
+                if callable(infer_task):
+                    holder["result"] = infer_task(task, int(model_budget_ms))
+                else:
+                    holder["result"] = self.infer_fn(
+                        task.perception,
+                        int(model_budget_ms),
+                        request_id=task.request_id,
+                        remaining_timeout_ms=model_budget_ms,
+                    )
                 holder["ok"] = True
             except Exception as exc:  # noqa: BLE001
                 holder["ok"] = False

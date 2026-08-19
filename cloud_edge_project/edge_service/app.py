@@ -34,6 +34,11 @@ from edge_validation_cache import (  # noqa: E402
 )
 from edge_aggregation import WindowTransferError  # noqa: E402
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
+from edge_model.local_h5_client import (  # noqa: E402
+    H5_RUNTIME_MODEL_VERSION,
+    LocalH5ClientConfig,
+    LocalH5ModelClient,
+)
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.perception_evidence import PerceptionEvidenceBuilder  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
@@ -56,23 +61,34 @@ from edge_status_reporter import ModelStatus, build_edge_status_integration  # n
 
 
 config = load_config()
-# 阶段 6 收口：诊断推理只允许正式模型服务后端。
-# 旧值（random_forest / distilled_h5 等本地模型路线）一律拒绝启动。
-diagnostic_backend = str(config["model"]["edge_backend"])
-if diagnostic_backend != "official":
+# 正式边缘诊断路线（阶段 8 起）：
+#   - local_h5：蒸馏模型 H5 三通道并行（CNN/物理特征/工况）加权融合，本地推理；
+#   - official：宿主机/远端正式模型服务（HTTP /infer），供对照与故障演练矩阵。
+# 环境变量 EDGE_DIAGNOSTIC_BACKEND 可覆盖 configs/local.yaml 的声明。
+diagnostic_backend = os.getenv("EDGE_DIAGNOSTIC_BACKEND", "") or str(
+    config["model"]["edge_backend"]
+)
+if diagnostic_backend not in ("local_h5", "official"):
     raise ValueError(
-        "unsupported edge diagnostic backend: %s (only 'official' is allowed; "
-        "legacy local model backends have been removed)" % diagnostic_backend
+        "unsupported edge diagnostic backend: %s (allowed: 'local_h5' | 'official')"
+        % diagnostic_backend
     )
-# 正式模型版本以部署时显式声明为准（方案 7.2 将由模型服务 manifest 对齐）。
-runtime_model_version = os.getenv("EDGE_MODEL_VERSION", "official-model-unpinned")
+# 模型版本以部署时显式声明为准；local_h5 未声明时使用 H5 制品版本。
+runtime_model_version = os.getenv("EDGE_MODEL_VERSION") or (
+    H5_RUNTIME_MODEL_VERSION if diagnostic_backend == "local_h5"
+    else "official-model-unpinned"
+)
 edge_status_integration = build_edge_status_integration(
     edge_node_id=EDGE_NODE_ID,
     default_model_version=runtime_model_version,
 )
 runtime_assembly = None
 cloud_review_cleanup = None
-EDGE_FEATURE_EXTRACTOR_VERSION = PerceptionEvidenceBuilder.version
+# local_h5 复用 H5 自带的单包证据合同；official 路线用独立的 numpy 证据构建器。
+EDGE_FEATURE_EXTRACTOR_VERSION = (
+    H5_RUNTIME_MODEL_VERSION if diagnostic_backend == "local_h5"
+    else PerceptionEvidenceBuilder.version
+)
 
 
 @asynccontextmanager
@@ -121,7 +137,6 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         review_store = cloud_review_store
 
     model_config = EdgeModelConfig()
-    model_config.diagnostic_backend = "http"
     # 阶段 7：推理队列容量/满载策略可配置（方案 6.2 满载策略细化）。
     # 默认容量 64：双 Sender 50ms 节奏 ≈ 40 窗口/秒时提供 >1.5s 突发缓冲；
     # 原默认 1 会在任何突发下把窗口全部打入降级失败，任务无法收敛。
@@ -132,23 +147,33 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         "EDGE_MODEL_QUEUE_FULL_POLICY", "reject"
     )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
-    # 设置后模型服务上报版本不一致 → readiness 不通过，不接新任务。
+    # 设置后模型路线（本地 H5 或模型服务）上报版本不一致 → readiness 不通过。
     pinned_model_version = os.getenv("EDGE_MODEL_VERSION") or None
-    model_client = ModelClient(
-        ModelClientConfig(
-            base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
-            expected_version=pinned_model_version,
+    if diagnostic_backend == "local_h5":
+        # 正式路线：蒸馏模型 H5 三通道并行本地推理，与模型服务路线共用
+        # 有界队列/超时预算/熔断/就绪探针；降级语义仍为"诊断不可用"。
+        model_config.diagnostic_backend = "local_h5"
+        model_client = LocalH5ModelClient(
+            LocalH5ClientConfig(expected_version=pinned_model_version)
         )
-    )
-    # 阶段 6：唯一诊断路线是正式模型服务（HTTP）；降级语义为"诊断不可用"，
-    # 不再构造任何本地旧模型。特征提取独立注入，与降级执行器解耦。
+        evidence_builder = model_client.build_evidence
+    else:
+        model_config.diagnostic_backend = "http"
+        model_client = ModelClient(
+            ModelClientConfig(
+                base_url=os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
+                expected_version=pinned_model_version,
+            )
+        )
+        evidence_builder = PerceptionEvidenceBuilder().build_evidence
+    # 降级语义（两种路线一致）："诊断不可用"，等待云复核，不产生伪诊断。
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
         DiagnosisUnavailableRunner(),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
-        evidence_builder=PerceptionEvidenceBuilder().build_evidence,
+        evidence_builder=evidence_builder,
     )
     mqtt_settings = config.get("mqtt", {})
     transfer_settings = config.get("bearing_window_transfer", {})
@@ -284,7 +309,7 @@ def _readiness_snapshot() -> dict[str, object]:
         "mqtt_connected": bool(service.mqtt_ingress.connected),
     }
     pipeline = runtime_assembly.coordinator.pipeline
-    if pipeline.cfg.diagnostic_backend == "http":
+    if pipeline.cfg.diagnostic_backend in ("http", "local_h5"):
         probe = pipeline.model_readiness()
         checks["model_service_ready"] = bool(probe.get("probed") and probe.get("ok"))
     return {
@@ -333,10 +358,17 @@ def health() -> dict[str, object]:
         # 阶段 6：正式模型版本来自部署声明；本地不再持有模型制品。
         "model_version": displayed_version,
         "model_version_pinned": runtime_model_version if os.getenv("EDGE_MODEL_VERSION") else None,
-        "model_deployment_status": "official_model_service",
-        # 阶段 7.4：模型服务就绪探针快照（含版本 pin 校验结论）。
+        "model_deployment_status": (
+            "local_distilled_h5" if diagnostic_backend == "local_h5"
+            else "official_model_service"
+        ),
+        # 阶段 7.4：模型路线就绪探针快照（含版本 pin 校验结论）。
+        # local_h5 路线 base_url 为空（模型在进程内）。
         "model_service": {
-            "base_url": os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
+            "base_url": (
+                None if diagnostic_backend == "local_h5"
+                else os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012")
+            ),
             **probe,
         },
         "feature_extractor_version": EDGE_FEATURE_EXTRACTOR_VERSION,
@@ -345,6 +377,8 @@ def health() -> dict[str, object]:
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
         # 阶段 5：入站容量指标（满载拒绝数、最老任务年龄），过载行为可观测。
         "mqtt_capacity": runtime_assembly.service.mqtt_ingress.capacity_snapshot(),
+        # 阶段 7：模型队列容量与满载指标（等待数/容量/满载累计/历史峰值）。
+        "model_queue": runtime_assembly.coordinator.pipeline.queue_snapshot(),
         "legacy_bearing_aggregation_enabled": runtime_assembly.window_review_store is not None,
         "bearing_window_cache_bytes": (
             None
