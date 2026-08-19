@@ -10,3 +10,6 @@ docs/*
 !docs/Edge_Status_Reporter_执行开发文档_V6.md
 
 .claude/
+
+# 本地测试脚本（不上交远程仓库）
+verification/test_suggestion_llm.py
