@@ -4,10 +4,12 @@
 - 特征提取（raw packet → perception）与已淘汰本地模型解耦，独立可用；
 - 诊断推理唯一路线为正式模型服务（HTTP），降级语义为"诊断不可用"，
   不允许复用旧模型产生看似正常的诊断结果；
-- 运行配置只接受 official 后端，旧模型代码与制品从包内移除。
+- 运行配置只接受 official 后端；蒸馏模型 H5（正式诊断模型）制品与代码
+  已从阶段6误删中完整恢复，由完整性测试守护。
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import math
 from pathlib import Path
@@ -166,12 +168,17 @@ def test_v12_bearing_result_preserves_official_model_diagnosis() -> None:
     assert dict(bearing.class_probabilities) == edge.class_probabilities
 
 
-# ---------- 收口：旧模型代码与制品移除，配置只接受 official ----------
+# ---------- 回退恢复：蒸馏模型 H5（正式诊断模型）制品与代码完整 ----------
 
 
-def test_legacy_local_model_modules_are_removed() -> None:
-    assert importlib.util.find_spec("edge_diagnosis") is None
-    assert not (EDGE_SERVICE_ROOT / "models" / "distilled_h5" / "best_model.pt").exists()
+def test_distilled_h5_model_restored_intact() -> None:
+    """阶段6曾删除蒸馏模型H5；按决策已从 f13440e 完整恢复，此处守护其完整性。"""
+    assert importlib.util.find_spec("edge_diagnosis") is not None
+    checkpoint = EDGE_SERVICE_ROOT / "models" / "distilled_h5" / "best_model.pt"
+    assert checkpoint.exists()
+    expected = (EDGE_SERVICE_ROOT / "models" / "distilled_h5" / "checkpoint_sha256.txt") \
+        .read_text(encoding="utf-8").strip()
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == expected
 
 
 def test_runtime_config_only_accepts_official_backend() -> None:
