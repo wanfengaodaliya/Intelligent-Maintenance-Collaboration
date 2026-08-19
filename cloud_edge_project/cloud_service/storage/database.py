@@ -43,6 +43,7 @@ def initialize_database(database_path: Path) -> None:
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         _migrate_v16_to_v17_fault_labels(connection)
+        _migrate_v17_to_v18_moment_edge_label(connection)
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
@@ -262,6 +263,16 @@ def _rebuild_summary_table_for_fault(connection: sqlite3.Connection) -> None:
             f"PRAGMA legacy_alter_table = {int(legacy_alter_table)}"
         )
         connection.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
+
+
+def _migrate_v17_to_v18_moment_edge_label(connection: sqlite3.Connection) -> None:
+    """Add the edge_label column to cloud_moment_review_record (idempotent)."""
+
+    if not _table_exists(connection, "cloud_moment_review_record"):
+        return
+    if "edge_label" in _columns(connection, "cloud_moment_review_record"):
+        return
+    connection.execute("ALTER TABLE cloud_moment_review_record ADD COLUMN edge_label TEXT")
 
 
 def _rewrite_abnormal_labels(connection: sqlite3.Connection) -> None:

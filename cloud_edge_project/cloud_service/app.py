@@ -20,6 +20,7 @@ LOGGER = logging.getLogger(__name__)
 
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.periodic import run_all as run_periodic_global_analysis
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
 from cloud_service.model_update.dataset_repository import (
@@ -155,19 +156,49 @@ async def _run_background_workers() -> None:
         await asyncio.sleep(0.5)
 
 
+def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
+    """Run global analysis for every known bearing device in a single pass."""
+    analyzers = _build_bearing_global_analyzers()
+    return run_periodic_global_analysis(
+        database_path, scenario_type="bearing", analyzers=analyzers
+    )
+
+
+async def _run_periodic_global_analysis() -> None:
+    lock = asyncio.Lock()
+    while True:
+        settings = load_cloud_settings()
+        interval = settings.global_analysis_poll_seconds
+        if interval <= 0:
+            await asyncio.sleep(60.0)
+            continue
+        try:
+            if lock.locked():
+                LOGGER.warning("skip periodic global analysis: previous run still in progress")
+            else:
+                async with lock:
+                    await asyncio.to_thread(
+                        _run_periodic_global_analysis_once, settings.database_path
+                    )
+        except Exception as exc:
+            LOGGER.exception("periodic global analysis worker failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
     if settings.backend == "moment_light_adapt":
         await asyncio.to_thread(preload_moment_runner, settings)
     worker_task = asyncio.create_task(_run_background_workers())
+    global_analysis_task = asyncio.create_task(_run_periodic_global_analysis())
     status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        for task in (status_task, worker_task):
+        for task in (status_task, worker_task, global_analysis_task):
             task.cancel()
-        for task in (status_task, worker_task):
+        for task in (status_task, worker_task, global_analysis_task):
             with suppress(asyncio.CancelledError):
                 await task
 

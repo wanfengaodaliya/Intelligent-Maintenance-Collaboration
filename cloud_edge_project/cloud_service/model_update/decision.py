@@ -14,9 +14,15 @@ def decide_update(
 
     if not isinstance(problem_candidate, dict):
         return "observe"
-    if problem_candidate.get("problem_layer") != "packet_diagnosis":
-        return "observe"
-    if problem_candidate.get("suggested_action") != "model_update":
+    problem_layer = problem_candidate.get("problem_layer")
+    if problem_layer == "device_arbitration":
+        # 边端模型误判引起的仲裁高冲突，可触发模型更新。
+        if problem_candidate.get("problem_type") != "high_conflict_rate_model":
+            return "observe"
+    elif problem_layer == "packet_diagnosis":
+        if problem_candidate.get("suggested_action") != "model_update":
+            return "observe"
+    else:
         return "observe"
     if problem_candidate.get("persistence") != "persistent":
         return "observe"

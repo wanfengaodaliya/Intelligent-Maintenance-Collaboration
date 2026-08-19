@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -299,6 +299,7 @@ CREATE TABLE IF NOT EXISTS cloud_moment_review_record (
     window_start_ns INTEGER,
     window_end_ns INTEGER,
     bearing_state TEXT NOT NULL,
+    edge_label TEXT,
     confidence REAL,
     data_quality_score REAL,
     risk_level TEXT,

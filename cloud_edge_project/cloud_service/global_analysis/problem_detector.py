@@ -43,7 +43,16 @@ def detect_problem_candidates(
         ))
     conflict = device_arbitration.get("conflict_rate")
     if conflict is not None and conflict > config.conflict_rate_target:
-        candidates.append(_candidate("device_arbitration", "high_conflict_rate", "medium", {"conflict_rate": conflict}, "arbitration_rule_review", previous_analysis))
+        evidence = {
+            "conflict_rate": conflict,
+            "sample_count": device_arbitration.get("arbitration_count") or 0,
+        }
+        candidates.append(_candidate("device_arbitration", "high_conflict_rate", "medium", evidence, "arbitration_rule_review", previous_analysis))
+        # 高冲突率常因边端模型对样本判断错误，直接作为模型更新信号。
+        candidates.append(_candidate(
+            "device_arbitration", "high_conflict_rate_model", "medium", evidence,
+            "model_update", previous_analysis,
+        ))
     success = device_arbitration.get("arbitration_success_rate")
     if success is not None and success < config.arbitration_success_target:
         candidates.append(_candidate("device_arbitration", "low_arbitration_success_rate", "high", {"arbitration_success_rate": success}, "arbitration_rule_review", previous_analysis))
