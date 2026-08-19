@@ -22,7 +22,7 @@ from typing import Any
 ROUTES = {"edge", "cloud", "fallback_edge"}
 V01_ROUTES = {"edge", "fog", "cloud", "fallback_edge", "edge_cloud"}
 LEGACY_ENVELOPE_FIELDS = {"packet_id", "packet", "cloud_raw_packet"}
-LABELS = {"normal", "abnormal"}
+LABELS = {"normal", "fault"}
 RISK_LEVELS = {"low", "medium", "high"}
 
 
@@ -175,7 +175,7 @@ def validate_task_log(payload: dict[str, Any]) -> dict[str, Any]:
         )
     final_label = log.get("final_label")
     if final_label is not None and final_label not in LABELS:
-        raise ContractError("INVALID_PACKET", "final_label must be normal or abnormal", task_id)
+        raise ContractError("INVALID_PACKET", "final_label must be normal or fault", task_id)
     final_confidence = log.get("final_confidence")
     if final_confidence is not None:
         require_confidence(final_confidence, "final_confidence", task_id)
@@ -218,7 +218,7 @@ def validate_schedule_request_v01(payload: Any) -> dict[str, Any]:
         if edge_task_id != task_id:
             raise ContractError("INVALID_PACKET", "edge_result.task_id must match task.task_id", task_id)
     if require_field(edge_result, "label", task_id) not in LABELS:
-        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", task_id)
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or fault", task_id)
     require_confidence(require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id)
     latency = require_number(
         require_field(edge_result, "edge_latency_ms", task_id), "edge_result.edge_latency_ms", task_id
@@ -260,7 +260,7 @@ def validate_edge_result(payload: dict[str, Any], packet_id: str | None = None) 
     require_non_empty_string(require_field(result, "model_name", result_packet_id), "model_name", result_packet_id)
     label = require_field(result, "label", result_packet_id)
     if label not in LABELS:
-        raise ContractError("INVALID_PACKET", "label must be normal or abnormal", result_packet_id)
+        raise ContractError("INVALID_PACKET", "label must be normal or fault", result_packet_id)
     require_confidence(require_field(result, "confidence", result_packet_id), "confidence", result_packet_id)
     if require_field(result, "risk_level", result_packet_id) not in RISK_LEVELS:
         raise ContractError("INVALID_PACKET", "risk_level must be low, medium, or high", result_packet_id)

@@ -14,9 +14,9 @@ def infer_mock(perception_result: dict[str, Any]) -> dict[str, Any]:
     features = perception_result["cloud_recomputed_features"]
     vibration_rms = features["vibration"]["rms"]
     imbalance = features["current_relationship"]["current_imbalance_ratio"]
-    label = "abnormal" if vibration_rms >= 1.0 or imbalance >= 0.1 else "normal"
+    label = "fault" if vibration_rms >= 1.0 or imbalance >= 0.1 else "normal"
 
-    if label == "abnormal":
+    if label == "fault":
         confidence = 0.93
         risk_level = "high"
         recommended_action = "urgent_bearing_attention"

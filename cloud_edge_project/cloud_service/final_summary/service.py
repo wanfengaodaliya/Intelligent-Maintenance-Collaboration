@@ -128,23 +128,23 @@ def _mock_summary(
         item.get("edge_inference") or {}
         for item in (feature_context or {}).get("context_edge_summaries", [])
     ]
-    abnormal_edges = [
-        item for item in edge_inferences if item.get("edge_result") == "abnormal"
+    fault_edges = [
+        item for item in edge_inferences if item.get("edge_result") == "fault"
     ]
-    abnormal = model.get("label") == "abnormal" or bool(abnormal_edges)
+    fault = model.get("label") == "fault" or bool(fault_edges)
     edge_confidence = max(
-        (float(item.get("confidence") or 0.0) for item in abnormal_edges), default=0.0
+        (float(item.get("confidence") or 0.0) for item in fault_edges), default=0.0
     )
     confidence = max(float(model.get("probability") or 0.5), edge_confidence)
-    label = "abnormal" if abnormal else "normal"
-    high_risk = any(item.get("edge_risk_level") == "high" for item in abnormal_edges)
-    if abnormal_edges:
+    label = "fault" if fault else "normal"
+    high_risk = any(item.get("edge_risk_level") == "high" for item in fault_edges)
+    if fault_edges:
         description = "边缘初判异常，结合预处理质量、增强信号证据和历史特征生成的最终诊断总结。"
     else:
         description = "基于预处理质量、增强信号证据和历史特征生成的最终诊断总结。"
     identity = result.input
     recommended_action = (
-        "urgent_bearing_attention" if abnormal else "record_only"
+        "urgent_bearing_attention" if fault else "record_only"
     )
     return {
         "review_id": result.review_id,
@@ -157,7 +157,7 @@ def _mock_summary(
         "model_name": "cloud_bearing_mock",
         "label": label,
         "confidence": round(confidence, 4),
-        "risk_level": "high" if high_risk or abnormal else "low",
+        "risk_level": "high" if high_risk or fault else "low",
         "recommended_action": recommended_action,
         "action": recommended_action,
         "description": description,

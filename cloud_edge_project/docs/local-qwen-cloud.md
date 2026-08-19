@@ -46,7 +46,7 @@ Invoke-RestMethod http://127.0.0.1:6008/health
 向 `POST http://127.0.0.1:6008/cloud/infer` 发送合法 V0.1 `CloudRequest`。成功响应必须包含：
 
 - `model_name: qwen3.5-2b-local`；
-- `label: normal` 或 `abnormal`；
+- `label: normal` 或 `fault`；
 - 0 到 1 的 `confidence`；
 - 合法 `risk_level` 和 `decision`。
 

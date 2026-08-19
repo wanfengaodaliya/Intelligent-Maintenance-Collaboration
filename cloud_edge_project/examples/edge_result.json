@@ -2,7 +2,7 @@
   "task_id": "task_0001",
   "node_id": "edge_1",
   "model_name": "edge_small_model",
-  "label": "abnormal",
+  "label": "fault",
   "confidence": 0.92,
   "risk_level": "high",
   "edge_latency_ms": 1.0,

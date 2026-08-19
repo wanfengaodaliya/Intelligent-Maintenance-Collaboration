@@ -21,7 +21,7 @@ ACTION_TO_STATE = {
     "enhanced_monitoring": "normal",
     "scheduled_inspection": "warning",
     "urgent_intervention": "warning",
-    "shutdown": "abnormal",
+    "shutdown": "fault",
 }
 
 

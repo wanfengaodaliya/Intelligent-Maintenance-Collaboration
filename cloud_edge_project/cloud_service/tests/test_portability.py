@@ -28,7 +28,7 @@ def test_old_bearing_actions_import_still_works() -> None:
     )
     assert ACTION_TO_GRADE["shutdown"] == 4
     assert GRADE_TO_ACTION[0] == "continue_operation"
-    assert ACTION_TO_STATE["shutdown"] == "abnormal"
+    assert ACTION_TO_STATE["shutdown"] == "fault"
     assert action_for_grade(4) == "shutdown"
     assert grade_for_action("shutdown") == 4
 
@@ -112,7 +112,7 @@ def test_global_analysis_with_bearing_analyzers() -> None:
         ],
         bearing_review_pairs=[
             {"device_id": "machine_01", "task_id": "t1", "bearing_id": "bearing_01",
-             "edge_state": "normal", "cloud_state": "abnormal",
+             "edge_state": "normal", "cloud_state": "fault",
              "completed_at_ns": 1},
         ],
     )

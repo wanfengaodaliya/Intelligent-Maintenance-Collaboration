@@ -224,8 +224,6 @@ def _cloud_packet_result(
     edge = request["edge_perception_result"]
     inference = edge.get("edge_inference") or {}
     edge_label = inference.get("edge_result") or inference.get("label")
-    if edge_label == "fault":
-        edge_label = "abnormal"
     return {
         "review_id": review_id,
         "device_id": edge["device_id"],
@@ -319,7 +317,7 @@ def _cloud_bearing_result(review_id: str, window: dict[str, Any], packet_result:
         "diagnosis_window_id": build_diagnosis_window_id(device_id=window["device_id"], task_id=window["task_id"], bearing_id=window["bearing_id"], sender_id=window["sender_id"], window_start_sequence=window["window_start_sequence"], window_end_sequence=window["window_end_sequence"]),
         "window_start_sequence": window["window_start_sequence"], "window_end_sequence": window["window_end_sequence"],
         "window_start_ns": window["window_start_ns"], "window_end_ns": window["window_end_ns"],
-        "bearing_state": "abnormal" if packet_result["cloud_label"] == "fault" else packet_result["cloud_label"],
+        "bearing_state": packet_result["cloud_label"],
         "confidence": packet_result["cloud_confidence"], "data_quality_score": 1.0,
         "risk_level": packet_result["risk_level"], "action_grade": grade_for_action(action),
         "recommended_action": action, "model_version": packet_result["cloud_model_version"],
@@ -340,4 +338,4 @@ def _v12_action(legacy_action: str, label: str) -> str:
         "urgent_intervention", "shutdown",
     }:
         return legacy_action
-    return "urgent_intervention" if label in {"abnormal", "fault"} else "enhanced_monitoring"
+    return "urgent_intervention" if label == "fault" else "enhanced_monitoring"

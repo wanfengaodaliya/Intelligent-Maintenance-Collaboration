@@ -244,8 +244,8 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
         raise ContractError("INVALID_PACKET", "data must be a non-empty object", task_id)
     edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
     label = require_field(edge_result, "label", task_id)
-    if label not in {"normal", "abnormal"}:
-        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", task_id)
+    if label not in {"normal", "fault"}:
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or fault", task_id)
     edge_confidence = require_confidence(
         require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id
     )
@@ -263,7 +263,7 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
             500,
         )
 
-    if label == "abnormal":
+    if label == "fault":
         confidence = max(edge_confidence, 0.93)
         decision = {"action": "send_alert", "description": "设备存在高风险异常，建议停机检查"}
         final_risk = "high"

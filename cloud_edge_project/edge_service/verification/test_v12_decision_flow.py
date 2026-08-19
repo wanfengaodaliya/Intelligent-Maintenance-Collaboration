@@ -209,7 +209,7 @@ def test_coordinator_converts_completed_packet_to_v12_edge_bearing_result() -> N
 
     assert result.result_id.startswith("edge_dw_")
     assert result.decision_round_id.startswith("round_")
-    assert result.bearing_state == "abnormal"
+    assert result.bearing_state == "fault"
     assert result.action_grade == 4
     assert result.recommended_action == "shutdown"
 

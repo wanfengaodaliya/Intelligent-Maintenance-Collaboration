@@ -98,8 +98,6 @@ def _edge_summary(edge: dict[str, Any]) -> dict[str, Any]:
         {"edge_result": "warning", "confidence": 0.0, "edge_risk_level": "medium"},
     )
     inference = dict(inference or {})
-    if inference.get("edge_result") == "fault":
-        inference["edge_result"] = "abnormal"
     return {
         "device_id": edge["device_id"], "bearing_id": edge["bearing_id"],
         "sender_id": edge["sender_id"], "packet_id": edge["packet_id"], "task_id": edge["task_id"],

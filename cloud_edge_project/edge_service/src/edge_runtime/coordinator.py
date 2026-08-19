@@ -232,6 +232,9 @@ class EdgeRuntimeCoordinator:
             except Exception as error:
                 self._report_v12_error(completion, error)
             if not self.legacy_realtime_aggregation:
+                # V1.2 决策流模式下仍需生成维护建议（规则引擎 + LLM 翻译），
+                # 仅跳过旧版实时聚合，不能跳过建议发布。
+                self._generate_suggestion(completion)
                 return
         self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
         self._generate_suggestion(completion)
@@ -484,6 +487,10 @@ class EdgeRuntimeCoordinator:
 
     def _model_load_status(self) -> str:
         """根据模型真实加载生命周期推导状态，而不是固定 LOADED。"""
+        if getattr(self.pipeline, "model_readiness", None) is not None:
+            readiness = self.pipeline.model_readiness()
+            if readiness.get("ok"):
+                return "LOADED"
         fallback = getattr(self.pipeline, "fallback", None)
         if fallback is None:
             return "UNLOADED"
@@ -652,7 +659,7 @@ def _edge_bearing_result(
             diagnosis_window.contributing_packet_ids
             if diagnosis_window is not None else (completion.packet_id,)
         ),
-        bearing_state="abnormal" if completion.edge.edge_result == "fault" else completion.edge.edge_result,
+        bearing_state=completion.edge.edge_result,
         confidence=completion.edge.confidence,
         data_quality_score=completion.data_quality_score,
         risk_level=completion.edge.edge_risk_level,

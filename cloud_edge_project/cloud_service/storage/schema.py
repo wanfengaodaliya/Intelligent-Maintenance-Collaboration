@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -38,15 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_model_update_analysis
 ON model_update_task(analysis_id, created_at_ns);
 """
 
-DDL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS senders (
-    sender_id TEXT PRIMARY KEY, created_at_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL,
-    device_id TEXT, bearing_id TEXT,
-    sender_config_version TEXT, sensor_unit_json TEXT NOT NULL DEFAULT '{}', active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-    CHECK (json_valid(sensor_unit_json)),
-    CHECK ((device_id IS NULL AND bearing_id IS NULL) OR (device_id IS NOT NULL AND bearing_id IS NOT NULL))
-);
+EDGE_PACKET_SUMMARY_DDL = """
 CREATE TABLE IF NOT EXISTS edge_packet_summary (
     sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, device_id TEXT, task_id TEXT NOT NULL, bearing_id TEXT, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
     edge_node_id TEXT NOT NULL, end_timestamp_ns INTEGER NOT NULL, summary_generated_at_ns INTEGER,
@@ -67,7 +59,7 @@ CREATE TABLE IF NOT EXISTS edge_packet_summary (
     bearing_radial_load_n_mean REAL, bearing_radial_load_n_last REAL,
     bearing_radial_load_n_minimum REAL, bearing_radial_load_n_maximum REAL,
     bearing_radial_load_n_standard_deviation REAL, bearing_module_temperature_c REAL,
-    edge_result TEXT CHECK (edge_result IN ('normal', 'warning', 'abnormal')),
+    edge_result TEXT CHECK (edge_result IN ('normal', 'warning', 'fault')),
     confidence REAL CHECK (confidence >= 0 AND confidence <= 1),
     edge_risk_level TEXT CHECK (edge_risk_level IN ('low', 'medium', 'high')),
     edge_model_version TEXT, summary_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
@@ -79,6 +71,18 @@ CREATE TABLE IF NOT EXISTS edge_packet_summary (
 CREATE INDEX IF NOT EXISTS idx_edge_summary_sender_time ON edge_packet_summary(sender_id, end_timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_edge_summary_edge_received ON edge_packet_summary(edge_node_id, received_at_ns);
 CREATE INDEX IF NOT EXISTS idx_edge_summary_device_task_bearing ON edge_packet_summary(device_id, task_id, bearing_id, end_timestamp_ns);
+"""
+
+DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at_ns INTEGER NOT NULL, description TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS senders (
+    sender_id TEXT PRIMARY KEY, created_at_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL,
+    device_id TEXT, bearing_id TEXT,
+    sender_config_version TEXT, sensor_unit_json TEXT NOT NULL DEFAULT '{}', active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    CHECK (json_valid(sensor_unit_json)),
+    CHECK ((device_id IS NULL AND bearing_id IS NULL) OR (device_id IS NOT NULL AND bearing_id IS NOT NULL))
+);
+""" + EDGE_PACKET_SUMMARY_DDL + """
 CREATE TABLE IF NOT EXISTS raw_packet_index (
     sender_id TEXT NOT NULL, packet_id TEXT NOT NULL, device_id TEXT NOT NULL, task_id TEXT NOT NULL, bearing_id TEXT NOT NULL, sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
     start_timestamp_ns INTEGER NOT NULL, end_generate_timestamp_ns INTEGER NOT NULL, sample_rate_hz INTEGER NOT NULL CHECK (sample_rate_hz > 0),

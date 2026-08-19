@@ -56,7 +56,7 @@ def validate_candidate(
         if frozen_risk is not None and result.get("confirmed_risk_level") != frozen_risk:
             raise ValueError("FROZEN_LABEL_MISMATCH")
         if frozen_risk is None and frozen.get("confirmed_label") not in {
-            "normal", "warning", "abnormal"
+            "normal", "warning", "fault"
         }:
             raise ValueError("FROZEN_RISK_LEVEL_NOT_FOUND")
 
@@ -85,7 +85,7 @@ def validate_candidate(
     overall_degraded = any(
         candidate_metrics[metric]
         < baseline_metrics[metric] - config.max_overall_metric_degradation
-        for metric in ("f1", "abnormal_recall")
+        for metric in ("f1", "fault_recall")
     )
     passed = (
         target_improvement >= config.min_target_improvement

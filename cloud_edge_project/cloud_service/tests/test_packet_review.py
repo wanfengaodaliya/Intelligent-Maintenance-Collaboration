@@ -15,7 +15,7 @@ class FixedPacketDiagnosisModel:
     def predict(self, features: dict) -> PacketDiagnosis:
         assert features["vibration"]["rms"] > 0
         return PacketDiagnosis(
-            label="abnormal",
+            label="fault",
             confidence=0.91,
             risk_level="high",
             recommended_action="inspect_bearing",
@@ -77,7 +77,7 @@ def _packet_request() -> dict:
             "features": edge_features,
             "perception_quality": {"status": "good", "flags": []},
             "edge_inference": {
-                "edge_result": "abnormal",
+                "edge_result": "fault",
                 "confidence": 0.58,
                 "edge_risk_level": "high",
             },
@@ -116,8 +116,8 @@ def test_packet_review_uses_injected_diagnosis_model_without_context_request(tmp
 
     packet_result = result["cloud_packet_result"]
     assert packet_result["packet_id"] == "packet_01"
-    assert packet_result["edge_label"] == "abnormal"
-    assert packet_result["cloud_label"] == "abnormal"
+    assert packet_result["edge_label"] == "fault"
+    assert packet_result["cloud_label"] == "fault"
     assert packet_result["cloud_model_version"] == "bearing_packet_model_v1"
     assert "raw_context_request" not in result
 
@@ -129,7 +129,7 @@ def test_packet_review_uses_vllm_when_backend_is_vllm(tmp_path: Path, monkeypatc
         calls.append((perception_result, settings))
         return {
             "model_name": "qwen3.5-2b-local",
-            "label": "abnormal",
+            "label": "fault",
             "confidence": 0.88,
             "risk_level": "medium",
             "decision": {"recommended_action": "flag_for_task_aggregation"},
@@ -151,7 +151,7 @@ def test_packet_review_uses_vllm_when_backend_is_vllm(tmp_path: Path, monkeypatc
     packet_result = result["cloud_packet_result"]
     assert calls
     assert packet_result["cloud_model_version"] == "qwen3.5-2b-local"
-    assert packet_result["cloud_label"] == "abnormal"
+    assert packet_result["cloud_label"] == "fault"
     assert packet_result["recommended_action"] == "flag_for_task_aggregation"
 
 

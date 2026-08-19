@@ -65,7 +65,7 @@ def test_dataset_mapping_can_freeze_fault_label_with_ordered_risk_level(
         {
             "KA01": {
                 "confirmed_label": "outer_ring_damage",
-                "confirmed_risk_level": "abnormal",
+                "confirmed_risk_level": "fault",
             }
         },
     )
@@ -73,7 +73,7 @@ def test_dataset_mapping_can_freeze_fault_label_with_ordered_risk_level(
     confirmation = provider.confirm({"packet_id": "packet_001"})
 
     assert confirmation["confirmed_label"] == "outer_ring_damage"
-    assert confirmation["confirmed_risk_level"] == "abnormal"
+    assert confirmation["confirmed_risk_level"] == "fault"
 
 
 def test_dataset_label_provider_accepts_paderborn_healthy_code(tmp_path: Path):
@@ -116,13 +116,13 @@ def test_cloud_reference_is_used_only_when_no_final_confirmation_exists():
     )
 
     assert resolver.confirm(
-        {"packet_id": "packet_001", "cloud_label": "abnormal"}
+        {"packet_id": "packet_001", "cloud_label": "fault"}
     )["label_source"] == "cloud_reference"
     assert resolver.confirm({"packet_id": "packet_002"}) is None
 
 
 def _sample(index: int, group: str, *, agreement: bool = False):
-    label = "normal" if agreement else "abnormal"
+    label = "normal" if agreement else "fault"
     return {
         "sample_id": f"sample_{index}",
         "packet_id": f"packet_{index}",
@@ -320,7 +320,7 @@ def test_default_training_source_reads_history_and_marks_reviewed_focus(tmp_path
             """INSERT INTO final_diagnosis_summary(
                    review_id,status,backend,model_name,summary_json,created_at_ns,updated_at_ns
                ) VALUES (?,?,?,?,?,?,?)""",
-            ("review_01", "succeeded", "mock", "mock", '{"label":"abnormal"}', 1, 1),
+            ("review_01", "succeeded", "mock", "mock", '{"label":"fault"}', 1, 1),
         )
 
     samples = BearingTrainingDataSource(

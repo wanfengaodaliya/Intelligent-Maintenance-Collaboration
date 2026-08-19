@@ -16,7 +16,7 @@ from scenarios.bearing.cloud.device_arbitration.config import (
 )
 
 
-_STATES = {"normal", "warning", "abnormal", "unknown"}
+_STATES = {"normal", "warning", "fault", "unknown"}
 _RISK_LEVELS = {"low", "medium", "high"}
 
 
