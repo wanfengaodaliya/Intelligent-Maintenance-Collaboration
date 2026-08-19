@@ -18,8 +18,11 @@ class HumanReviewProvider:
         value = self.repository.get(packet_id)
         if value is None or value["label_source"] != "human_confirmed":
             return None
-        return {
+        confirmation = {
             "packet_id": packet_id,
             "confirmed_label": value["confirmed_label"],
             "label_source": "human_confirmed",
         }
+        if value.get("confirmed_risk_level") in {"normal", "warning", "fault"}:
+            confirmation["confirmed_risk_level"] = value["confirmed_risk_level"]
+        return confirmation

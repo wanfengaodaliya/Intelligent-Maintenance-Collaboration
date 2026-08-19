@@ -167,7 +167,7 @@ def test_full_manual_lifecycle_hands_off_contract_without_downloading(tmp_path: 
             "candidate_version": "edge_v2",
             "artifact_path": "candidate.bin",
             "artifact_sha256": hashlib.sha256(b"candidate").hexdigest(),
-            "model_type": "generic",
+            "model_type": "distilled_h5",
             "feature_pipeline_version": "edge_feature_v1",
             "input_feature_schema": {
                 "vibration.kurtosis": "number",
@@ -430,6 +430,44 @@ def test_rollback_request_records_baseline_without_deploying(tmp_path: Path):
     assert task["rollback_requested"] is True
     assert task["rollback_target_version"] == "edge_v1"
     assert "deployment" not in task
+
+
+def test_execute_rollback_reverts_active_version_to_baseline(tmp_path: Path):
+    service = _service(tmp_path)
+    created = service.create(
+        {
+            "analysis_id": "analysis_001",
+            "problem_id": "problem_001",
+            "baseline_version": "edge_v1",
+        }
+    )["update"]
+    service.repository.update(created["update_id"], status="ineffective")
+    service.request_rollback(created["update_id"], requested_by="operator")
+    service._active_versions().set("distilled_h5", "edge_v2")
+
+    task = service.execute_rollback(
+        created["update_id"], executed_by="operator"
+    )
+
+    assert task["status"] == "rolled_back"
+    assert task["rollback_result"]["action"] == "rolled_back"
+    assert task["rollback_result"]["rollback_target_version"] == "edge_v1"
+    assert service._active_versions().get("distilled_h5") == "edge_v1"
+
+
+def test_execute_rollback_requires_request_first(tmp_path: Path):
+    service = _service(tmp_path)
+    created = service.create(
+        {
+            "analysis_id": "analysis_001",
+            "problem_id": "problem_001",
+            "baseline_version": "edge_v1",
+        }
+    )["update"]
+    service.repository.update(created["update_id"], status="ineffective")
+
+    with pytest.raises(ModelUpdateError, match="ROLLBACK_NOT_REQUESTED"):
+        service.execute_rollback(created["update_id"], executed_by="operator")
 
 
 def test_approval_is_forbidden_before_validation_passes(tmp_path: Path):

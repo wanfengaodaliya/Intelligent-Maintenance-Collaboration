@@ -12,11 +12,13 @@ from cloud_service.storage.database import connect, initialize_database
 JSON_FIELDS = {
     "problem_context_json": "problem_context",
     "evidence_snapshot_json": "evidence_snapshot",
+    "trainer_plan_json": "trainer_plan",
     "candidate_artifact_json": "candidate_artifact",
     "validation_result_json": "validation_result",
     "confirmation_result_json": "confirmation_result",
     "distribution_result_json": "distribution_result",
     "post_validation_result_json": "post_validation_result",
+    "rollback_result_json": "rollback_result",
 }
 
 

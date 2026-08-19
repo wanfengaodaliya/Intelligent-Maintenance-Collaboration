@@ -670,6 +670,52 @@ def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
         return _model_update_error_response(error)
 
 
+_HUMAN_LABEL_STATES = {"normal", "warning", "fault"}
+
+
+@app.get("/cloud/model-update/label-confirmations/{packet_id}", response_model=None)
+def get_label_confirmation(packet_id: str) -> dict | JSONResponse:
+    repository = LabelConfirmationRepository(load_cloud_settings().database_path)
+    row = repository.get(packet_id)
+    if row is None:
+        return JSONResponse({"error": "LABEL_CONFIRMATION_NOT_FOUND"}, status_code=404)
+    return dict(row)
+
+
+@app.post("/cloud/model-update/label-confirmations/{packet_id}", response_model=None)
+def upsert_human_label_confirmation(
+    packet_id: str, payload: Any = Body(None)
+) -> dict | JSONResponse:
+    body = payload if isinstance(payload, dict) else {}
+    confirmed_label = body.get("confirmed_label")
+    if not isinstance(confirmed_label, str) or not confirmed_label.strip():
+        return JSONResponse({"error": "INVALID_HUMAN_LABEL"}, status_code=400)
+    risk_level = body.get("confirmed_risk_level")
+    if risk_level not in _HUMAN_LABEL_STATES:
+        risk_level = None
+    repository = LabelConfirmationRepository(load_cloud_settings().database_path)
+    saved = repository.save(
+        {
+            "packet_id": packet_id,
+            "confirmed_label": confirmed_label.strip(),
+            "label_source": "human_confirmed",
+            "confirmed_risk_level": risk_level,
+        }
+    )
+    return dict(saved)
+
+
+@app.get(
+    "/cloud/model-update/{update_id}/pending-label-confirmations",
+    response_model=None,
+)
+def pending_label_confirmations(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().list_pending_human_confirmation(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
 @app.post("/cloud/model-update/{update_id}/distribution-result", response_model=None)
 def record_model_update_distribution(
     update_id: str, payload: Any = Body(...)
@@ -703,6 +749,19 @@ def request_model_update_rollback(
         requested_by = payload.get("requested_by") if isinstance(payload, dict) else None
         return _model_update_service().request_rollback(
             update_id, requested_by=requested_by
+        )
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/execute-rollback", response_model=None)
+def execute_model_update_rollback(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        executed_by = payload.get("executed_by") if isinstance(payload, dict) else None
+        return _model_update_service().execute_rollback(
+            update_id, executed_by=executed_by
         )
     except ModelUpdateError as error:
         return _model_update_error_response(error)

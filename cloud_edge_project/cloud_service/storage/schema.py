@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 21
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -10,11 +10,13 @@ CREATE TABLE IF NOT EXISTS model_update_task (
     scenario_type TEXT NOT NULL,
     subject_id TEXT NOT NULL,
     problem_type TEXT NOT NULL,
+    model_type TEXT NOT NULL DEFAULT 'distilled_h5',
     problem_context_json TEXT NOT NULL,
     evidence_snapshot_json TEXT NOT NULL,
     baseline_version TEXT NOT NULL,
     candidate_version TEXT,
     training_dataset_id TEXT,
+    trainer_plan_json TEXT,
     candidate_artifact_json TEXT,
     status TEXT NOT NULL,
     validation_result_json TEXT,
@@ -23,19 +25,27 @@ CREATE TABLE IF NOT EXISTS model_update_task (
     post_validation_result_json TEXT,
     rollback_requested INTEGER NOT NULL DEFAULT 0 CHECK (rollback_requested IN (0, 1)),
     rollback_target_version TEXT,
+    rollback_result_json TEXT,
     created_at_ns INTEGER NOT NULL,
     updated_at_ns INTEGER NOT NULL,
     UNIQUE (analysis_id, problem_id),
     CHECK (json_valid(problem_context_json)),
     CHECK (json_valid(evidence_snapshot_json)),
+    CHECK (trainer_plan_json IS NULL OR json_valid(trainer_plan_json)),
     CHECK (candidate_artifact_json IS NULL OR json_valid(candidate_artifact_json)),
     CHECK (validation_result_json IS NULL OR json_valid(validation_result_json)),
     CHECK (confirmation_result_json IS NULL OR json_valid(confirmation_result_json)),
     CHECK (distribution_result_json IS NULL OR json_valid(distribution_result_json)),
-    CHECK (post_validation_result_json IS NULL OR json_valid(post_validation_result_json))
+    CHECK (post_validation_result_json IS NULL OR json_valid(post_validation_result_json)),
+    CHECK (rollback_result_json IS NULL OR json_valid(rollback_result_json))
 );
 CREATE INDEX IF NOT EXISTS idx_model_update_analysis
 ON model_update_task(analysis_id, created_at_ns);
+CREATE TABLE IF NOT EXISTS active_model_version (
+    model_type TEXT PRIMARY KEY,
+    active_version TEXT NOT NULL,
+    updated_at_ns INTEGER NOT NULL
+);
 """
 
 EDGE_PACKET_SUMMARY_DDL = """
@@ -254,6 +264,7 @@ CREATE TABLE IF NOT EXISTS label_confirmation (
     packet_id TEXT PRIMARY KEY,
     confirmed_label TEXT NOT NULL,
     label_source TEXT NOT NULL CHECK (label_source IN ('dataset_ground_truth', 'human_confirmed', 'cloud_reference')),
+    confirmed_risk_level TEXT,
     confirmed_at_ns INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS model_update_dataset_manifest (
