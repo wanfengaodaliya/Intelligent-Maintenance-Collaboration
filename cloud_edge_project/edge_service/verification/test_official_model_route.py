@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import math
 from pathlib import Path
 
@@ -174,11 +175,18 @@ def test_v12_bearing_result_preserves_official_model_diagnosis() -> None:
 
 
 def test_distilled_h5_model_restored_intact() -> None:
-    """阶段6曾删除蒸馏模型H5；按决策已从 f13440e 完整恢复，此处守护其完整性。"""
+    """阶段6曾删除蒸馏模型H5；按决策已从 f13440e 完整恢复，此处守护其完整性。
+
+    模型分发阶段起制品按版本目录管理：active_version.json 指向当前
+    生效版本，完整性校验跟随该指针，而非假设平铺目录。
+    """
     assert importlib.util.find_spec("edge_diagnosis") is not None
-    checkpoint = EDGE_SERVICE_ROOT / "models" / "distilled_h5" / "best_model.pt"
+    version_root = EDGE_SERVICE_ROOT / "models" / "distilled_h5"
+    active = json.loads((version_root / "active_version.json").read_text(encoding="utf-8"))
+    model_dir = version_root / active["version"]
+    checkpoint = model_dir / "best_model.pt"
     assert checkpoint.exists()
-    expected = (EDGE_SERVICE_ROOT / "models" / "distilled_h5" / "checkpoint_sha256.txt") \
+    expected = (model_dir / "checkpoint_sha256.txt") \
         .read_text(encoding="utf-8").strip()
     assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == expected
 

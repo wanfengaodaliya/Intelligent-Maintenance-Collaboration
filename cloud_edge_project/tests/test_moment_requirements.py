@@ -10,7 +10,7 @@ def test_moment_requirements_are_the_single_version_source() -> None:
     for requirement in (
         "numpy==1.25.2",
         "scipy==1.11.4",
-        "torch==2.13.0+cu130",
+        "torch==2.13.0",
         "transformers==5.15.0",
         "accelerate==1.14.0",
         "safetensors==0.8.0",

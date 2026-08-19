@@ -53,7 +53,7 @@ def v01_schedule_request() -> dict:
         },
         "edge_result": {
             "task_id": "task_0001",
-            "label": "abnormal",
+            "label": "fault",
             "confidence": 0.72,
             "edge_latency_ms": 38,
             "need_cloud": True,
@@ -85,7 +85,7 @@ def task_log(**overrides) -> dict:
         "total_latency_ms": 154,
         "edge_confidence": 0.72,
         "cloud_confidence": 0.93,
-        "final_label": "abnormal",
+        "final_label": "fault",
         "final_confidence": 0.93,
         "success": True,
         "has_conflict": False,
@@ -302,7 +302,7 @@ def test_power_equal_to_limit_is_safe():
     assert result["final_action"] == "charge"
 
 
-def test_edge_scheduler_post_uses_configured_service_url(monkeypatch):
+def test_edge_scheduler_post_defaults_to_network_sim_proxy(monkeypatch):
     monkeypatch.setattr(
         edge_app,
         "config",
@@ -313,6 +313,20 @@ def test_edge_scheduler_post_uses_configured_service_url(monkeypatch):
         },
     )
     monkeypatch.delenv("SCHEDULER_SERVICE_BASE_URL", raising=False)
+
+    assembly = edge_app._build_runtime()
+
+    # 网络模拟模式：出站默认经过 Toxiproxy 代理端口，不再读 local.yaml 直连地址。
+    assert assembly.service.config.scheduler.base_url == "http://127.0.0.1:18011"
+
+
+def test_edge_scheduler_post_uses_env_override(monkeypatch):
+    monkeypatch.setattr(
+        edge_app,
+        "config",
+        {"services": {"scheduler": {"host": "127.0.0.1", "port": 8003}}, "mqtt": {}, "bearing_window_transfer": {}},
+    )
+    monkeypatch.setenv("SCHEDULER_SERVICE_BASE_URL", "http://10.9.8.7:9123")
 
     assembly = edge_app._build_runtime()
 

@@ -23,14 +23,26 @@
 | Network API | `127.0.0.1:8090` |
 | Toxiproxy API | `127.0.0.1:8474` |
 
+以上是各服务的监听端口。网络模拟模式下，业务服务之间的出站请求默认经过 Toxiproxy 代理端口（如 Sender→Scheduler `18031/18032/18033`、Edge→Scheduler `18011`、Edge→Cloud `18021`、Cloud→Scheduler `18045`、Scheduler→Edge `18042`），完整链路见 `cloud_edge_project/internet_service/network_simulator/NETWORK_LINK_PORTS.md`。
+
 ## 安装与启动
 
-H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权重和冻结归一化参数已随仓库分发，并镜像到 [Hugging Face](https://huggingface.co/wanfengaodaliya/intelligent-maintenance-distilled-h5)。在仓库根目录执行：
+H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权重和冻结归一化参数已随仓库分发，并镜像到 [Hugging Face](https://huggingface.co/wanfengaodaliya/intelligent-maintenance-distilled-h5)。
+
+项目默认以网络模拟模式运行：出站请求经过 Network Simulator 的代理端口，因此**必须先启动网络模拟器，再启动业务服务**。在仓库根目录执行：
 
 ```powershell
 conda activate moment
 cd cloud_edge_project
 python -m pip install -r requirements-moment.txt
+
+# 1. 启动网络模拟器（需先启动 Docker Desktop）
+cd internet_service\network_simulator
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose --env-file .env up -d --build --wait
+cd ..\..
+
+# 2. 按 docs/Edge_Status_Reporter_完整测试流程.md 第 6.4 节设置环境变量后启动业务服务
 python start_all.py
 ```
 
@@ -43,7 +55,7 @@ Invoke-RestMethod http://127.0.0.1:8004/health
 Invoke-RestMethod http://127.0.0.1:8006/health
 ```
 
-Network Simulator 不由 `start_all.py` 启动，使用前请先启动 Docker Desktop，然后按照 `cloud_edge_project/internet_service/network_simulator/README.md` 单独运行。
+> `start_all.py` 只启动 Edge、Scheduler、Cloud、Consistency、Log 五个业务服务，不启动网络模拟器，也不设置网络联调所需的环境变量（如 `EDGE_STATUS_SCHEDULER_URL`、`SCHEDULER_EDGE_NODES_JSON` 等）。完整的分窗口启动与联调步骤见 `cloud_edge_project/docs/Edge_Status_Reporter_完整测试流程.md`；网络模拟器细节见 `cloud_edge_project/internet_service/network_simulator/README.md`。
 
 ## 测试
 

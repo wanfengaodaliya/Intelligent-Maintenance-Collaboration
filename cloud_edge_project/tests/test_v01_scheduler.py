@@ -21,7 +21,7 @@ def schedule_request(cloud_available: bool, confidence: float) -> dict:
             "data_size_kb": 128,
         },
         "edge_result": {
-            "label": "abnormal",
+            "label": "fault",
             "confidence": confidence,
             "edge_latency_ms": 38,
             "need_cloud": False,

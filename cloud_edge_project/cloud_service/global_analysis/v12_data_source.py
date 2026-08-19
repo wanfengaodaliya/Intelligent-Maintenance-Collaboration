@@ -27,9 +27,7 @@ class V12GlobalAnalysisDataSource:
                 "physical_evidence": _table_exists(connection, "physical_evidence_result")
                 and _table_exists(connection, "raw_analysis_sample"),
                 "edge_summaries": _table_exists(connection, "edge_packet_summary"),
-                # V1.2 decision revisions retain bearing-level cloud review;
-                # packet-pair history remains a legacy-only analytics input.
-                "packet_review_pairs": False,
+                "packet_review_pairs": _table_exists(connection, "cloud_moment_review_record"),
             }
             bearing_records = _load_records(connection, "cloud_bearing_diagnosis_result", device_id) if availability["v12_bearing_results"] else []
             device_records = _load_records(connection, "cloud_device_decision_result", device_id) if availability["v12_device_results"] else []
@@ -45,14 +43,19 @@ class V12GlobalAnalysisDataSource:
             current_bearings.sort(key=lambda row: (row.get("created_at_ns", 0), row["bearing_id"]))
             evidence = _load_evidence(connection, device_id, selected_rounds) if availability["physical_evidence"] else []
             edge_summaries = _load_edge_summaries(connection, device_id, selected_rounds) if availability["edge_summaries"] else []
+            arbitration_ids = [str(row["arbitration_id"]) for row in current_devices if row.get("arbitration_id")]
+            arbitration_states = _load_arbitration_states(connection, arbitration_ids) if arbitration_ids else {}
+            packet_review_pairs = _load_packet_review_pairs(
+                connection, device_id, selected_rounds
+            ) if availability["packet_review_pairs"] else []
 
         return {
             "device_tasks": current_devices,
             "bearing_tasks": current_bearings,
             "bearing_review_pairs": _bearing_review_pairs(scoped_bearing_records),
-            "packet_review_pairs": [],
+            "packet_review_pairs": packet_review_pairs,
             "arbitrations": [
-                {**row, "status": "resolved"}
+                {**row, **arbitration_states.get(str(row["arbitration_id"]), {"status": "unknown"})}
                 for row in current_devices if row.get("arbitration_id")
             ],
             "physical_evidence": evidence,
@@ -170,6 +173,52 @@ def _load_edge_summaries(connection: Any, device_id: str, selected_rounds: set[t
         (device_id, *task_ids),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _load_packet_review_pairs(
+    connection: Any, device_id: str, selected_rounds: set[tuple[str, str]]
+) -> list[dict[str, Any]]:
+    if not selected_rounds:
+        return []
+    task_ids = sorted({task_id for task_id, _ in selected_rounds})
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = connection.execute(
+        f"SELECT device_id,task_id,bearing_id,decision_round_id,diagnosis_window_id,"
+        f"bearing_state,edge_label,model_version,created_at_ns "
+        f"FROM cloud_moment_review_record "
+        f"WHERE device_id=? AND task_id IN ({placeholders}) "
+        f"AND edge_label IS NOT NULL ORDER BY created_at_ns,review_id",
+        (device_id, *task_ids),
+    ).fetchall()
+    return [
+        {
+            "device_id": row["device_id"],
+            "task_id": row["task_id"],
+            "bearing_id": row["bearing_id"],
+            "bearing_decision_round_id": row["decision_round_id"],
+            "diagnosis_window_id": row["diagnosis_window_id"],
+            "edge_label": row["edge_label"],
+            "cloud_label": row["bearing_state"],
+            "edge_model_version": row["model_version"],
+            "completed_at_ns": row["created_at_ns"],
+        }
+        for row in rows
+    ]
+
+
+def _load_arbitration_states(
+    connection: Any, arbitration_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Read real arbitration status from device_arbitration_record (not hardcoded)."""
+    if not arbitration_ids:
+        return {}
+    placeholders = ",".join("?" for _ in arbitration_ids)
+    rows = connection.execute(
+        f"SELECT arbitration_id,status,final_action,confidence FROM device_arbitration_record "
+        f"WHERE arbitration_id IN ({placeholders})",
+        arbitration_ids,
+    ).fetchall()
+    return {str(row["arbitration_id"]): dict(row) for row in rows}
 
 
 def _table_exists(connection: Any, name: str) -> bool:

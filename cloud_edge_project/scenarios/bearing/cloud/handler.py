@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from cloud_service.device_arbitration.service import DeviceArbitrationService
-from cloud_service.enhanced_analysis.service import EnhancedAnalysisService
-from cloud_service.final_summary.service import FinalSummaryService
 from cloud_service.model import infer_cloud
 from scenarios.bearing.cloud.device_arbitration.adapter import (
     BearingDeviceArbitrationAdapter,
@@ -20,13 +18,6 @@ class BearingCloudHandler:
 
     def infer(self, payload: dict[str, Any]) -> dict[str, Any]:
         return infer_cloud(payload)
-
-    def run_enhanced_analysis(self, review_id: str) -> None:
-        result = EnhancedAnalysisService(self.database_path).analyze(review_id)
-        FinalSummaryService(self.database_path).summarize(result)
-
-    def get_final_summary(self, review_id: str) -> dict[str, Any] | None:
-        return FinalSummaryService(self.database_path).get(review_id)
 
     def arbitrate_device_conflict(self, payload: dict[str, Any]) -> dict[str, Any]:
         return DeviceArbitrationService(

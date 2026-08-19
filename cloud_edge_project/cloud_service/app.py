@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import io
 import json
+import logging
 import os
 import sqlite3
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import BackgroundTasks, Body, FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import Body, FastAPI, File, Form, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
+
+LOGGER = logging.getLogger(__name__)
 
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.periodic import run_all as run_periodic_global_analysis
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
 from cloud_service.model_update.dataset_repository import (
@@ -37,15 +43,6 @@ from scenarios.bearing.cloud.model_update.human_review_provider import (
 from scenarios.bearing.cloud.model_update.training_data_source import (
     BearingTrainingDataSource,
 )
-from scenarios.bearing.cloud.workflow_review_scenario import (
-    BearingWorkflowReviewScenario,
-)
-from cloud_service.bearing_review.service import (
-    BearingReviewService,
-    BearingReviewConflictError,
-    BearingReviewValidationError,
-)
-from cloud_service.bearing_review.receiver import BearingRawContextReceiver
 from cloud_service.task_results import TaskResultService
 from cloud_service.device_arbitration.v12_contract import (
     adapt_v12_device_arbitration_request,
@@ -53,23 +50,14 @@ from cloud_service.device_arbitration.v12_contract import (
     is_v12_device_arbitration_request,
 )
 from cloud_service.status_reporter import CloudNodeStatusReporter
-from cloud_service.context_aggregation.coordinator import ContextAggregationCoordinator
-from cloud_service.context_aggregation.dispatcher import AggregationReadyDispatcher
-from cloud_service.context_aggregation.recovery import WindowRecoveryScanner
 from cloud_service.errors import CloudServiceError
 from cloud_service.service import get_moment_runner, preload_moment_runner
 from cloud_service.vllm_backend import infer_v01_vllm
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
-from cloud_service.raw_context.receiver import RawContextReceiver
-from cloud_service.raw_context.transport import RoutedRawContextTransport
 from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
 from cloud_service.storage.database import initialize_database
 from cloud_service.storage.edge_feature_repository import EdgeFeatureRepository
-from cloud_service.storage.raw_context_repository import (
-    RawContextRequestRepository,
-)
-from cloud_service.workflow_review import WorkflowReviewError, WorkflowReviewService
 from common.config import load_config
 from common.schemas import (
     ContractError,
@@ -104,10 +92,10 @@ register_handler("bearing", BearingCloudHandler)
 
 
 def build_cloud_status_reporter() -> CloudNodeStatusReporter:
-    scheduler_config = config["services"]["scheduler"]
+    # 出站 HTTP 默认经过网络模拟器代理链路（links.yaml: cloud__to__scheduler__http）。
     scheduler_base_url = os.getenv(
         "SCHEDULER_SERVICE_BASE_URL",
-        f"http://{scheduler_config['host']}:{scheduler_config['port']}",
+        "http://127.0.0.1:18045",
     )
 
     def health_provider() -> tuple[str, str]:
@@ -157,53 +145,46 @@ def _build_bearing_global_analyzers() -> dict[str, Any]:
     }
 
 
-def _run_enhanced_analysis(database_path: Path, review_id: str) -> None:
-    handler = get_scenario_handler(
-        DEFAULT_SCENARIO_TYPE,
-        database_path=database_path,
-    )
-    handler.run_enhanced_analysis(review_id)
-
-
 async def _run_background_workers() -> None:
     while True:
         try:
             settings = load_cloud_settings()
-            if settings.legacy_context_enhanced_pipeline_enabled:
-                initialize_database(settings.database_path)
-                RawContextRequestRepository(
-                    settings.database_path
-                ).expire_due()
-            if settings.legacy_bearing_window_review_enabled:
-                await asyncio.to_thread(
-                    WorkflowReviewService(
-                        settings.database_path,
-                        scenario_reviewer=BearingWorkflowReviewScenario(),
-                    ).process_pending,
-                    20,
-                )
-            if settings.legacy_context_enhanced_pipeline_enabled:
-                await asyncio.to_thread(
-                    ContextAggregationCoordinator(settings.database_path).aggregate_eligible,
-                    config_version="cloud-preprocess-v1",
-                    limit=20,
-                )
-                await asyncio.to_thread(
-                    AggregationReadyDispatcher(
-                        settings.database_path,
-                        handler=lambda payload: _run_enhanced_analysis(
-                            settings.database_path, payload["review_id"]
-                        ),
-                    ).dispatch_pending,
-                    limit=20,
-                )
             await asyncio.to_thread(
                 SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
                 now_ns=time.time_ns(),
             )
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            LOGGER.exception("signal analysis worker failed: %s", exc)
         await asyncio.sleep(0.5)
+
+
+def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
+    """Run global analysis for every known bearing device in a single pass."""
+    analyzers = _build_bearing_global_analyzers()
+    return run_periodic_global_analysis(
+        database_path, scenario_type="bearing", analyzers=analyzers
+    )
+
+
+async def _run_periodic_global_analysis() -> None:
+    lock = asyncio.Lock()
+    while True:
+        settings = load_cloud_settings()
+        interval = settings.global_analysis_poll_seconds
+        if interval <= 0:
+            await asyncio.sleep(60.0)
+            continue
+        try:
+            if lock.locked():
+                LOGGER.warning("skip periodic global analysis: previous run still in progress")
+            else:
+                async with lock:
+                    await asyncio.to_thread(
+                        _run_periodic_global_analysis_once, settings.database_path
+                    )
+        except Exception as exc:
+            LOGGER.exception("periodic global analysis worker failed: %s", exc)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
@@ -211,17 +192,15 @@ async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
     if settings.backend == "moment_light_adapt":
         await asyncio.to_thread(preload_moment_runner, settings)
-    await asyncio.to_thread(
-        WindowRecoveryScanner(settings.database_path).warn_orphan_files
-    )
     worker_task = asyncio.create_task(_run_background_workers())
+    global_analysis_task = asyncio.create_task(_run_periodic_global_analysis())
     status_task = asyncio.create_task(status_reporter.run_forever())
     try:
         yield
     finally:
-        for task in (status_task, worker_task):
+        for task in (status_task, worker_task, global_analysis_task):
             task.cancel()
-        for task in (status_task, worker_task):
+        for task in (status_task, worker_task, global_analysis_task):
             with suppress(asyncio.CancelledError):
                 await task
 
@@ -283,41 +262,6 @@ def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _workflow_review_service() -> WorkflowReviewService:
-    return WorkflowReviewService(
-        load_cloud_settings().database_path,
-        scenario_reviewer=BearingWorkflowReviewScenario(),
-    )
-
-
-def _legacy_bearing_workflow_disabled() -> JSONResponse | None:
-    if load_cloud_settings().legacy_bearing_window_review_enabled:
-        return None
-    return JSONResponse(
-        status_code=410,
-        content={"error_code": "LEGACY_BEARING_WORKFLOW_DISABLED"},
-    )
-
-
-def _legacy_context_pipeline_disabled() -> JSONResponse | None:
-    if load_cloud_settings().legacy_context_enhanced_pipeline_enabled:
-        return None
-    return JSONResponse(
-        status_code=410,
-        content={"error_code": "LEGACY_CONTEXT_PIPELINE_DISABLED"},
-    )
-
-
-def _workflow_error_response(error: WorkflowReviewError) -> JSONResponse:
-    status = 404 if error.code == "REVIEW_NOT_FOUND" else 409 if error.code.endswith("CONFLICT") else 400
-    return JSONResponse(status_code=status, content={"error_code": error.code, "message": str(error)})
-
-
-def _workflow_job_response(job: dict[str, Any], status_code: int = 200) -> JSONResponse:
-    public = {key: value for key, value in job.items() if key not in {"request", "raw_packets"}}
-    return JSONResponse(status_code=status_code, content=public)
-
-
 def _edge_summary_repository() -> EdgeFeatureRepository:
     database_path = Path(
         os.getenv("CLOUD_SUMMARY_DATABASE_PATH", str(Path(__file__).resolve().parents[1] / "data" / "cloud_summary.db"))
@@ -331,33 +275,6 @@ def _models_url(settings: CloudSettings) -> str:
     if base_url.endswith("/chat/completions"):
         return base_url[: -len("/chat/completions")] + "/models"
     return base_url + "/models"
-
-
-def _raw_context_transport() -> RoutedRawContextTransport:
-    edge = config["services"]["edge"]
-    edge_base_urls = json.loads(
-        os.getenv("EDGE_RAW_CONTEXT_BASE_URLS_JSON", "{}")
-    )
-    if not isinstance(edge_base_urls, dict) or any(
-        not isinstance(edge_node_id, str)
-        or not edge_node_id.strip()
-        or not isinstance(base_url, str)
-        or not base_url.startswith(("http://", "https://"))
-        for edge_node_id, base_url in edge_base_urls.items()
-    ):
-        raise ValueError(
-            "EDGE_RAW_CONTEXT_BASE_URLS_JSON must map edge node IDs to HTTP(S) URLs"
-        )
-    return RoutedRawContextTransport(
-        default_edge_base_url=os.getenv(
-            "EDGE_RAW_CONTEXT_BASE_URL",
-            f"http://{edge['host']}:{edge['port']}",
-        ),
-        edge_base_urls=edge_base_urls,
-        timeout_seconds=float(
-            os.getenv("EDGE_RAW_CONTEXT_TIMEOUT_SECONDS", "3")
-        ),
-    )
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
@@ -472,125 +389,6 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
         return JSONResponse(status_code=500, content=error_response(error))
 
 
-@app.post("/cloud/packet-reviews", response_model=None)
-def create_packet_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try:
-        service = _workflow_review_service()
-        job = service.submit("PACKET", payload)
-        background_tasks.add_task(service.process, job["review_id"])
-        return _workflow_job_response(job, 202)
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.get("/cloud/packet-reviews/{review_id}", response_model=None)
-def get_packet_review(review_id: str) -> JSONResponse:
-    try:
-        return _workflow_job_response(_workflow_review_service().get(review_id))
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.post("/cloud/bearing-window-reviews", response_model=None)
-def create_bearing_window_review(payload: dict) -> JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try:
-        return _workflow_job_response(
-            _workflow_review_service().submit("BEARING_WINDOW", payload), 202
-        )
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.post("/cloud/bearing-window-reviews/{review_id}/raw-batch", response_model=None)
-def upload_bearing_window_raw(
-    review_id: str, payload: dict, background_tasks: BackgroundTasks
-) -> JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try:
-        service = _workflow_review_service()
-        job = service.upload_window_raw(review_id, payload)
-        background_tasks.add_task(service.process, review_id)
-        return _workflow_job_response(job, 202)
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.get("/cloud/bearing-window-reviews/{review_id}", response_model=None)
-def get_bearing_window_review(review_id: str) -> JSONResponse:
-    try:
-        return _workflow_job_response(_workflow_review_service().get(review_id))
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.post("/cloud/device-reviews", response_model=None)
-def create_device_review(payload: dict, background_tasks: BackgroundTasks) -> JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try:
-        service = _workflow_review_service()
-        job = service.submit("DEVICE", payload)
-        background_tasks.add_task(service.process, job["review_id"])
-        return _workflow_job_response(job, 202)
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.get("/cloud/device-reviews/{review_id}", response_model=None)
-def get_device_review(review_id: str) -> JSONResponse:
-    try:
-        return _workflow_job_response(_workflow_review_service().get(review_id))
-    except WorkflowReviewError as error:
-        return _workflow_error_response(error)
-
-
-@app.post("/cloud/bearing-review", response_model=None)
-def create_bearing_review(payload: dict) -> dict | JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try:
-        return BearingReviewService(
-            load_cloud_settings().database_path,
-            transport=_raw_context_transport(),
-        ).create(payload)
-    except BearingReviewValidationError as error:
-        return JSONResponse(status_code=400, content={"error_code": error.code})
-    except BearingReviewConflictError as error:
-        return JSONResponse(status_code=409, content={"error_code": error.code})
-
-
-@app.get("/cloud/bearing-review/{bearing_review_id}", response_model=None)
-def get_bearing_review(bearing_review_id: str) -> dict | JSONResponse:
-    result = BearingReviewService(
-        load_cloud_settings().database_path,
-        transport=_raw_context_transport(),
-    ).get(bearing_review_id)
-    if result is None:
-        return JSONResponse(status_code=404, content={"error_code": "BEARING_REVIEW_NOT_FOUND"})
-    return result
-
-
-@app.post("/cloud/bearing-task-results", response_model=None)
-def bearing_task_results(payload: dict) -> dict | JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try: return TaskResultService(load_cloud_settings().database_path).ingest_bearing(payload)
-    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
-
-
-@app.post("/cloud/device-task-results", response_model=None)
-def device_task_results(payload: dict) -> dict | JSONResponse:
-    if disabled := _legacy_bearing_workflow_disabled():
-        return disabled
-    try: return TaskResultService(load_cloud_settings().database_path).ingest_device(payload)
-    except ValueError as error: return JSONResponse(status_code=400, content={"error_code": str(error)})
-
-
 @app.post("/cloud/bearing-diagnosis-results", response_model=None)
 def bearing_diagnosis_results(payload: dict) -> dict | JSONResponse:
     try:
@@ -663,7 +461,8 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
             status_code=400,
             content={"error_code": error.code, "message": error.message},
         )
-    except Exception:
+    except Exception as exc:
+        LOGGER.exception("device arbitration failed: %s", exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
 
 
@@ -675,7 +474,8 @@ def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
             database_path=load_cloud_settings().database_path,
         )
         result = handler.get_device_arbitration(conflict_id)
-    except Exception:
+    except Exception as exc:
+        LOGGER.exception("get device arbitration failed for %s: %s", conflict_id, exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
     if result is None:
         return JSONResponse(status_code=404, content={"error_code": "ARBITRATION_NOT_FOUND"})
@@ -872,6 +672,52 @@ def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
         return _model_update_error_response(error)
 
 
+_HUMAN_LABEL_STATES = {"normal", "warning", "fault"}
+
+
+@app.get("/cloud/model-update/label-confirmations/{packet_id}", response_model=None)
+def get_label_confirmation(packet_id: str) -> dict | JSONResponse:
+    repository = LabelConfirmationRepository(load_cloud_settings().database_path)
+    row = repository.get(packet_id)
+    if row is None:
+        return JSONResponse({"error": "LABEL_CONFIRMATION_NOT_FOUND"}, status_code=404)
+    return dict(row)
+
+
+@app.post("/cloud/model-update/label-confirmations/{packet_id}", response_model=None)
+def upsert_human_label_confirmation(
+    packet_id: str, payload: Any = Body(None)
+) -> dict | JSONResponse:
+    body = payload if isinstance(payload, dict) else {}
+    confirmed_label = body.get("confirmed_label")
+    if not isinstance(confirmed_label, str) or not confirmed_label.strip():
+        return JSONResponse({"error": "INVALID_HUMAN_LABEL"}, status_code=400)
+    risk_level = body.get("confirmed_risk_level")
+    if risk_level not in _HUMAN_LABEL_STATES:
+        risk_level = None
+    repository = LabelConfirmationRepository(load_cloud_settings().database_path)
+    saved = repository.save(
+        {
+            "packet_id": packet_id,
+            "confirmed_label": confirmed_label.strip(),
+            "label_source": "human_confirmed",
+            "confirmed_risk_level": risk_level,
+        }
+    )
+    return dict(saved)
+
+
+@app.get(
+    "/cloud/model-update/{update_id}/pending-label-confirmations",
+    response_model=None,
+)
+def pending_label_confirmations(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().list_pending_human_confirmation(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
 @app.post("/cloud/model-update/{update_id}/distribution-result", response_model=None)
 def record_model_update_distribution(
     update_id: str, payload: Any = Body(...)
@@ -910,53 +756,66 @@ def request_model_update_rollback(
         return _model_update_error_response(error)
 
 
-@app.post("/cloud/raw-context-batches", response_model=None)
-def raw_context_batches(
-    payload: Any = Body(...),
-) -> dict[str, object] | JSONResponse:
-    """Receive one edge raw-context batch and acknowledge each packet."""
-
-    disabled = (
-        _legacy_bearing_workflow_disabled()
-        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review"
-        else _legacy_context_pipeline_disabled()
-    )
-    if disabled:
-        return disabled
+@app.post("/cloud/model-update/{update_id}/execute-rollback", response_model=None)
+def execute_model_update_rollback(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
     try:
-        if isinstance(payload, dict) and payload.get("review_type") == "bearing_review":
-            return BearingRawContextReceiver(
-                load_cloud_settings().database_path
-            ).receive_batch(payload)
-        return RawContextReceiver(
-            load_cloud_settings().database_path
-        ).receive_batch(payload)
-    except ContractError as error:
-        return JSONResponse(
-            status_code=400,
-            content={"error_code": error.code, "message": error.message},
+        executed_by = payload.get("executed_by") if isinstance(payload, dict) else None
+        return _model_update_service().execute_rollback(
+            update_id, executed_by=executed_by
         )
-    except BearingReviewValidationError as error:
-        return JSONResponse(status_code=400, content={"error_code": error.code})
-    except BearingReviewConflictError as error:
-        return JSONResponse(status_code=409, content={"error_code": error.code})
-    except sqlite3.Error:
-        return JSONResponse(
-            status_code=503,
-            content={"error_code": "SERVICE_UNAVAILABLE"},
-        )
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
 
 
-@app.get("/cloud/reviews/{review_id}/summary", response_model=None)
-def final_summary(review_id: str) -> dict[str, object] | JSONResponse:
-    handler = get_scenario_handler(
-        DEFAULT_SCENARIO_TYPE,
-        database_path=load_cloud_settings().database_path,
+@app.get("/cloud/model-update/{update_id}/file", response_model=None)
+def download_model_update_artifact(update_id: str) -> Response | JSONResponse:
+    """Serve the frozen candidate artifact for edge pull.
+
+    A multi-file bundle is zipped with a manifest.json listing per-file
+    sha256; a single-file artifact is streamed directly.
+    """
+    try:
+        artifact = _model_update_service().get_download_artifact(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+    artifact_path = Path(artifact["artifact_path"])
+    if not artifact_path.exists():
+        return JSONResponse({"error": "ARTIFACT_FILE_MISSING"}, status_code=404)
+    bundle = artifact.get("artifact_bundle")
+    if isinstance(bundle, dict) and bundle.get("entries") and artifact_path.is_dir():
+        manifest = {
+            "version": artifact["candidate_version"],
+            "model_type": artifact["model_type"],
+            "model_family": artifact.get("model_family", "edge"),
+            "feature_pipeline_version": artifact["feature_pipeline_version"],
+            "files": {
+                entry["rel_path"]: entry["sha256"]
+                for entry in bundle["entries"]
+            },
+        }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for entry in bundle["entries"]:
+                archive.write(
+                    artifact_path / entry["rel_path"], arcname=entry["rel_path"]
+                )
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+            )
+        filename = f"{artifact['candidate_version']}.zip"
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    return FileResponse(
+        artifact_path,
+        media_type="application/octet-stream",
+        filename=Path(artifact_path).name,
     )
-    summary = handler.get_final_summary(review_id)
-    if summary is None:
-        return JSONResponse(status_code=404, content={"error_code": "SUMMARY_NOT_READY"})
-    return summary
 
 
 @app.post("/cloud/edge-feature-summaries", response_model=None)

@@ -15,13 +15,7 @@ class ScenarioHandler(Protocol):
     def infer(
         self,
         payload: dict[str, Any],
-        *,
-        context_transport: Any,
     ) -> dict[str, Any]: ...
-
-    def run_enhanced_analysis(self, review_id: str) -> None: ...
-
-    def get_final_summary(self, review_id: str) -> dict[str, Any] | None: ...
 
     def arbitrate_device_conflict(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 

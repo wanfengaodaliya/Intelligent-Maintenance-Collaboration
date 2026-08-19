@@ -9,14 +9,6 @@ from cloud_review import CloudReviewStore
 from edge_model.pipeline import EdgeModelPipeline
 from edge_task_ingress import EdgeTaskIngress
 from edge_validation_cache import EdgeValidationCache
-from edge_aggregation import (
-    BearingAggregationWorkflow,
-    DurableWindowReviewGateway,
-    HttpCloudReviewGateway,
-    WindowReviewDispatcher,
-    WindowReviewHttpClient,
-    WindowReviewStore,
-)
 
 from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
@@ -54,7 +46,6 @@ from suggestion_llm import SuggestionClient
 class EdgeRuntimeAssembly:
     service: EdgeRuntimeService
     coordinator: EdgeRuntimeCoordinator
-    window_review_store: WindowReviewStore | None
     v12_flow: V12DecisionFlow | None
     device_result_outbox: DeviceResultOutbox | None = None
     suggestion_outbox: SuggestionOutbox | None = None
@@ -127,7 +118,6 @@ def build_edge_runtime(
         topic=config.mqtt.suggestion_topic,
         qos=config.mqtt.qos,
     )
-
     def _publish_device_result_with_identity(payload):
         # 阶段 4：设备级结果发布统一携带 trace 身份字段，
         # route_id 使用设备结果主题，便于跨模块按链路追踪。
@@ -163,33 +153,6 @@ def build_edge_runtime(
         _publish_suggestion_with_identity,
         max_attempts=config.v12.suggestion_publish_max_attempts,
     )
-    transfer = config.window_transfer
-    window_review_store = None
-    dispatcher = None
-    aggregation_workflow = None
-    if config.v12.legacy_realtime_aggregation:
-        window_review_store = WindowReviewStore(
-            transfer.cache_directory,
-            hard_limit_bytes=transfer.hard_limit_bytes,
-            warning_bytes=transfer.warning_bytes,
-            reserved_free_bytes=transfer.reserved_free_bytes,
-        )
-        dispatcher = WindowReviewDispatcher(
-            window_review_store,
-            WindowReviewHttpClient(transfer.cloud_base_url),
-            interval_seconds=transfer.dispatch_interval_seconds,
-        )
-        if config.cloud_node_urls:
-            cloud_base_url = config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
-            aggregation_workflow = BearingAggregationWorkflow(
-                cache=cache,
-                cloud=DurableWindowReviewGateway(
-                    HttpCloudReviewGateway(cloud_base_url), window_review_store
-                ),
-                packet_cloud_confidence_threshold=(
-                    transfer.packet_cloud_confidence_threshold
-                ),
-            )
     v12_flow = None
     device_result_outbox = None
     raw_sample_capture = None
@@ -210,14 +173,19 @@ def build_edge_runtime(
                 max_upload_attempts=raw_config.max_upload_attempts,
             ),
         )
-        raw_sample_uploader = RawAnalysisSampleUploader(
-            raw_sample_capture.repository,
-            HttpRawSampleTransport(
-                config.window_transfer.cloud_base_url,
-                timeout_seconds=config.scheduler.request_timeout_seconds,
-            ).upload,
-            batch_size=raw_config.upload_batch_size,
+        cloud_nodes = sorted(config.cloud_node_urls)
+        cloud_base_url = (
+            config.cloud_node_urls[cloud_nodes[0]] if cloud_nodes else None
         )
+        if cloud_base_url is not None:
+            raw_sample_uploader = RawAnalysisSampleUploader(
+                raw_sample_capture.repository,
+                HttpRawSampleTransport(
+                    cloud_base_url,
+                    timeout_seconds=config.scheduler.request_timeout_seconds,
+                ).upload,
+                batch_size=raw_config.upload_batch_size,
+            )
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
         # V1.2 轴承/设备结果的目标端点是 cloud_service 的 /cloud/* 路由，
@@ -294,13 +262,6 @@ def build_edge_runtime(
         cache=cache,
         pipeline=pipeline,
         scheduler=scheduler,
-        aggregation_workflow=aggregation_workflow,
-        device_result_publisher=TracedDeviceResultPublisher(
-            device_result_publisher,
-            edge_node_id=config.edge_node_id,
-            route_id=config.mqtt.device_result_topic,
-        ),
-        window_review_store=window_review_store,
         packet_router=(
             PacketRoutingBridge(
                 edge_node_id=config.edge_node_id,
@@ -322,7 +283,6 @@ def build_edge_runtime(
             )
             if config.v12.enabled else None
         ),
-        legacy_realtime_aggregation=config.v12.legacy_realtime_aggregation,
         cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
         device_result_outbox=device_result_outbox,
@@ -371,13 +331,11 @@ def build_edge_runtime(
         mqtt_ingress=mqtt_ingress,
         control_application=control_application,
         heartbeat=heartbeat,
-        window_dispatcher=dispatcher,
         maintenance=maintenance,
     )
     return EdgeRuntimeAssembly(
         service=service,
         coordinator=coordinator,
-        window_review_store=window_review_store,
         v12_flow=v12_flow,
         device_result_outbox=device_result_outbox,
         suggestion_outbox=suggestion_outbox,
@@ -388,10 +346,9 @@ def build_edge_runtime(
 def _cloud_result_base_url(config: EdgeRuntimeConfig) -> str:
     """Resolve the cloud_service base URL for V1.2 result uploads.
 
-    Prefer the first node of cloud_node_urls (the same pick as the legacy
-    aggregation workflow); fall back to window_transfer.cloud_base_url.
-    Both are validated to be HTTP(S) by EdgeRuntimeConfig.validate().
+    Pick the first node of cloud_node_urls (same pick as the raw-sample
+    uploader). from_env() guarantees a non-empty mapping by falling back
+    to CLOUD_SERVICE_BASE_URL; URLs are validated to be HTTP(S) by
+    EdgeRuntimeConfig.validate().
     """
-    if config.cloud_node_urls:
-        return config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
-    return config.window_transfer.cloud_base_url
+    return config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]

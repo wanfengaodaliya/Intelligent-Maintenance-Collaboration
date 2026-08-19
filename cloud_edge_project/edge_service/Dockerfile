@@ -33,7 +33,6 @@ ENV EDGE_SERVICE_HOST=0.0.0.0 \
     EDGE_CONTROL_HOST=0.0.0.0 \
     EDGE_CONTROL_PORT=8011 \
     EDGE_V12_DATABASE_PATH=/app/data/edge_v12.db \
-    EDGE_BEARING_WINDOW_CACHE_DIR=/app/data/bearing_windows \
     EDGE_CLOUD_REVIEW_CACHE_DIR=/app/data/edge_cloud_review \
     EDGE_RAW_SAMPLE_DIRECTORY=/app/data/raw_analysis_samples \
     EDGE_PACKET_ROUTE_ERROR_LOG=/app/data/edge_packet_route_errors.jsonl

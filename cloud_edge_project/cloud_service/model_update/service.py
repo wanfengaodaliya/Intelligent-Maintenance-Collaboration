@@ -31,11 +31,17 @@ from cloud_service.model_update.label_confirmation import (
     LabelConfirmationProvider,
     SnapshotLabelProvider,
 )
+from cloud_service.model_update.model_types import (
+    ActiveModelVersionStore,
+    MODEL_TYPE_SPECS,
+    validate_model_type,
+)
 from cloud_service.model_update.post_validator import (
     select_post_validation_metrics,
     validate_post_deployment,
 )
 from cloud_service.model_update.repository import ModelUpdateRepository
+from cloud_service.model_update.trainer import build_training_plan
 from cloud_service.model_update.validator import validate_candidate
 
 
@@ -73,12 +79,24 @@ class ModelUpdateService:
         self.dataset_builder = DatasetBuilder(config)
         self.candidate_registry = CandidateRegistry(self.data_root)
 
+    def _active_versions(self) -> ActiveModelVersionStore:
+        return ActiveModelVersionStore(self.database_path)
+
     def create(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ModelUpdateError("INVALID_UPDATE_REQUEST")
         analysis_id = _required_string(request, "analysis_id")
         problem_id = _required_string(request, "problem_id")
-        baseline_version = _required_string(request, "baseline_version")
+        model_type = request.get("model_type") or "distilled_h5"
+        try:
+            model_type = validate_model_type(model_type)
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
+        baseline_version = request.get("baseline_version")
+        if not isinstance(baseline_version, str) or not baseline_version.strip():
+            baseline_version = self._active_versions().get(model_type) or MODEL_TYPE_SPECS[
+                model_type
+            ].default_version
         analysis = self.repository.get_analysis(analysis_id)
         if analysis is None:
             raise ModelUpdateError("GLOBAL_ANALYSIS_NOT_FOUND")
@@ -107,6 +125,7 @@ class ModelUpdateService:
             "scenario_type": analysis["scenario_type"],
             "subject_id": analysis["subject_id"],
             "problem_type": problem["problem_type"],
+            "model_type": model_type,
             "problem_context_json": problem.get("problem_context", {}),
             "evidence_snapshot_json": problem.get("evidence", {}),
             "baseline_version": baseline_version,
@@ -118,6 +137,85 @@ class ModelUpdateService:
 
     def get(self, update_id: str) -> dict[str, Any]:
         return self._task(update_id)
+
+    def get_download_artifact(self, update_id: str) -> dict[str, Any]:
+        """Return the frozen candidate artifact descriptor for edge pull.
+
+        The artifact is registered during training-result handoff and stays
+        frozen for download once approved; edge nodes pull it to activate a
+        new version locally.
+        """
+
+        task = self._task(update_id)
+        artifact = task.get("candidate_artifact")
+        if not isinstance(artifact, dict) or not artifact.get("artifact_path"):
+            raise ModelUpdateError("CANDIDATE_ARTIFACT_NOT_FOUND")
+        if task["status"] not in {
+            "trained",
+            "waiting_confirmation",
+            "approved",
+            "handoff_to_distribution",
+            "distribution_in_progress",
+            "distribution_succeeded",
+            "verifying",
+            "ineffective",
+            "partial_improvement",
+            "succeeded",
+        }:
+            raise ModelUpdateError("ARTIFACT_NOT_READY")
+        return artifact
+
+    def list_pending_human_confirmation(self, update_id: str) -> dict[str, Any]:
+        """List samples that still lack an authoritative label.
+
+        A sample needs human verification when it has no human_confirmed and no
+        dataset_ground_truth label, i.e. it would otherwise fall back to the
+        low-priority cloud_reference during dataset construction.
+        """
+
+        task = self._task(update_id)
+        if self.training_data_source is None or self.label_provider is None:
+            raise ModelUpdateError("MODEL_UPDATE_SCENARIO_NOT_CONFIGURED")
+        samples = self.training_data_source.load(task)
+        pending: list[dict[str, Any]] = []
+        for sample in samples:
+            if self._needs_human_confirmation(sample):
+                pending.append(self._pending_item(sample))
+        return {
+            "update_id": update_id,
+            "pending_count": len(pending),
+            "items": pending,
+        }
+
+    def _needs_human_confirmation(self, sample: dict[str, Any]) -> bool:
+        provider = self.label_provider
+        resolver = getattr(provider, "confirm_sources", None)
+        if resolver is not None:
+            sources = resolver(sample)
+            return not (
+                "human_confirmed" in sources or "dataset_ground_truth" in sources
+            )
+        confirmation = provider.confirm(sample)
+        return not (
+            isinstance(confirmation, dict)
+            and confirmation.get("label_source")
+            in {"human_confirmed", "dataset_ground_truth"}
+        )
+
+    @staticmethod
+    def _pending_item(sample: dict[str, Any]) -> dict[str, Any]:
+        edge = sample.get("historical_edge_result") or {}
+        return {
+            "packet_id": sample["packet_id"],
+            "task_id": sample.get("task_id"),
+            "source_file": sample.get("source_file"),
+            "edge_label": edge.get("label"),
+            "edge_risk_level": edge.get("risk_level"),
+            "edge_model_version": edge.get("version"),
+            "cloud_label": sample.get("cloud_label"),
+            "is_cloud_reviewed": sample.get("is_cloud_reviewed", False),
+            "sample_pools": sample.get("sample_pools", []),
+        }
 
     def prepare_data(
         self, update_id: str, *, feature_pipeline_version: str = "edge_feature_v1"
@@ -166,13 +264,29 @@ class ModelUpdateService:
         )
 
     def start_training(self, update_id: str) -> dict[str, Any]:
-        """Record the operator's explicit handoff to an offline trainer."""
+        """Record the operator's explicit handoff to an offline trainer.
+
+        Builds and persists the trainer plan so the selected dual-family
+        trainer (edge H5 or cloud MOMENT) knows where to train and write.
+        """
 
         task = self._task(update_id)
         self._require_state(task, {"waiting_training"})
-        self._manifest(update_id)
+        manifest = self._manifest(update_id)
+        try:
+            plan = build_training_plan(
+                update_id=update_id,
+                model_type=task["model_type"],
+                dataset_id=manifest["dataset_id"],
+                training_root=self.data_root,
+            )
+        except ValueError as error:
+            raise ModelUpdateError(str(error)) from error
         return self.repository.update(
-            update_id, status="training", updated_at_ns=time.time_ns()
+            update_id,
+            trainer_plan_json=plan,
+            status="training",
+            updated_at_ns=time.time_ns(),
         )
 
     def register_training_result(
@@ -226,6 +340,8 @@ class ModelUpdateService:
             approved_model = approve_candidate(task, confirmed_by or "")
         except ApprovalError as error:
             raise ModelUpdateError(str(error)) from error
+        model_type = approved_model["model_type"]
+        self._active_versions().set(model_type, approved_model["candidate_version"])
         return self.repository.update(
             update_id,
             confirmation_result_json=approved_model,
@@ -254,7 +370,10 @@ class ModelUpdateService:
         task = self._task(update_id)
         self._require_state(task, DISTRIBUTION_HANDOFF_STATES)
         try:
-            request = build_distribution_request(task["confirmation_result"])
+            request = build_distribution_request(
+                task["confirmation_result"],
+                subject_id=task.get("subject_id"),
+            )
         except ValueError as error:
             raise ModelUpdateError(str(error)) from error
         return self.repository.update(
@@ -352,6 +471,41 @@ class ModelUpdateService:
             rollback_requested=1,
             rollback_target_version=task["baseline_version"],
             post_validation_result_json=result,
+            updated_at_ns=time.time_ns(),
+        )
+
+    def execute_rollback(
+        self, update_id: str, *, executed_by: str
+    ) -> dict[str, Any]:
+        """Actually revert the active model version to the baseline.
+
+        Runs only after ``request_rollback`` set the target; flips the active
+        version pointer so both the cloud review model and the edge pull path
+        resolve back to the pre-update version.
+        """
+
+        task = self._task(update_id)
+        self._require_state(task, {"ineffective", "partial_improvement", "succeeded"})
+        if task.get("rollback_requested") is not True:
+            raise ModelUpdateError("ROLLBACK_NOT_REQUESTED")
+        target = task.get("rollback_target_version")
+        if not isinstance(target, str) or not target.strip():
+            raise ModelUpdateError("ROLLBACK_TARGET_MISSING")
+        if not isinstance(executed_by, str) or not executed_by.strip():
+            raise ModelUpdateError("ROLLBACK_EXECUTOR_REQUIRED")
+        model_type = task["model_type"]
+        self._active_versions().set(model_type, target)
+        result = {
+            "action": "rolled_back",
+            "model_type": model_type,
+            "rollback_target_version": target,
+            "executed_by": executed_by.strip(),
+            "executed_at_ns": time.time_ns(),
+        }
+        return self.repository.update(
+            update_id,
+            rollback_result_json=result,
+            status="rolled_back",
             updated_at_ns=time.time_ns(),
         )
 

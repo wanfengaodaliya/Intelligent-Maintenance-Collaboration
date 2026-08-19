@@ -32,15 +32,6 @@ mqtt:
   input_topic: "edge/edge_01/input"
   client_id: "edge_01-runtime"
 
-bearing_window_transfer:
-  cache_directory: "edge_service/data/bearing_windows"
-  hard_limit_gib: 20
-  warning_gib: 16
-  reserved_free_gib: 10
-  dispatch_interval_seconds: 1.0
-  # 本链路只做轴承级 20 包复核，不以前置单包云复核阻塞窗口落盘。
-  packet_cloud_confidence_threshold: 0.0
-
 packet_routing:
   confidence_threshold: 0.80
 

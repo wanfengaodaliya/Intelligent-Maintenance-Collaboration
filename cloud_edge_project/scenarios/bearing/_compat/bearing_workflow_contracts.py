@@ -137,7 +137,6 @@ class BearingTaskResult:
     confidence: float
     data_quality_score: float
     trend: str
-    rule_facts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _identity_fields(self)

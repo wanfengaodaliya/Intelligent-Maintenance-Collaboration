@@ -1,0 +1,17 @@
+{
+  "version": "distilled_h5_kd_fold3_a9f20442",
+  "model_type": "distilled_h5",
+  "model_family": "edge",
+  "feature_pipeline_version": "edge_feature_v1",
+  "baseline": true,
+  "files": {
+    "best_model.pt": "a9f204428fd9ca7c519c753537fcadf6bd0d0319940ad260dba785eab4162dc4",
+    "checkpoint_sha256.txt": "e4b291c14a7f8598dc4f2430ad45f238c18b6a30ef61fc2fec57adc8930c9212",
+    "condition_norm.json": "9c5ba66bfc912de534691325192406189794db410ce69c324b82ef8ba6188114",
+    "condition_schema.json": "13d888a40672aa41d6a9f590998b655ff9755d1f86104a21d29832b09fcb72a8",
+    "model_metadata.json": "5ca443effb2fd8e64db7d4ffc0ee57d1ba54be1561d7c1ff8166a4bf18a0a8e8",
+    "physical_feature_normalization.json": "2125e376f81f0fd0605dae79d9f1228981376eee30695a6ea2160ad5319e868e",
+    "physical_feature_schema.json": "3087ea2e5801ab540d4e6b24fdaceebaf6c1771934e70d2941a2b357b59a6ba0",
+    "README.md": "86833b47d2554743643b75dc67653f2ca249f154323fda78cc0c986859bd9504"
+  }
+}

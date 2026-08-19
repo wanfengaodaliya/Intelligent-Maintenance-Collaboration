@@ -43,6 +43,10 @@ def initialize_database(database_path: Path) -> None:
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         _migrate_v16_to_v17_fault_labels(connection)
+        _migrate_v17_to_v18_moment_edge_label(connection)
+        _migrate_v18_to_v19_label_confirmation_risk_level(connection)
+        _migrate_v19_to_v20_dual_model_support(connection)
+        _migrate_v20_to_v21_model_update_columns(connection)
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
@@ -262,6 +266,58 @@ def _rebuild_summary_table_for_fault(connection: sqlite3.Connection) -> None:
             f"PRAGMA legacy_alter_table = {int(legacy_alter_table)}"
         )
         connection.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
+
+
+def _migrate_v17_to_v18_moment_edge_label(connection: sqlite3.Connection) -> None:
+    """Add the edge_label column to cloud_moment_review_record (idempotent)."""
+
+    if not _table_exists(connection, "cloud_moment_review_record"):
+        return
+    if "edge_label" in _columns(connection, "cloud_moment_review_record"):
+        return
+    connection.execute("ALTER TABLE cloud_moment_review_record ADD COLUMN edge_label TEXT")
+
+
+def _migrate_v18_to_v19_label_confirmation_risk_level(
+    connection: sqlite3.Connection,
+) -> None:
+    """Add the confirmed_risk_level column to label_confirmation (idempotent)."""
+
+    if not _table_exists(connection, "label_confirmation"):
+        return
+    if "confirmed_risk_level" in _columns(connection, "label_confirmation"):
+        return
+    connection.execute(
+        "ALTER TABLE label_confirmation ADD COLUMN confirmed_risk_level TEXT"
+    )
+
+
+def _migrate_v19_to_v20_dual_model_support(connection: sqlite3.Connection) -> None:
+    """Add the model_type column to model_update_task (idempotent)."""
+
+    if not _table_exists(connection, "model_update_task"):
+        return
+    if "model_type" in _columns(connection, "model_update_task"):
+        return
+    connection.execute(
+        "ALTER TABLE model_update_task ADD COLUMN model_type TEXT NOT NULL DEFAULT 'distilled_h5'"
+    )
+
+
+def _migrate_v20_to_v21_model_update_columns(connection: sqlite3.Connection) -> None:
+    """Add trainer_plan_json and rollback_result_json columns (idempotent)."""
+
+    if not _table_exists(connection, "model_update_task"):
+        return
+    columns = _columns(connection, "model_update_task")
+    if "trainer_plan_json" not in columns:
+        connection.execute(
+            "ALTER TABLE model_update_task ADD COLUMN trainer_plan_json TEXT"
+        )
+    if "rollback_result_json" not in columns:
+        connection.execute(
+            "ALTER TABLE model_update_task ADD COLUMN rollback_result_json TEXT"
+        )
 
 
 def _rewrite_abnormal_labels(connection: sqlite3.Connection) -> None:

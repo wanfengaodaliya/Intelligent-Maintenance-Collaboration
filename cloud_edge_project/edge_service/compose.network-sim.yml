@@ -92,7 +92,8 @@ services:
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
     ports:
       - "8002:8001"
-      - "8012:8011"
+      # 8012 保留给宿主机正式模型服务；edge_02 控制端口宿主机映射使用 8013。
+      - "8013:8011"
     volumes:
       - edge_02_sim_data:/app/data
     restart: unless-stopped

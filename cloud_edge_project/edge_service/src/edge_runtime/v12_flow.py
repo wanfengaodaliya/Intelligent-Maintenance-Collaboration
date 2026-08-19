@@ -359,6 +359,7 @@ class V12DecisionFlow:
                     "bearing_result_id": item.result_id,
                     "result": item.bearing_state,
                     "confidence": item.confidence,
+                    "data_quality_score": item.data_quality_score,
                     "risk_level": item.risk_level,
                     "action_level": item.action_grade,
                     "result_status": (

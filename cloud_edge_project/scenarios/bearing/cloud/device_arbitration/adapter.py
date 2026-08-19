@@ -68,7 +68,6 @@ class BearingDeviceArbitrationAdapter:
                 raise ArbitrationValidationError(
                     "INVALID_ACTION", "recommended_action is not supported"
                 )
-            rule_facts = item.get("rule_facts", [])
             units.append(
                 DecisionUnit(
                     unit_id=bearing_id,
@@ -79,12 +78,6 @@ class BearingDeviceArbitrationAdapter:
                     ),
                     risk_level=risk_level,
                     recommended_action=action,
-                    scenario_payload={
-                        "rule_facts": rule_facts if isinstance(rule_facts, list) else [],
-                        "sender_id": item.get("sender_id"),
-                        "packet_summary": item.get("packet_summary"),
-                        "summary": item.get("summary"),
-                    },
                 )
             )
         return ArbitrationContext(

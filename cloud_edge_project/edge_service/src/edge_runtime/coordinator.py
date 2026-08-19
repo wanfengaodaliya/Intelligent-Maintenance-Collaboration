@@ -6,11 +6,8 @@ import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from core.bearing_actions import action_for_grade
-from core.bearing_workflow_contracts import FINAL_EDGE, FinalPacketResult
 from core.diagnosis_contracts import EdgeBearingResult
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
-from edge_aggregation.workflow import BearingAggregationWorkflow
-from edge_aggregation.window_transfer import WindowReviewStore
 from edge_model.contracts import PacketExecutionCompleted
 from edge_model.pipeline import EdgeModelPipeline
 from edge_task_ingress import EXPECTED_PACKET_COUNT, INGRESS_ACCEPTED, EdgeTaskIngress
@@ -44,16 +41,12 @@ class EdgeRuntimeCoordinator:
         cache: EdgeValidationCache,
         pipeline: EdgeModelPipeline,
         scheduler: SchedulerReporter,
-        aggregation_workflow: Optional[BearingAggregationWorkflow] = None,
-        device_result_publisher: Optional[JsonPublisher] = None,
-        window_review_store: Optional[WindowReviewStore] = None,
         packet_router: Optional[PacketRoutingBridge] = None,
         v12_flow: Optional[V12DecisionFlow] = None,
         raw_sample_capture: Optional[RawSampleCaptureService] = None,
         raw_sample_uploader: Optional[RawAnalysisSampleUploader] = None,
         result_uploader: Optional[ResultUploader] = None,
         diagnosis_window_assembler: Optional[DiagnosisWindowAssembler] = None,
-        legacy_realtime_aggregation: bool = False,
         cloud_now_timeout_ns: int = 3_000_000_000,
         round_timeout_ns: int = 3_500_000_000,
         device_result_outbox: Any = None,
@@ -69,16 +62,12 @@ class EdgeRuntimeCoordinator:
         self.cache = cache
         self.pipeline = pipeline
         self.scheduler = scheduler
-        self.aggregation_workflow = aggregation_workflow
-        self.device_result_publisher = device_result_publisher
-        self.window_review_store = window_review_store
         self.packet_router = packet_router
         self.v12_flow = v12_flow
         self.raw_sample_capture = raw_sample_capture
         self.raw_sample_uploader = raw_sample_uploader
         self.result_uploader = result_uploader
         self.diagnosis_window_assembler = diagnosis_window_assembler
-        self.legacy_realtime_aggregation = legacy_realtime_aggregation
         self.cloud_now_timeout_ns = cloud_now_timeout_ns
         self.round_timeout_ns = round_timeout_ns
         self.device_result_outbox = device_result_outbox
@@ -96,9 +85,6 @@ class EdgeRuntimeCoordinator:
         # 设备级历史记录缓存：{device_id: [edge_result_dict, ...]}
         self._suggestion_history: dict[str, list[dict[str, Any]]] = {}
         self._clock_ns = clock_ns
-        self._pending_aggregation: dict[
-            tuple[str, str, str, str, str], FinalPacketResult
-        ] = {}
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
         self._model_versions: set[str] = set()
@@ -108,8 +94,6 @@ class EdgeRuntimeCoordinator:
         self.pipeline.on_packet_completed = self.on_packet_completed
 
     def receive_raw_packet(self, raw_packet: dict[str, Any]) -> bool:
-        if self.window_review_store is not None:
-            self.window_review_store.preflight_packet(raw_packet)
         result = self.ingress.receive_packet(raw_packet)
         self._last_task_activity_ns = max(self._last_task_activity_ns, result.received_at_ns)
         if result.status != INGRESS_ACCEPTED or result.validated_packet is None:
@@ -196,7 +180,6 @@ class EdgeRuntimeCoordinator:
         if task is None:
             raise ValueError("completed packet has no active task")
         raw_ref = packet.raw_packet_ref if packet is not None else None
-        raw_uri = self.cache.raw_data_uri(raw_ref) if raw_ref is not None else None
         output = completion.edge.as_dict() if completion.edge is not None else None
         sequences = (
             range(diagnosis_window.window_start_sequence, diagnosis_window.window_end_sequence + 1)
@@ -233,15 +216,9 @@ class EdgeRuntimeCoordinator:
                     accepted_at_ns=self._clock_ns(),
                 )
                 self._capture_bearing_result(edge_result, route_decision, device)
+                self._generate_suggestion(completion)
             except Exception as error:
                 self._report_v12_error(completion, error)
-            if not self.legacy_realtime_aggregation:
-                # V1.2 决策流模式下仍需生成维护建议（规则引擎 + LLM 翻译），
-                # 仅跳过旧版实时聚合，不能跳过建议发布。
-                self._generate_suggestion(completion)
-                return
-        self._aggregate_completion(completion, task.expected_bearing_ids, raw_uri)
-        self._generate_suggestion(completion)
 
     def _route_packet(
         self,
@@ -411,50 +388,6 @@ class EdgeRuntimeCoordinator:
         except Exception:
             pass
 
-    def _aggregate_completion(
-        self,
-        completion: PacketExecutionCompleted,
-        expected_bearing_ids: tuple[str, ...],
-        raw_uri: Optional[str],
-    ) -> None:
-        workflow = self.aggregation_workflow
-        if workflow is None or completion.edge is None or raw_uri is None:
-            return
-        workflow.register_task(completion.device_id, completion.task_id, expected_bearing_ids)
-        edge = completion.edge
-        packet = FinalPacketResult(
-            result_id=_result_id(completion, 1),
-            device_id=completion.device_id,
-            task_id=completion.task_id,
-            bearing_id=completion.bearing_id,
-            sender_id=completion.sender_id,
-            packet_id=completion.packet_id,
-            sequence_number=completion.sequence_number,
-            action_grade=action_level_for(edge.edge_result, edge.edge_risk_level),
-            confidence=edge.confidence,
-            data_quality_score=completion.data_quality_score,
-            risk_level=edge.edge_risk_level,
-            decision_source=FINAL_EDGE,
-            raw_data_ref=raw_uri,
-        )
-        try:
-            self._accept_aggregation_packet(packet)
-        except Exception:
-            with self._mutex:
-                self._pending_aggregation[_key_from_completion(completion)] = packet
-
-    def _accept_aggregation_packet(self, packet: FinalPacketResult) -> None:
-        workflow = self.aggregation_workflow
-        if workflow is None:
-            return
-        device_result = workflow.accept_packet(packet)
-        if (
-            device_result is not None
-            and device_result.status in {"READY", "FINAL"}
-            and self.device_result_publisher is not None
-        ):
-            self.device_result_publisher.publish(device_result.as_dict())
-
     def _generate_suggestion(self, completion: PacketExecutionCompleted) -> None:
         """根据包完成结果生成建议并通过 MQTT 发布。
 
@@ -595,7 +528,6 @@ class EdgeRuntimeCoordinator:
         now = self._clock_ns() if now_ns is None else now_ns
         summary: dict[str, Any] = {
             "finished_at_ns": 0,
-            "aggregation_flushed": 0,
             "provisional_promotions": 0,
             "rounds_finalized": 0,
             "device_results_published": 0,
@@ -605,7 +537,6 @@ class EdgeRuntimeCoordinator:
             "outbox_published_cleaned": 0,
             "suggestions_published": 0,
         }
-        summary["aggregation_flushed"] = self._flush_aggregation()
         if self.v12_flow is not None:
             promoted = self.v12_flow.promote_cloud_now_timeouts(
                 now_ns=now, cloud_now_timeout_ns=self.cloud_now_timeout_ns
@@ -636,24 +567,6 @@ class EdgeRuntimeCoordinator:
         summary["finished_at_ns"] = self._clock_ns()
         return summary
 
-    def _flush_aggregation(self) -> int:
-        with self._mutex:
-            pending = sorted(
-                self._pending_aggregation.items(),
-                key=lambda item: item[1].sequence_number,
-            )
-        flushed = 0
-        for key, packet in pending:
-            try:
-                self._accept_aggregation_packet(packet)
-            except Exception:
-                continue
-            with self._mutex:
-                if self._pending_aggregation.get(key) == packet:
-                    self._pending_aggregation.pop(key, None)
-            flushed += 1
-        return flushed
-
     def _report_pre_model_failure(
         self, packet: Mapping[str, Any], *, error_code: str, started_at_ns: int
     ) -> None:
@@ -674,25 +587,12 @@ class EdgeRuntimeCoordinator:
         self.on_packet_completed(completion)
 
 
-def _key_from_completion(value: PacketExecutionCompleted) -> tuple[str, str, str, str, str]:
-    return (value.device_id, value.sender_id, value.task_id, value.bearing_id, value.packet_id)
-
-
 def _suggestion_result_id(value: PacketExecutionCompleted) -> str:
     """建议发布的幂等键：同一包只发布一条建议。"""
     return "suggestion_%s_%s_%s" % (
         value.task_id,
         value.bearing_id,
         value.packet_id,
-    )
-
-
-def _result_id(value: PacketExecutionCompleted, version: int) -> str:
-    return "packet_result_%s_%s_%s_v%d" % (
-        value.task_id,
-        value.bearing_id,
-        value.packet_id,
-        version,
     )
 
 

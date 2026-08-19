@@ -52,7 +52,8 @@ services:
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
     ports:
       - "8002:8001"
-      - "8012:8011"
+      # 8012 保留给宿主机正式模型服务；edge_002 控制端口宿主机映射使用 8013。
+      - "8013:8011"
     volumes:
       - edge_002_data:/app/data
     extra_hosts:
