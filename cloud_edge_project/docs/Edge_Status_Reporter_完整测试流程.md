@@ -52,9 +52,9 @@ HTTP 代理端口：
 | sender_01 → Scheduler | `127.0.0.1:18031` | `127.0.0.1:8003` |
 | sender_02 → Scheduler | `127.0.0.1:18032` | `127.0.0.1:8003` |
 | sender_03 → Scheduler | `127.0.0.1:18033` | `127.0.0.1:8003` |
-| edge_01 → Scheduler | `127.0.0.1:18041` | `127.0.0.1:8003` |
+| edge_01 → Scheduler | `127.0.0.1:18011` | `127.0.0.1:8003` |
 | Scheduler → edge_01 | `127.0.0.1:18042` | `127.0.0.1:8001` |
-| edge_01 → Cloud | `127.0.0.1:18043` | `127.0.0.1:8004` |
+| edge_01 → Cloud | `127.0.0.1:18021` | `127.0.0.1:8004` |
 | Cloud → edge_01 | `127.0.0.1:18044` | `127.0.0.1:8001` |
 | Cloud → Scheduler | `127.0.0.1:18045` | `127.0.0.1:8003` |
 | edge_02 → Scheduler | `127.0.0.1:18051` | `127.0.0.1:8003` |
@@ -118,7 +118,7 @@ No broken requirements found.
 ```powershell
 $ports = @(
     8000,8001,8003,8004,8006,8090,8474,
-    18031,18032,18033,18041,18042,18043,18044,18045,
+    18011,18021,18031,18032,18033,18042,18044,18045,
     18051,18052,18053,18054,
     1883,18831,18832,18931,18932,19031,19032
 )
@@ -380,8 +380,8 @@ Edge Status Reporter 经过 edge_01 的 HTTP 代理：
 $env:EDGE_STATUS_REPORTER_ENABLED = "true"
 $env:EDGE_STATUS_SCHEDULER_ENABLED = "true"
 $env:EDGE_STATUS_CLOUD_ENABLED = "true"
-$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18041/scheduler/edge-nodes/status"
-$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18043/cloud/edge-status"
+$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18011/scheduler/edge-nodes/status"
+$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18021/cloud/edge-status"
 ```
 
 Scheduler 调用 edge_01 经过 `18042`：
@@ -396,7 +396,7 @@ Cloud 获取 edge_01 原始上下文经过 `18044`：
 $env:EDGE_RAW_CONTEXT_BASE_URL = "http://127.0.0.1:18044"
 ```
 
-`18045` 已为 Cloud → Scheduler 预留并配置到真实 Scheduler `8003`，但当前 Cloud 业务代码没有对应出站调用，因此现阶段不需要额外环境变量。
+`18045` 为 Cloud → Scheduler 状态上报链路，上游为真实 Scheduler `8003`。Cloud 服务的 `SCHEDULER_SERVICE_BASE_URL` 默认值已指向 `http://127.0.0.1:18045`，无需额外环境变量。
 
 虚拟机多边缘部署时，每台 Edge 都可以继续监听 `8001`，因为虚拟机 IP 不同。每台 Edge 必须设置唯一节点身份，并把所有出站地址指向中央服务。例如 edge_02 虚拟机：
 
@@ -610,9 +610,9 @@ $httpProxyHealthUrls = @(
     "http://127.0.0.1:18031/health",
     "http://127.0.0.1:18032/health",
     "http://127.0.0.1:18033/health",
-    "http://127.0.0.1:18041/health",
+    "http://127.0.0.1:18011/health",
     "http://127.0.0.1:18042/health",
-    "http://127.0.0.1:18043/health",
+    "http://127.0.0.1:18021/health",
     "http://127.0.0.1:18044/health",
     "http://127.0.0.1:18045/health",
     "http://127.0.0.1:18051/health",
@@ -633,16 +633,16 @@ foreach ($url in $httpProxyHealthUrls) {
 
 端口对应关系：
 
-- `18031/18032/18033/18041/18045/18051` 的上游是 Scheduler `8003`。
+- `18031/18032/18033/18011/18045/18051` 的上游是 Scheduler `8003`。
 - `18042/18044` 的上游是 edge_01。
 - `18052/18054` 的上游是 edge_02。
-- `18043/18053` 的上游是 Cloud `8004`。
+- `18021/18053` 的上游是 Cloud `8004`。
 
 默认实验为 Markov 模式，链路可能主动进入 `DISCONNECTED`，因此偶发 `SIMULATED-FAIL` 不等于程序错误。若所有代理持续失败，应检查 Toxiproxy、业务上游和 `host.docker.internal`。
 
 ### 8.3 验证 Edge Status Reporter 经过代理
 
-本项的前提是启动 `start_all.py` 前已经按第 6.4 节把 Reporter URL 设置为 `18041` 和 `18043`。等待 3 秒后执行：
+本项的前提是启动 `start_all.py` 前已经按第 6.4 节把 Reporter URL 设置为 `18011` 和 `18021`。等待 3 秒后执行：
 
 ```powershell
 Start-Sleep -Seconds 3
@@ -655,7 +655,7 @@ $cloud.edge_node_id
 $cloud.reported_at_ns
 ```
 
-在链路可用时，Scheduler 应显示 `online = 1`，Cloud 应返回 `edge_01` 最新状态。这证明 Reporter 的实际请求经过 `18041/18043` 后分别到达真实 Scheduler 和 Cloud，而不只是验证代理端口可连接。
+在链路可用时，Scheduler 应显示 `online = 1`，Cloud 应返回 `edge_01` 最新状态。这证明 Reporter 的实际请求经过 `18011/18021` 后分别到达真实 Scheduler 和 Cloud，而不只是验证代理端口可连接。
 
 同时可查看网络链路状态：
 
@@ -1025,7 +1025,7 @@ docker compose --env-file .env down
 ```powershell
 $ports = @(
     8000,8001,8003,8004,8006,8090,8474,
-    18031,18032,18033,18041,18042,18043,18044,18045,
+    18011,18021,18031,18032,18033,18042,18044,18045,
     18051,18052,18053,18054,
     1883,18831,18832,18931,18932,19031,19032
 )
@@ -1072,7 +1072,7 @@ foreach ($port in $ports) {
 - [ ] Scheduler 上报接口周期返回 `200`。
 - [ ] Cloud 上报接口周期返回 `200`。
 - [ ] 日志中不再持续出现 Scheduler `400` 或 Cloud `404`。
-- [ ] Reporter 使用 `18041/18043` 时，真实 Scheduler 和 Cloud 能接收状态。
+- [ ] Reporter 使用 `18011/18021` 时，真实 Scheduler 和 Cloud 能接收状态。
 - [ ] Network Reporter 的数据可从 Fake Scheduler `8000/api/v1/network/cache` 查询。
 - [ ] Network API 能查询链路状态、应用参数、评分和可用性。
 - [ ] 非法 Cloud 状态被拒绝且不覆盖合法状态。
@@ -1174,8 +1174,8 @@ docker compose --env-file .env logs toxiproxy --tail 100
 Reporter 在 Edge 进程启动时读取环境变量。必须先设置以下变量，再启动或重启 `start_all.py`：
 
 ```powershell
-$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18041/scheduler/edge-nodes/status"
-$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18043/cloud/edge-status"
+$env:EDGE_STATUS_SCHEDULER_URL = "http://127.0.0.1:18011/scheduler/edge-nodes/status"
+$env:EDGE_STATUS_CLOUD_URL = "http://127.0.0.1:18021/cloud/edge-status"
 ```
 
 只修改环境变量但不重启旧 Edge 进程不会生效。

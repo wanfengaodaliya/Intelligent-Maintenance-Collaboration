@@ -19,7 +19,7 @@ for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from common.config import load_config, service_url
+from common.config import load_config
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
@@ -189,9 +189,8 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         "EDGE_MQTT_CLIENT_ID",
         str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
     )
-    os.environ.setdefault(
-        "SCHEDULER_SERVICE_BASE_URL", service_url("scheduler", config)
-    )
+    # 出站 HTTP 默认经过网络模拟器代理链路（links.yaml: edge_01__to__scheduler__http）。
+    os.environ.setdefault("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:18011")
     os.environ.setdefault("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
     os.environ.setdefault(
         "EDGE_BEARING_WINDOW_CACHE_DIR",

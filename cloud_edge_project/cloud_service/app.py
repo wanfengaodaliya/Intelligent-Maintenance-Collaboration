@@ -104,10 +104,10 @@ register_handler("bearing", BearingCloudHandler)
 
 
 def build_cloud_status_reporter() -> CloudNodeStatusReporter:
-    scheduler_config = config["services"]["scheduler"]
+    # 出站 HTTP 默认经过网络模拟器代理链路（links.yaml: cloud__to__scheduler__http）。
     scheduler_base_url = os.getenv(
         "SCHEDULER_SERVICE_BASE_URL",
-        f"http://{scheduler_config['host']}:{scheduler_config['port']}",
+        "http://127.0.0.1:18045",
     )
 
     def health_provider() -> tuple[str, str]:
