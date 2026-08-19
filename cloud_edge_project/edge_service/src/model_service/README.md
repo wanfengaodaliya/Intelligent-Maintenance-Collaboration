@@ -27,7 +27,9 @@
 | 推理精度 | `bfloat16` |
 | 量化 | 无 |
 | 最大输出 | 64 tokens |
-| 服务地址 | `http://127.0.0.1:8001` |
+| 服务地址 | `http://127.0.0.1:8012` |
+
+> 端口约定：正式模型服务统一使用 `8012`（与 Edge `ModelClient`、`health_check.py` 和实验脚本的默认值一致）。`8012` 已不再分配给 Edge 控制端口的宿主机映射（edge_02 控制端口改为映射 `8013`），避免与模型服务冲突。
 
 项目运行时统一使用`moment`环境及`cloud_edge_project/requirements-moment.txt`。Qwen 在该环境已完成导入与GPU能力预检；首次使用某份实际权重时仍须完成一次完整加载和最小闭环验证。
 
@@ -36,7 +38,7 @@
 ```text
 Windows边缘程序
   └─ EdgeModelPipeline / ModelClient
-       └─ HTTP http://127.0.0.1:8001
+       └─ HTTP http://127.0.0.1:8012
             └─ WSL2 Ubuntu
                  └─ moment Conda环境
                       └─ src.model_service.app
@@ -232,7 +234,7 @@ echo "$EDGE_MODEL_PATH"
 python -m src.model_service.app \
   --model "$EDGE_MODEL_PATH" \
   --host 127.0.0.1 \
-  --port 8001 \
+  --port 8012 \
   --dtype bfloat16 \
   --max-new-tokens 64
 ```
@@ -251,7 +253,7 @@ python -m src.model_service.app \
 只有看到下面内容才表示服务可用：
 
 ```text
-模型服务就绪: http://127.0.0.1:8001
+模型服务就绪: http://127.0.0.1:8012
 ```
 
 保持该终端运行。开发阶段建议使用`tmux`保留会话：
@@ -273,8 +275,8 @@ tmux attach -t edge-model
 打开第二个WSL终端：
 
 ```bash
-curl http://127.0.0.1:8001/health
-curl http://127.0.0.1:8001/readiness
+curl http://127.0.0.1:8012/health
+curl http://127.0.0.1:8012/readiness
 ```
 
 必须得到：
@@ -293,8 +295,8 @@ curl http://127.0.0.1:8001/readiness
 Windows PowerShell也可以检查：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8001/health
-Invoke-RestMethod http://127.0.0.1:8001/readiness
+Invoke-RestMethod http://127.0.0.1:8012/health
+Invoke-RestMethod http://127.0.0.1:8012/readiness
 ```
 
 ## 8. 运行真实模型最小闭环
@@ -382,14 +384,14 @@ Manifest记录权重哈希、Tokenizer哈希、Python、PyTorch、Transformers�
 1. 每位开发者在自己的WSL2中使用统一的`moment`环境；
 2. 从批准的内部存储获得同一模型目录；
 3. 校验SHA-256；
-4. 只监听自己的`127.0.0.1:8001`；
+4. 只监听自己的`127.0.0.1:8012`；
 5. 运行真实最小闭环确认环境一致。
 
 这样不需要把无认证的开发服务暴露到局域网，也不会让多人请求争抢同一把推理锁。
 
 ### 10.2 暂不推荐：直接共享一台GPU服务
 
-当前`src.model_service.app`基于开发用HTTP服务，没有身份认证、TLS、租户隔离或请求持久队列。不要直接使用`--host 0.0.0.0`把8001端口暴露到公司网络或互联网。
+当前`src.model_service.app`基于开发用HTTP服务，没有身份认证、TLS、租户隔离或请求持久队列。不要直接使用`--host 0.0.0.0`把8012端口暴露到公司网络或互联网。
 
 如果将来必须共享一台GPU主机，至少需要先补充：
 
@@ -445,13 +447,13 @@ export EDGE_MODEL_PATH="$HOME/models/Qwen2.5-1.5B-Instruct"
 
 HTTP进程仍在，但模型未完成加载或完整输出检查失败。查看启动终端中的`load_error`，不要让Windows客户端把它当作可用模型。
 
-### Windows访问8001超时
+### Windows访问8012超时
 
 先在WSL内部执行：
 
 ```bash
-curl http://127.0.0.1:8001/health
-ss -ltnp | grep ':8001'
+curl http://127.0.0.1:8012/health
+ss -ltnp | grep ':8012'
 ```
 
 若WSL内部成功、Windows失败，检查WSL localhost forwarding和Windows防火墙。仅在可信本机开发环境且理解安全风险时，才考虑把监听地址临时改为`0.0.0.0`；当前服务没有认证和TLS，不能直接暴露到非可信网络。
@@ -461,7 +463,7 @@ ss -ltnp | grep ':8001'
 只读检查占用者：
 
 ```bash
-ss -ltnp | grep ':8001'
+ss -ltnp | grep ':8012'
 ```
 
 确认是自己启动的旧服务后，回到旧服务终端使用`Ctrl+C`停止。不要批量终止所有Python进程。

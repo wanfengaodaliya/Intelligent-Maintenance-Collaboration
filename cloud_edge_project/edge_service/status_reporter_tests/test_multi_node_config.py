@@ -40,7 +40,7 @@ def test_edge_runtime_environment_builds_node_specific_defaults() -> None:
             "EDGE_MQTT_HOST": "192.168.56.12",
             "EDGE_MQTT_PORT": "18832",
             "SCHEDULER_SERVICE_BASE_URL": "http://192.168.56.10:8003/",
-            "EDGE_CONTROL_PORT": "8012",
+            "EDGE_CONTROL_PORT": "8013",
             "EDGE_CLOUD_NODE_URLS_JSON": '{"cloud_01":"http://192.168.56.11:8004"}',
         }
     )
@@ -51,7 +51,7 @@ def test_edge_runtime_environment_builds_node_specific_defaults() -> None:
     assert config.mqtt.input_topic == "edge/edge_02/input"
     assert config.mqtt.client_id == "edge_02-runtime"
     assert config.scheduler.base_url == "http://192.168.56.10:8003"
-    assert config.control.port == 8012
+    assert config.control.port == 8013
     assert config.cloud_node_urls == {
         "cloud_01": "http://192.168.56.11:8004"
     }

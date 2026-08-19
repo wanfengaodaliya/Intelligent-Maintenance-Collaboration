@@ -11,7 +11,7 @@ generate() 由 ModelRunner 内部推理锁串行化。
 
 用法（WSL，edge-bench venv）：
     python -m src.model_service.app \
-        --model /home/unic/models/Qwen2.5-1.5B-Instruct --port 8001
+        --model /home/unic/models/Qwen2.5-1.5B-Instruct --port 8012
 """
 from __future__ import annotations
 
@@ -122,7 +122,9 @@ def main():
     ap = argparse.ArgumentParser(description="WSL 模型服务")
     ap.add_argument("--model", default="/home/unic/models/Qwen2.5-1.5B-Instruct")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8001)
+    # 统一端口约定：Edge ModelClient / health_check / 实验脚本默认请求 8012。
+    # Edge 控制端口的宿主机映射已让出 8012（edge_02 改映射 8013）。
+    ap.add_argument("--port", type=int, default=8012)
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--max-new-tokens", type=int, default=64)
     args = ap.parse_args()

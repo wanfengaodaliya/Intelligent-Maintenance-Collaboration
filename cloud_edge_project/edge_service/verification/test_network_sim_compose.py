@@ -4,6 +4,11 @@ import re
 from pathlib import Path
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "compose.network-sim.yml"
+MULTI_EDGE_COMPOSE_PATH = Path(__file__).resolve().parents[1] / "compose.multi-edge.yml"
+MODEL_SERVICE_APP_PATH = (
+    Path(__file__).resolve().parents[1] / "src" / "model_service" / "app.py"
+)
+EDGE_APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
 # 与 internet_service/network_simulator/config/links.yaml 对齐的链路代理端口。
 EXPECTED_EDGE_ROUTES = {
@@ -90,4 +95,35 @@ def test_data_volumes_and_host_ports_do_not_collide() -> None:
     for block in _service_blocks(text).values():
         host_ports.extend(re.findall(r"- \"(\d+):\d+\"", block))
     assert len(set(host_ports)) == len(host_ports)
-    assert set(host_ports) <= {"8001", "8002", "8011", "8012"}
+    assert set(host_ports) <= {"8001", "8002", "8011", "8013"}
+
+
+def _compose_host_ports(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    ports: set[str] = set()
+    for block in _service_blocks(text).values():
+        ports.update(re.findall(r"- \"(\d+):\d+\"", block))
+    return ports
+
+
+def test_model_service_port_is_reserved_and_never_mapped_by_compose() -> None:
+    """正式模型服务统一使用 8012；任何 Compose 宿主机端口映射都不得占用它。"""
+    model_app = MODEL_SERVICE_APP_PATH.read_text(encoding="utf-8")
+    match = re.search(r'add_argument\("--port", type=int, default=(\d+)\)', model_app)
+    assert match is not None, "model_service/app.py must define a --port default"
+    model_port = match.group(1)
+
+    edge_app = EDGE_APP_PATH.read_text(encoding="utf-8")
+    client_match = re.search(
+        r'EDGE_MODEL_BASE_URL", "http://127\.0\.0\.1:(\d+)"', edge_app
+    )
+    assert client_match is not None, "edge app.py must define EDGE_MODEL_BASE_URL default"
+    assert client_match.group(1) == model_port, (
+        "model_service 默认端口必须与 Edge ModelClient 默认端口一致"
+    )
+
+    for compose_path in (COMPOSE_PATH, MULTI_EDGE_COMPOSE_PATH):
+        host_ports = _compose_host_ports(compose_path)
+        assert model_port not in host_ports, (
+            f"{compose_path.name} 的宿主机端口映射占用了模型服务端口 {model_port}"
+        )
