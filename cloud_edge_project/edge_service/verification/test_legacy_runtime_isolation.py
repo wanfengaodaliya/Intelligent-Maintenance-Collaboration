@@ -35,6 +35,8 @@ def _config(tmp_path: Path, *, legacy_enabled: bool) -> EdgeRuntimeConfig:
         v12=V12RuntimeConfig(
             enabled=False,
             legacy_realtime_aggregation=legacy_enabled,
+            # 隔离到 tmp_path：避免 suggestion_outbox 建表污染真实数据库。
+            database_path=tmp_path / "edge.db",
         ),
         raw_sample_capture=RawSampleCaptureConfig(enabled=False),
         cloud_node_urls={"cloud_01": "http://127.0.0.1:8004"},

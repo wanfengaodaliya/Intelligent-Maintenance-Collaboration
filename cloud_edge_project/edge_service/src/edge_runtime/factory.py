@@ -22,6 +22,7 @@ from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
 from .device_result_outbox import DeviceResultOutbox
 from .maintenance import EdgeMaintenanceWorker
+from .suggestion_outbox import SuggestionOutbox
 from .http import (
     EdgeControlApplication,
     HeartbeatLoop,
@@ -56,6 +57,7 @@ class EdgeRuntimeAssembly:
     window_review_store: WindowReviewStore | None
     v12_flow: V12DecisionFlow | None
     device_result_outbox: DeviceResultOutbox | None = None
+    suggestion_outbox: SuggestionOutbox | None = None
     maintenance: EdgeMaintenanceWorker | None = None
 
 
@@ -138,12 +140,29 @@ def build_edge_runtime(
         )
 
     def _enrich_uploaded_payload(payload, route_id: str):
-        # 阶段 4：轴承/设备结果上报 Scheduler 时统一携带 trace 身份字段。
+        # 阶段 4：轴承/设备结果上报 Cloud 时统一携带 trace 身份字段。
         return with_trace_identity(
             payload,
             edge_node_id=config.edge_node_id,
             route_id=route_id,
         )
+
+    def _publish_suggestion_with_identity(payload):
+        # 建议发布统一携带 trace 身份字段，route_id 使用建议主题，
+        # 便于跨模块按链路追踪。
+        return suggestion_publisher.publish(
+            with_trace_identity(
+                payload,
+                edge_node_id=config.edge_node_id,
+                route_id=config.mqtt.suggestion_topic,
+            )
+        )
+
+    suggestion_outbox = SuggestionOutbox(
+        config.v12.database_path,
+        _publish_suggestion_with_identity,
+        max_attempts=config.v12.suggestion_publish_max_attempts,
+    )
     transfer = config.window_transfer
     window_review_store = None
     dispatcher = None
@@ -201,9 +220,16 @@ def build_edge_runtime(
         )
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
+        # V1.2 轴承/设备结果的目标端点是 cloud_service 的 /cloud/* 路由，
+        # 必须用 Cloud 客户端直发。此前误注入 scheduler_client.post：
+        # Scheduler 没有这些路由，直连部署时上报全部 404，
+        # 重试耗尽后进死信，云端永远收不到边缘结论。
         result_uploader = ResultUploader(
             config.v12.database_path,
-            scheduler_client.post,
+            JsonHttpClient(
+                _cloud_result_base_url(config),
+                timeout_seconds=config.scheduler.request_timeout_seconds,
+            ).post,
             payload_enricher=_enrich_uploaded_payload,
             max_attempts=config.v12.result_upload_max_attempts,
         )
@@ -214,7 +240,16 @@ def build_edge_runtime(
         )
 
         def on_device_result(result):
-            # 先持久化到 outbox，再由后台维护轮次负责实际发送。
+            # 设备级结果双通道发布（职责不同，缺一不可）：
+            #   通道 A（MQTT device_result_topic）：实时广播给在线订阅方
+            #     （大屏/前端/其他节点），先落 DeviceResultOutbox，由维护
+            #     轮次后台发送，至少一次送达。
+            #   通道 B（HTTP /cloud/device-decision-results）：权威持久化
+            #     上报 cloud_service，先落 ResultUploader 队列，重试耗尽
+            #     进死信；云端以 {"status": "accepted"/"duplicate"} 回应。
+            # 两通道均以 result_id 为主键幂等入队：重复入队同载荷跳过，
+            # 上传侧同 result_id 不同载荷标 CONFLICT；云端 duplicate 响应
+            # 表明服务端亦幂等，断线重试不会产生重复记录。
             device_result_outbox.enqueue(result)
             try:
                 result_uploader.enqueue_device(result)
@@ -294,6 +329,7 @@ def build_edge_runtime(
         on_packet_route_error=on_packet_route_error,
         suggestion_llm_client=suggestion_client,
         suggestion_publisher=suggestion_publisher,
+        suggestion_outbox=suggestion_outbox,
         suggestion_history_window=config.suggestion_llm.history_window,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
@@ -344,5 +380,18 @@ def build_edge_runtime(
         window_review_store=window_review_store,
         v12_flow=v12_flow,
         device_result_outbox=device_result_outbox,
+        suggestion_outbox=suggestion_outbox,
         maintenance=maintenance,
     )
+
+
+def _cloud_result_base_url(config: EdgeRuntimeConfig) -> str:
+    """Resolve the cloud_service base URL for V1.2 result uploads.
+
+    Prefer the first node of cloud_node_urls (the same pick as the legacy
+    aggregation workflow); fall back to window_transfer.cloud_base_url.
+    Both are validated to be HTTP(S) by EdgeRuntimeConfig.validate().
+    """
+    if config.cloud_node_urls:
+        return config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
+    return config.window_transfer.cloud_base_url

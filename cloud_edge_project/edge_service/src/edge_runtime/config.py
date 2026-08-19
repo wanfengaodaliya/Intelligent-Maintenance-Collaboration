@@ -65,6 +65,8 @@ class V12RuntimeConfig:
     http_read_timeout_ms: int = 2_000
     late_correction_retention_ms: int = 3_600_000
     device_result_publish_max_attempts: int = 5
+    # 建议发布重试上限，超过后进入死信等待人工恢复。
+    suggestion_publish_max_attempts: int = 5
     # 阶段 5：结果上报重试上限，超过后进入死信等待人工恢复。
     result_upload_max_attempts: int = 8
     # 阶段 5：已发布 Outbox 记录的保留期（小时），0 表示禁用自动清理。
@@ -206,6 +208,9 @@ class EdgeRuntimeConfig:
                 device_result_publish_max_attempts=int(
                     env.get("EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS", "5")
                 ),
+                suggestion_publish_max_attempts=int(
+                    env.get("EDGE_SUGGESTION_PUBLISH_MAX_ATTEMPTS", "5")
+                ),
                 result_upload_max_attempts=int(
                     env.get("EDGE_RESULT_UPLOAD_MAX_ATTEMPTS", "8")
                 ),
@@ -297,6 +302,8 @@ class EdgeRuntimeConfig:
             errors.append("v12.late_correction_retention_ms must be positive")
         if self.v12.device_result_publish_max_attempts <= 0:
             errors.append("v12.device_result_publish_max_attempts must be positive")
+        if self.v12.suggestion_publish_max_attempts <= 0:
+            errors.append("v12.suggestion_publish_max_attempts must be positive")
         if self.v12.result_upload_max_attempts <= 0:
             errors.append("v12.result_upload_max_attempts must be positive")
         if self.v12.outbox_published_retention_hours < 0:

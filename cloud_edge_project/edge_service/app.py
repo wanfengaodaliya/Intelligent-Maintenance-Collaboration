@@ -217,7 +217,25 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         "EDGE_WINDOW_PACKET_CLOUD_CONFIDENCE_THRESHOLD",
         str(transfer_settings.get("packet_cloud_confidence_threshold", 0.0)),
     )
+    # V1.2 结果库/Outbox 共用 SQLite 文件：默认锚定 edge_service 根目录，
+    # 避免进程从项目目录外启动时相对路径 data/edge_v12.db 落空。
+    os.environ.setdefault(
+        "EDGE_V12_DATABASE_PATH",
+        str(Path(__file__).resolve().parents[1] / "data" / "edge_v12.db"),
+    )
     runtime_config = EdgeRuntimeConfig.from_env()
+    if (
+        diagnostic_backend == "local_h5"
+        and runtime_config.v12.enabled
+        and runtime_config.v12.diagnosis_window_ms != 50
+    ):
+        # H5 蒸馏模型输入冻结为 50 ms（振动 3200 点 @64kHz，硬校验）；
+        # 非 50 ms 窗口合并后超出输入尺寸，H5 校验失败会导致整窗
+        # "诊断不可用"降级。启动即失败，而不是运行中静默降级。
+        raise ValueError(
+            "local_h5 requires v12.diagnosis_window_ms=50, got %d"
+            % runtime_config.v12.diagnosis_window_ms
+        )
     packet_route_error_recorder = PacketRouteErrorRecorder(
         os.getenv(
             "EDGE_PACKET_ROUTE_ERROR_LOG",
@@ -392,6 +410,10 @@ def health() -> dict[str, object]:
         ),
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
+        "suggestion_outbox": (
+            runtime_assembly.suggestion_outbox.health()
+            if runtime_assembly.suggestion_outbox is not None else None
+        ),
         # 阶段 5：关键外部发送队列指标（积压、死信、最老记录年龄）。
         "result_upload": (
             runtime_assembly.coordinator.result_uploader.health()

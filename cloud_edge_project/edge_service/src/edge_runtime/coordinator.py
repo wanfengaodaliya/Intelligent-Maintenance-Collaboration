@@ -60,6 +60,7 @@ class EdgeRuntimeCoordinator:
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
         suggestion_llm_client: Optional[SuggestionClient] = None,
         suggestion_publisher: Optional[JsonPublisher] = None,
+        suggestion_outbox: Any = None,
         suggestion_history_window: int = 10,
         clock_ns=time.time_ns,
     ):
@@ -88,6 +89,9 @@ class EdgeRuntimeCoordinator:
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
         self.suggestion_llm_client = suggestion_llm_client
         self.suggestion_publisher = suggestion_publisher
+        # 建议发布优先走持久化 Outbox（先落库后发送，避免断网/重启丢建议）；
+        # 未装配 Outbox 时退回直接 MQTT 发布（向后兼容）。
+        self.suggestion_outbox = suggestion_outbox
         self.suggestion_history_window = suggestion_history_window
         # 设备级历史记录缓存：{device_id: [edge_result_dict, ...]}
         self._suggestion_history: dict[str, list[dict[str, Any]]] = {}
@@ -264,13 +268,86 @@ class EdgeRuntimeCoordinator:
                 "sequence_number": completion.sequence_number,
                 "error_code": getattr(error, "code", type(error).__name__),
                 "message": str(error),
-                "action": "raw_packet_retained_for_replay",
+                "action": "local_defer_fallback",
             }
             try:
                 self.on_packet_route_error(record)
             except Exception:
                 pass
-            return None
+            # Scheduler 路由请求失败（失联/超时）时不再作废该包：
+            # 本地构造 DEFER 兜底决策，轴承结果按暂定落库并汇入设备轮次，
+            # 轮次仍可正常闭合；原始窗口已由 PacketRoutingBridge 持久化，
+            # 待 Scheduler 恢复后仍可按既有 DEFER 机制发起延迟云复核。
+            return self._local_defer_fallback(completion, diagnosis_window)
+
+    def _local_defer_fallback(
+        self,
+        completion: PacketExecutionCompleted,
+        diagnosis_window: DiagnosisWindow | None = None,
+    ) -> dict[str, Any]:
+        """Build a local DEFER route decision when Scheduler is unreachable.
+
+        Mirrors the Scheduler response contract consumed by
+        BearingResultLifecycleManager.apply_route: identity fields must match
+        the edge bearing result, and result_instruction must carry the
+        PROVISIONAL / PENDING_CLOUD / degraded semantics of PacketRoute.DEFER.
+        """
+        start_sequence = (
+            diagnosis_window.window_start_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
+        end_sequence = (
+            diagnosis_window.window_end_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
+        decision_round_id = (
+            diagnosis_window.decision_round_id
+            if diagnosis_window is not None
+            else build_decision_round_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                window_start_sequence=start_sequence,
+                window_end_sequence=end_sequence,
+            )
+        )
+        diagnosis_window_id = (
+            diagnosis_window.diagnosis_window_id
+            if diagnosis_window is not None
+            else build_diagnosis_window_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                bearing_id=completion.bearing_id,
+                sender_id=completion.sender_id,
+                window_start_sequence=start_sequence,
+                window_end_sequence=end_sequence,
+            )
+        )
+        return {
+            "decision_id": None,
+            "device_id": completion.device_id,
+            "task_id": completion.task_id,
+            "bearing_id": completion.bearing_id,
+            "packet_id": completion.packet_id,
+            "sequence_number": completion.sequence_number,
+            "route": "DEFER",
+            "legacy_route": "EDGE_PROVISIONAL_AND_DEFER_CLOUD",
+            "needs_cloud_review": True,
+            "deferred_cloud_review": True,
+            "result_instruction": {
+                "result_status": "PROVISIONAL",
+                "decision_source": "EDGE",
+                "review_status": "PENDING_CLOUD",
+                "degraded": True,
+            },
+            "reason_codes": ["SCHEDULER_UNREACHABLE"],
+            "defer_reason": "SCHEDULER_UNREACHABLE",
+            "target": None,
+            "created_at_ns": self._clock_ns(),
+            "decision_round_id": decision_round_id,
+            "diagnosis_window_id": diagnosis_window_id,
+            "window_start_sequence": start_sequence,
+            "window_end_sequence": end_sequence,
+        }
 
     def _report_v12_error(self, completion: PacketExecutionCompleted, error: Exception) -> None:
         record = {
@@ -436,20 +513,29 @@ class EdgeRuntimeCoordinator:
                     f"{'立即' if rule_result.maintenance_window == 'immediate' else rule_result.maintenance_window}检修。"
                 )
 
-        # 4. MQTT 发布
+        # 4. 发布：优先持久化到 Outbox，由维护轮次负责实际发送；
+        #    未装配 Outbox 时保持直接 MQTT 发布。
+        payload = {
+            "result_id": _suggestion_result_id(completion),
+            "device_id": device_id,
+            "task_id": completion.task_id,
+            "bearing_id": completion.bearing_id,
+            "packet_id": completion.packet_id,
+            "suggestion": suggestion_text,
+            "suggestion_type": rule_result.suggestion_type,
+            "priority": rule_result.priority,
+            "edge_result": edge.edge_result,
+            "confidence": edge.confidence,
+            "risk_level": edge.edge_risk_level,
+        }
+        if self.suggestion_outbox is not None:
+            try:
+                self.suggestion_outbox.enqueue(payload)
+            except Exception:
+                pass
+            return
         try:
-            self.suggestion_publisher.publish({
-                "device_id": device_id,
-                "task_id": completion.task_id,
-                "bearing_id": completion.bearing_id,
-                "packet_id": completion.packet_id,
-                "suggestion": suggestion_text,
-                "suggestion_type": rule_result.suggestion_type,
-                "priority": rule_result.priority,
-                "edge_result": edge.edge_result,
-                "confidence": edge.confidence,
-                "risk_level": edge.edge_risk_level,
-            })
+            self.suggestion_publisher.publish(payload)
         except Exception:
             pass
 
@@ -517,6 +603,7 @@ class EdgeRuntimeCoordinator:
             "raw_sample_uploads": 0,
             "cloud_review_retries": 0,
             "outbox_published_cleaned": 0,
+            "suggestions_published": 0,
         }
         summary["aggregation_flushed"] = self._flush_aggregation()
         if self.v12_flow is not None:
@@ -540,6 +627,8 @@ class EdgeRuntimeCoordinator:
                 )
         if self.result_uploader is not None:
             summary["result_uploads"] = self.result_uploader.run_once(now)
+        if self.suggestion_outbox is not None:
+            summary["suggestions_published"] = self.suggestion_outbox.run_once(now)
         if self.raw_sample_uploader is not None:
             summary["raw_sample_uploads"] = self.raw_sample_uploader.run_once(now)
         if self.cloud_review_service is not None:
@@ -587,6 +676,15 @@ class EdgeRuntimeCoordinator:
 
 def _key_from_completion(value: PacketExecutionCompleted) -> tuple[str, str, str, str, str]:
     return (value.device_id, value.sender_id, value.task_id, value.bearing_id, value.packet_id)
+
+
+def _suggestion_result_id(value: PacketExecutionCompleted) -> str:
+    """建议发布的幂等键：同一包只发布一条建议。"""
+    return "suggestion_%s_%s_%s" % (
+        value.task_id,
+        value.bearing_id,
+        value.packet_id,
+    )
 
 
 def _result_id(value: PacketExecutionCompleted, version: int) -> str:
