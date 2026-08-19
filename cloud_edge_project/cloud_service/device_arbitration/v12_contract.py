@@ -61,12 +61,15 @@ def adapt_v12_device_arbitration_request(payload: Mapping[str, Any]) -> dict[str
         confidence = _score(value.get("confidence"), "confidence")
         risk_level = _enum(value.get("risk_level"), "risk_level", {"LOW", "MEDIUM", "HIGH"})
         action_grade = _action_grade(value.get("action_level"))
+        data_quality_score = _score(
+            value.get("data_quality_score", confidence), "data_quality_score"
+        )
         scenario_results.append(
             {
                 "bearing_id": bearing_id,
                 "bearing_state": ACTION_TO_STATE[action_for_grade(action_grade)],
                 "confidence": confidence,
-                "data_quality_score": confidence,
+                "data_quality_score": data_quality_score,
                 "risk_level": risk_level.lower(),
                 "recommended_action": action_for_grade(action_grade),
             }

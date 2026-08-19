@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -14,6 +15,8 @@ from typing import Any
 import requests
 from fastapi import Body, FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
+
+LOGGER = logging.getLogger(__name__)
 
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
@@ -147,8 +150,8 @@ async def _run_background_workers() -> None:
                 SignalAnalysisWorker(RawAnalysisSampleService(settings.database_path)).run_once,
                 now_ns=time.time_ns(),
             )
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            LOGGER.exception("signal analysis worker failed: %s", exc)
         await asyncio.sleep(0.5)
 
 
@@ -425,7 +428,8 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
             status_code=400,
             content={"error_code": error.code, "message": error.message},
         )
-    except Exception:
+    except Exception as exc:
+        LOGGER.exception("device arbitration failed: %s", exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
 
 
@@ -437,7 +441,8 @@ def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
             database_path=load_cloud_settings().database_path,
         )
         result = handler.get_device_arbitration(conflict_id)
-    except Exception:
+    except Exception as exc:
+        LOGGER.exception("get device arbitration failed for %s: %s", conflict_id, exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
     if result is None:
         return JSONResponse(status_code=404, content={"error_code": "ARBITRATION_NOT_FOUND"})
