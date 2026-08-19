@@ -82,6 +82,9 @@ class EdgeRuntimeCoordinator:
         self.round_timeout_ns = round_timeout_ns
         self.device_result_outbox = device_result_outbox
         self.cloud_review_service: Any = None
+        # 阶段 5：已发布 Outbox 记录保留期（纳秒）；None/<=0 表示禁用自动清理。
+        # 由装配层按配置注入，维护轮次据此执行数据保留策略。
+        self.outbox_published_retention_ns: int | None = None
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
         self.suggestion_llm_client = suggestion_llm_client
         self.suggestion_publisher = suggestion_publisher
@@ -506,6 +509,7 @@ class EdgeRuntimeCoordinator:
             "result_uploads": 0,
             "raw_sample_uploads": 0,
             "cloud_review_retries": 0,
+            "outbox_published_cleaned": 0,
         }
         summary["aggregation_flushed"] = self._flush_aggregation()
         if self.v12_flow is not None:
@@ -519,6 +523,14 @@ class EdgeRuntimeCoordinator:
             summary["rounds_finalized"] = len(finalized)
         if self.device_result_outbox is not None:
             summary["device_results_published"] = self.device_result_outbox.run_once(now)
+            retention_ns = self.outbox_published_retention_ns
+            if retention_ns is not None and retention_ns > 0:
+                # 阶段 5：数据保留策略在维护轮次内推进，只清理超期 PUBLISHED 记录。
+                summary["outbox_published_cleaned"] = (
+                    self.device_result_outbox.cleanup_published(
+                        retention_ns=retention_ns, now_ns=now
+                    )
+                )
         if self.result_uploader is not None:
             summary["result_uploads"] = self.result_uploader.run_once(now)
         if self.raw_sample_uploader is not None:

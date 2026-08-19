@@ -229,21 +229,63 @@ cloud_review_cleanup = CloudReviewCleanupWorker(
     interval_seconds=cloud_review_config.cleanup_interval_seconds,
 )
 
+def _liveness_snapshot() -> dict[str, object]:
+    """阶段 5：liveness 只看进程内关键线程是否存活。"""
+    maintenance = runtime_assembly.maintenance
+    mqtt_ingress = runtime_assembly.service.mqtt_ingress
+    maintenance_alive = True if maintenance is None else maintenance.running
+    return {
+        "alive": bool(maintenance_alive and mqtt_ingress.worker_alive),
+        "maintenance_worker_alive": maintenance_alive,
+        "mqtt_worker_alive": mqtt_ingress.worker_alive,
+    }
+
+
+def _readiness_snapshot() -> dict[str, object]:
+    """阶段 5：readiness 表示当前是否满足接收新任务的条件。"""
+    maintenance = runtime_assembly.maintenance
+    service = runtime_assembly.service
+    maintenance_running = True if maintenance is None else maintenance.running
+    checks = {
+        "service_started": bool(service.started),
+        "maintenance_worker_running": bool(maintenance_running),
+        "mqtt_connected": bool(service.mqtt_ingress.connected),
+    }
+    return {
+        "ready": all(checks.values()),
+        "checks": checks,
+    }
+
+
+@app.get("/health/live")
+def health_live() -> JSONResponse:
+    snapshot = _liveness_snapshot()
+    status_code = 200 if snapshot["alive"] else 503
+    return JSONResponse(status_code=status_code, content=snapshot)
+
+
+@app.get("/health/ready")
+def health_ready() -> JSONResponse:
+    snapshot = _readiness_snapshot()
+    status_code = 200 if snapshot["ready"] else 503
+    return JSONResponse(status_code=status_code, content=snapshot)
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
     model = runtime_assembly.coordinator.pipeline.fallback
     maintenance = runtime_assembly.maintenance
     outbox = runtime_assembly.device_result_outbox
     maintenance_health = maintenance.health() if maintenance is not None else None
-    ready = runtime_assembly.service.started and (
-        maintenance is None
-        or bool(maintenance_health and maintenance_health["maintenance_worker_running"])
-    )
+    readiness = _readiness_snapshot()
+    ready = readiness["ready"]
     return {
         "service": "edge_service",
         "node_id": EDGE_NODE_ID,
         "status": "ok" if ready else "starting",
         "ready": ready,
+        "liveness": _liveness_snapshot(),
+        "readiness": readiness,
         "port": config["services"]["edge"]["port"],
         "model_backend": diagnostic_backend,
         "model_version": model.model_version,
@@ -256,6 +298,8 @@ def health() -> dict[str, object]:
         "mqtt_connected": runtime_assembly.service.mqtt_ingress.connected,
         "mqtt_topic": runtime_assembly.service.config.mqtt.input_topic,
         "mqtt_queue_depth": runtime_assembly.service.mqtt_ingress.queue_depth,
+        # 阶段 5：入站容量指标（满载拒绝数、最老任务年龄），过载行为可观测。
+        "mqtt_capacity": runtime_assembly.service.mqtt_ingress.capacity_snapshot(),
         "legacy_bearing_aggregation_enabled": runtime_assembly.window_review_store is not None,
         "bearing_window_cache_bytes": (
             None

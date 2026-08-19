@@ -9,7 +9,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements-moment.txt ./requirements-moment.txt
-RUN pip install --no-cache-dir --requirement requirements-moment.txt
+# momentfm 以 git+https 形式安装，镜像内需要 git。
+# PIP_INDEX_URL / PIP_EXTRA_URL 可在构建时覆盖为镜像源（如国内网络环境）。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_EXTRA_INDEX_URL=""
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
+        $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
+        --requirement requirements-moment.txt
 
 COPY common ./common
 COPY core ./core
@@ -33,7 +42,9 @@ RUN mkdir -p /app/data
 
 EXPOSE 8001 8011
 
+# 阶段 5：容器健康探针使用 liveness（关键线程存活），
+# readiness（/health/ready）用于调度与流量控制，短暂断连不应标记容器 unhealthy。
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=6 \
-    CMD ["python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)); assert data.get('ready', False)"]
+    CMD ["python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health/live', timeout=3)); assert data.get('alive', False)"]
 
 CMD ["python", "edge_service/run_edge_service.py", "--host", "0.0.0.0", "--port", "8001"]

@@ -65,6 +65,8 @@ class V12RuntimeConfig:
     http_read_timeout_ms: int = 2_000
     late_correction_retention_ms: int = 3_600_000
     device_result_publish_max_attempts: int = 5
+    # 阶段 5：已发布 Outbox 记录的保留期（小时），0 表示禁用自动清理。
+    outbox_published_retention_hours: int = 168
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,9 @@ class EdgeRuntimeConfig:
                 device_result_publish_max_attempts=int(
                     env.get("EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS", "5")
                 ),
+                outbox_published_retention_hours=int(
+                    env.get("EDGE_OUTBOX_PUBLISHED_RETENTION_HOURS", "168")
+                ),
             ),
             maintenance=MaintenanceConfig(
                 enabled=env.get("EDGE_MAINTENANCE_ENABLED", "true").strip().lower() == "true",
@@ -284,6 +289,8 @@ class EdgeRuntimeConfig:
             errors.append("v12.late_correction_retention_ms must be positive")
         if self.v12.device_result_publish_max_attempts <= 0:
             errors.append("v12.device_result_publish_max_attempts must be positive")
+        if self.v12.outbox_published_retention_hours < 0:
+            errors.append("v12.outbox_published_retention_hours must not be negative")
         if not 0.1 <= self.maintenance.interval_seconds <= 10.0:
             errors.append("maintenance.interval_seconds must be within [0.1, 10.0]")
         if self.v12.diagnosis_window_ms not in {50, 100, 150}:

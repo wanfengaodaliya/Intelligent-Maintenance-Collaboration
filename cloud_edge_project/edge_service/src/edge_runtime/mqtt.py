@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from typing import Any, Callable, Mapping, Optional
 
 import paho.mqtt.client as mqtt
@@ -40,12 +41,16 @@ class MqttIngress:
         if hasattr(self.client, "manual_ack_set"):
             self.client.manual_ack_set(True)
         self.client.reconnect_delay_set(min_delay=1, max_delay=10)
-        self._queue: queue.Queue[tuple[dict[str, Any], Any]] = queue.Queue(
+        # 队列元素为 (packet, message, enqueued_at_ns)，时间戳用于最老任务年龄指标。
+        self._queue: queue.Queue[tuple[dict[str, Any], Any, int]] = queue.Queue(
             maxsize=config.ingress_queue_capacity
         )
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._connected = threading.Event()
+        # 阶段 5：满载拒绝计数，配合断连背压构成可观测的过载策略。
+        self._rejected_total = 0
+        self._rejected_lock = threading.Lock()
 
     def start(self, *, connect_timeout_seconds: float = 5.0) -> None:
         if self._worker is not None:
@@ -112,8 +117,12 @@ class MqttIngress:
             self._ack(message)
             return
         try:
-            self._queue.put((value, message), timeout=1.0)
+            self._queue.put((value, message, time.time_ns()), timeout=1.0)
         except queue.Full:
+            # 满载策略：断连背压（QoS1 由 broker 重发构成可重试语义），
+            # 拒绝必须计数，禁止静默丢弃。
+            with self._rejected_lock:
+                self._rejected_total += 1
             self._emit_error("INGRESS_QUEUE_FULL", "edge MQTT ingress queue is full")
             client.disconnect()
             return
@@ -127,7 +136,7 @@ class MqttIngress:
     def _consume(self) -> None:
         while not self._stop.is_set():
             try:
-                packet, message = self._queue.get(timeout=0.2)
+                packet, message, _enqueued_at_ns = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
@@ -152,6 +161,37 @@ class MqttIngress:
     @property
     def queue_depth(self) -> int:
         return self._queue.qsize()
+
+    @property
+    def worker_alive(self) -> bool:
+        """入站消费线程是否存活（liveness 判定依据之一）。"""
+        return self._worker is not None and self._worker.is_alive()
+
+    @property
+    def rejected_total(self) -> int:
+        """满载拒绝累计数；持续增长说明容量配置低于实际流量。"""
+        with self._rejected_lock:
+            return self._rejected_total
+
+    @property
+    def oldest_task_age_ms(self) -> float | None:
+        """队首任务等待毫秒数；空队列返回 None。"""
+        head = getattr(self._queue, "queue", None)
+        if not head:
+            return None
+        oldest = head[0]
+        return max((time.time_ns() - oldest[2]) / 1_000_000.0, 0.0)
+
+    def capacity_snapshot(self) -> dict[str, Any]:
+        """阶段 5：入站容量指标快照，供健康接口与状态上报使用。"""
+        return {
+            "queue_depth": self.queue_depth,
+            "queue_capacity": self.config.ingress_queue_capacity,
+            "rejected_total": self.rejected_total,
+            "oldest_task_age_ms": self.oldest_task_age_ms,
+            "connected": self.connected,
+            "worker_alive": self.worker_alive,
+        }
 
 
 class MqttJsonPublisher:

@@ -295,6 +295,11 @@ def build_edge_runtime(
         suggestion_history_window=config.suggestion_llm.history_window,
     )
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
+    if config.v12.enabled and config.v12.outbox_published_retention_hours > 0:
+        # 阶段 5：注入已发布记录保留期，维护轮次自动执行数据保留策略。
+        coordinator.outbox_published_retention_ns = (
+            config.v12.outbox_published_retention_hours * 3_600 * 1_000_000_000
+        )
     control_application = EdgeControlApplication(
         ingress,
         on_device_arbitration_result=(

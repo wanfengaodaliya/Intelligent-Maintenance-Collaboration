@@ -89,16 +89,45 @@ class DeviceResultOutbox:
                 published += 1
         return published
 
-    def health(self) -> dict[str, int]:
+    def health(self) -> dict[str, Any]:
+        now = self.clock_ns()
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT status, COUNT(*) AS total FROM device_result_outbox GROUP BY status"
             ).fetchall()
-        counts = {status: 0 for status in (PUBLISH_PENDING, PUBLISHING, PUBLISHED, RETRY_WAIT, DEAD_LETTER)}
+            oldest = connection.execute(
+                """SELECT MIN(created_at_ns) AS oldest_ns FROM device_result_outbox
+                WHERE status IN (?, ?, ?)""",
+                (PUBLISH_PENDING, RETRY_WAIT, PUBLISHING),
+            ).fetchone()
+        counts: dict[str, Any] = {
+            status: 0 for status in (PUBLISH_PENDING, PUBLISHING, PUBLISHED, RETRY_WAIT, DEAD_LETTER)
+        }
         for row in rows:
             counts[str(row["status"])] = int(row["total"])
         counts["backlog"] = counts[PUBLISH_PENDING] + counts[RETRY_WAIT] + counts[PUBLISHING]
+        oldest_ns = oldest["oldest_ns"] if oldest is not None else None
+        counts["oldest_backlog_age_ms"] = (
+            None if oldest_ns is None else max((now - int(oldest_ns)) / 1_000_000.0, 0.0)
+        )
         return counts
+
+    def cleanup_published(self, *, retention_ns: int, now_ns: int | None = None) -> int:
+        """删除超过保留期的已发布记录；死信与未完成状态不做自动清理。
+
+        阶段 5 数据保留策略：PUBLISHED 记录仅作审计回溯，超期即可删除；
+        DEAD_LETTER 必须保留给人工恢复入口处理。
+        """
+        if retention_ns <= 0:
+            return 0
+        now = self.clock_ns() if now_ns is None else now_ns
+        cutoff = now - retention_ns
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM device_result_outbox WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?",
+                (PUBLISHED, cutoff),
+            )
+            return cursor.rowcount
 
     def _publish_one(self, result_id: str, payload_json: str, attempt_count: int, now: int) -> bool:
         with self._connect() as connection:
