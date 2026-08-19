@@ -159,55 +159,6 @@ CREATE TABLE IF NOT EXISTS summary_ingestion_conflicts (
     detected_at_ns INTEGER NOT NULL, conflict_code TEXT NOT NULL CHECK (conflict_code IN ('PACKET_CONTENT_CONFLICT', 'TASK_SEQUENCE_CONFLICT')),
     resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)), CHECK (json_valid(incoming_summary_json))
 );
-CREATE TABLE IF NOT EXISTS aggregation_result (
-    aggregation_id TEXT PRIMARY KEY,
-    review_id TEXT NOT NULL,
-    source_fingerprint TEXT NOT NULL,
-    preprocessing_config_version TEXT NOT NULL,
-    aggregation_status TEXT NOT NULL CHECK (aggregation_status IN ('queued', 'running', 'succeeded', 'failed')),
-    context_status TEXT NOT NULL CHECK (context_status IN ('complete', 'partial_context')),
-    relative_positions_json TEXT,
-    packet_manifest_json TEXT,
-    packet_boundaries_json TEXT,
-    raw_window_path TEXT,
-    raw_window_sha256 TEXT,
-    preprocessed_window_path TEXT,
-    preprocessed_window_sha256 TEXT,
-    sample_counts_json TEXT,
-    quality_summary_json TEXT,
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    lease_until_ns INTEGER,
-    retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
-    next_retry_at_ns INTEGER,
-    error_code TEXT,
-    error_detail TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    succeeded_at_ns INTEGER,
-    UNIQUE (review_id, source_fingerprint, preprocessing_config_version),
-    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE,
-    CHECK (relative_positions_json IS NULL OR json_valid(relative_positions_json)),
-    CHECK (packet_manifest_json IS NULL OR json_valid(packet_manifest_json)),
-    CHECK (packet_boundaries_json IS NULL OR json_valid(packet_boundaries_json)),
-    CHECK (sample_counts_json IS NULL OR json_valid(sample_counts_json)),
-    CHECK (quality_summary_json IS NULL OR json_valid(quality_summary_json))
-);
-CREATE INDEX IF NOT EXISTS idx_aggregation_result_pending
-ON aggregation_result(aggregation_status, updated_at_ns);
-CREATE TABLE IF NOT EXISTS aggregation_outbox (
-    outbox_id TEXT PRIMARY KEY,
-    aggregation_id TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL CHECK (event_type = 'preprocessed_window_ready'),
-    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-    dispatch_status TEXT NOT NULL CHECK (dispatch_status IN ('pending', 'delivered', 'failed')),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    last_error TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (aggregation_id) REFERENCES aggregation_result(aggregation_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_aggregation_outbox_pending
-ON aggregation_outbox(dispatch_status, updated_at_ns);
 CREATE TABLE IF NOT EXISTS bearing_configuration (
     configuration_id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
@@ -237,42 +188,6 @@ CREATE INDEX IF NOT EXISTS idx_bearing_configuration_sender_time
 ON bearing_configuration(sender_id, effective_from_ns);
 CREATE INDEX IF NOT EXISTS idx_bearing_configuration_subject_time
 ON bearing_configuration(device_id, bearing_id, effective_from_ns);
-CREATE TABLE IF NOT EXISTS enhanced_analysis_result (
-    analysis_id TEXT PRIMARY KEY,
-    review_id TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
-    context_status TEXT NOT NULL CHECK (context_status IN ('complete', 'partial_context')),
-    algorithm_version TEXT NOT NULL,
-    config_version TEXT NOT NULL,
-    aggregation_id TEXT NOT NULL,
-    result_json TEXT,
-    limitations_json TEXT NOT NULL DEFAULT '[]',
-    retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    next_retry_at_ns INTEGER,
-    error_code TEXT,
-    error_detail TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE,
-    CHECK (result_json IS NULL OR json_valid(result_json)),
-    CHECK (limitations_json IS NULL OR json_valid(limitations_json))
-);
-CREATE INDEX IF NOT EXISTS idx_enhanced_analysis_status
-ON enhanced_analysis_result(status, updated_at_ns);
-CREATE TABLE IF NOT EXISTS enhanced_analysis_outbox (
-    outbox_id TEXT PRIMARY KEY,
-    analysis_id TEXT NOT NULL UNIQUE,
-    event_type TEXT NOT NULL CHECK (event_type = 'enhanced_analysis.succeeded'),
-    review_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
-    error_code TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (review_id) REFERENCES cloud_review(review_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_enhanced_analysis_outbox_status
-ON enhanced_analysis_outbox(status, updated_at_ns);
 CREATE TABLE IF NOT EXISTS final_diagnosis_summary (
     review_id TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
@@ -351,82 +266,6 @@ CREATE TABLE IF NOT EXISTS model_update_dataset_manifest (
     FOREIGN KEY (update_id) REFERENCES model_update_task(update_id),
     CHECK (json_valid(manifest_json))
 );
-CREATE TABLE IF NOT EXISTS workflow_review_job (
-    review_id TEXT PRIMARY KEY,
-    review_type TEXT NOT NULL CHECK (review_type IN ('PACKET', 'BEARING_WINDOW', 'DEVICE')),
-    status TEXT NOT NULL CHECK (status IN ('PENDING', 'WAITING_RAW', 'RUNNING', 'SUCCEEDED', 'FAILED')),
-    request_sha256 TEXT NOT NULL,
-    request_json TEXT NOT NULL,
-    raw_batch_json TEXT,
-    result_json TEXT,
-    error_code TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    CHECK (json_valid(request_json)),
-    CHECK (raw_batch_json IS NULL OR json_valid(raw_batch_json)),
-    CHECK (result_json IS NULL OR json_valid(result_json))
-);
-CREATE INDEX IF NOT EXISTS idx_workflow_review_status
-ON workflow_review_job(status, updated_at_ns);
-CREATE TABLE IF NOT EXISTS bearing_review (
-    bearing_review_id TEXT PRIMARY KEY,
-    device_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    bearing_id TEXT NOT NULL,
-    window_index INTEGER NOT NULL CHECK (window_index BETWEEN 1 AND 4),
-    sender_id TEXT NOT NULL,
-    edge_state TEXT NOT NULL,
-    edge_confidence REAL NOT NULL CHECK (edge_confidence >= 0 AND edge_confidence <= 1),
-    packet_count INTEGER NOT NULL CHECK (packet_count = 20),
-    packet_manifest_sha256 TEXT NOT NULL,
-    packet_manifest_json TEXT NOT NULL CHECK (json_valid(packet_manifest_json)),
-    status TEXT NOT NULL CHECK (status IN ('WAITING_FOR_CONTEXT', 'PROCESSING', 'SUCCEEDED', 'FAILED')),
-    raw_context_request_id TEXT UNIQUE,
-    error_code TEXT,
-    result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    UNIQUE (device_id, task_id, bearing_id, window_index)
-);
-CREATE TABLE IF NOT EXISTS bearing_raw_context_request (
-    request_id TEXT PRIMARY KEY,
-    bearing_review_id TEXT NOT NULL UNIQUE,
-    device_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    bearing_id TEXT NOT NULL,
-    sender_id TEXT NOT NULL,
-    expected_packet_count INTEGER NOT NULL CHECK (expected_packet_count = 20),
-    requested_packets_json TEXT NOT NULL CHECK (json_valid(requested_packets_json)),
-    request_status TEXT NOT NULL CHECK (request_status IN ('created', 'dispatched', 'dispatch_failed', 'complete')),
-    last_error_code TEXT,
-    created_at_ns INTEGER NOT NULL,
-    updated_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (bearing_review_id) REFERENCES bearing_review(bearing_review_id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS bearing_review_context_packet (
-    bearing_review_id TEXT NOT NULL,
-    packet_id TEXT NOT NULL,
-    sequence_number INTEGER NOT NULL CHECK (sequence_number > 0),
-    payload_sha256 TEXT NOT NULL,
-    packet_json TEXT NOT NULL CHECK (json_valid(packet_json)),
-    received_at_ns INTEGER NOT NULL,
-    PRIMARY KEY (bearing_review_id, packet_id),
-    UNIQUE (bearing_review_id, sequence_number),
-    FOREIGN KEY (bearing_review_id) REFERENCES bearing_review(bearing_review_id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS bearing_review_aggregation (
-    aggregation_id TEXT PRIMARY KEY,
-    bearing_review_id TEXT NOT NULL UNIQUE,
-    packet_count INTEGER NOT NULL CHECK (packet_count = 20),
-    packet_manifest_json TEXT NOT NULL CHECK (json_valid(packet_manifest_json)),
-    sample_rate_hz INTEGER NOT NULL,
-    total_sample_count INTEGER NOT NULL,
-    aggregation_status TEXT NOT NULL CHECK (aggregation_status IN ('succeeded', 'failed')),
-    enhanced_features_json TEXT NOT NULL CHECK (json_valid(enhanced_features_json)),
-    created_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (bearing_review_id) REFERENCES bearing_review(bearing_review_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_bearing_review_status ON bearing_review(status, updated_at_ns);
 CREATE TABLE IF NOT EXISTS bearing_task_result (
     device_id TEXT NOT NULL, task_id TEXT NOT NULL, bearing_id TEXT NOT NULL,
     edge_state TEXT NOT NULL, edge_confidence REAL NOT NULL, cloud_reviewed INTEGER NOT NULL,
@@ -445,4 +284,29 @@ CREATE TABLE IF NOT EXISTS arbitration_summary (
     error_code TEXT, created_at_ns INTEGER NOT NULL,
     FOREIGN KEY (arbitration_id) REFERENCES device_arbitration_record(arbitration_id)
 );
+CREATE TABLE IF NOT EXISTS cloud_moment_review_record (
+    review_id TEXT PRIMARY KEY,
+    result_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    bearing_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    decision_round_id TEXT NOT NULL,
+    diagnosis_window_id TEXT NOT NULL,
+    window_start_sequence INTEGER,
+    window_end_sequence INTEGER,
+    window_start_ns INTEGER,
+    window_end_ns INTEGER,
+    bearing_state TEXT NOT NULL,
+    confidence REAL,
+    data_quality_score REAL,
+    risk_level TEXT,
+    action_grade INTEGER,
+    recommended_action TEXT,
+    model_version TEXT,
+    created_at_ns INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_moment_review_device_task
+ON cloud_moment_review_record(device_id, task_id, created_at_ns);
 """

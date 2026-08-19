@@ -12,9 +12,9 @@ from typing import Any, Mapping
 import numpy as np
 from scipy import stats
 
-from cloud_service.enhanced_analysis.config import DEFAULT_ANALYSIS_CONFIG
-from cloud_service.enhanced_analysis.envelope import analyze_envelope_spectrum
-from cloud_service.enhanced_analysis.spectrum import analyze_spectrum
+from cloud_service.raw_analysis.config import DEFAULT_ANALYSIS_CONFIG
+from cloud_service.raw_analysis.envelope import analyze_envelope_spectrum
+from cloud_service.raw_analysis.spectrum import analyze_spectrum
 
 
 class RawAnalysisSampleService:

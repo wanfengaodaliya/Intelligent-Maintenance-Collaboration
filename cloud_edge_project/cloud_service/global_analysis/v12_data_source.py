@@ -45,6 +45,8 @@ class V12GlobalAnalysisDataSource:
             current_bearings.sort(key=lambda row: (row.get("created_at_ns", 0), row["bearing_id"]))
             evidence = _load_evidence(connection, device_id, selected_rounds) if availability["physical_evidence"] else []
             edge_summaries = _load_edge_summaries(connection, device_id, selected_rounds) if availability["edge_summaries"] else []
+            arbitration_ids = [str(row["arbitration_id"]) for row in current_devices if row.get("arbitration_id")]
+            arbitration_states = _load_arbitration_states(connection, arbitration_ids) if arbitration_ids else {}
 
         return {
             "device_tasks": current_devices,
@@ -52,7 +54,7 @@ class V12GlobalAnalysisDataSource:
             "bearing_review_pairs": _bearing_review_pairs(scoped_bearing_records),
             "packet_review_pairs": [],
             "arbitrations": [
-                {**row, "status": "resolved"}
+                {**row, **arbitration_states.get(str(row["arbitration_id"]), {"status": "unknown"})}
                 for row in current_devices if row.get("arbitration_id")
             ],
             "physical_evidence": evidence,
@@ -170,6 +172,21 @@ def _load_edge_summaries(connection: Any, device_id: str, selected_rounds: set[t
         (device_id, *task_ids),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _load_arbitration_states(
+    connection: Any, arbitration_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Read real arbitration status from device_arbitration_record (not hardcoded)."""
+    if not arbitration_ids:
+        return {}
+    placeholders = ",".join("?" for _ in arbitration_ids)
+    rows = connection.execute(
+        f"SELECT arbitration_id,status,final_action,confidence FROM device_arbitration_record "
+        f"WHERE arbitration_id IN ({placeholders})",
+        arbitration_ids,
+    ).fetchall()
+    return {str(row["arbitration_id"]): dict(row) for row in rows}
 
 
 def _table_exists(connection: Any, name: str) -> bool:

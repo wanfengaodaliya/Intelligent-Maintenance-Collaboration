@@ -1,4 +1,4 @@
-"""Envelope-demodulation spectrum analysis."""
+"""Envelope-demodulation spectrum analysis for raw_analysis."""
 
 from __future__ import annotations
 

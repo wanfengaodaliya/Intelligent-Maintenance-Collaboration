@@ -14,6 +14,7 @@ from cloud_service.moment_light_adapt import (
     MomentLightAdaptRunner,
     MomentReviewPolicy,
 )
+from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.packet_diagnosis import (
     DiagnosisModel,
     PacketDiagnosis,
@@ -172,6 +173,7 @@ def _infer_v12_moment(
         "model_version": prediction.model_version,
         "created_at_ns": time.time_ns(),
     }
+    MomentReviewRepository(settings.database_path).save(result)
     return {
         "success": True,
         "review_id": review_id,
