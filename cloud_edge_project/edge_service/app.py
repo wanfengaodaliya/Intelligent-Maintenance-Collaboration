@@ -122,6 +122,15 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
 
     model_config = EdgeModelConfig()
     model_config.diagnostic_backend = "http"
+    # 阶段 7：推理队列容量/满载策略可配置（方案 6.2 满载策略细化）。
+    # 默认容量 64：双 Sender 50ms 节奏 ≈ 40 窗口/秒时提供 >1.5s 突发缓冲；
+    # 原默认 1 会在任何突发下把窗口全部打入降级失败，任务无法收敛。
+    model_config.queue.max_waiting_requests = int(
+        os.getenv("EDGE_MODEL_QUEUE_CAPACITY", "64")
+    )
+    model_config.queue.full_policy = os.getenv(
+        "EDGE_MODEL_QUEUE_FULL_POLICY", "reject"
+    )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
     # 设置后模型服务上报版本不一致 → readiness 不通过，不接新任务。
     pinned_model_version = os.getenv("EDGE_MODEL_VERSION") or None
