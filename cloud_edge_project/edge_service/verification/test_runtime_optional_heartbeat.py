@@ -45,7 +45,6 @@ def test_runtime_can_disable_legacy_heartbeat(monkeypatch) -> None:
     cache = _Lifecycle()
     pipeline = _Pipeline()
     mqtt = _Lifecycle()
-    dispatcher = _Lifecycle()
     service = EdgeRuntimeService(
         config=_Config(),
         cache=cache,
@@ -53,32 +52,7 @@ def test_runtime_can_disable_legacy_heartbeat(monkeypatch) -> None:
         mqtt_ingress=mqtt,
         control_application=object(),
         heartbeat=None,
-        window_dispatcher=dispatcher,
-    )
-
-    service.start()
-    service.stop()
-
-    assert service.started is False
-    assert cache.started is False
-    assert pipeline.started is False
-    assert mqtt.started is False
-    assert dispatcher.started is False
-
-
-def test_runtime_can_disable_legacy_window_dispatcher(monkeypatch) -> None:
-    monkeypatch.setattr("edge_runtime.service.make_control_server", lambda *args: _Server())
-    cache = _Lifecycle()
-    pipeline = _Pipeline()
-    mqtt = _Lifecycle()
-    service = EdgeRuntimeService(
-        config=_Config(),
-        cache=cache,
-        pipeline=pipeline,
-        mqtt_ingress=mqtt,
-        control_application=object(),
-        heartbeat=None,
-        window_dispatcher=None,
+        maintenance=None,
     )
 
     service.start()

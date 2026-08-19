@@ -32,7 +32,6 @@ from edge_validation_cache import (  # noqa: E402
     EdgeValidationCache,
     ValidationCacheConfig,
 )
-from edge_aggregation import WindowTransferError  # noqa: E402
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
 from edge_model.local_h5_client import (  # noqa: E402
     H5_RUNTIME_MODEL_VERSION,
@@ -176,7 +175,6 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         evidence_builder=evidence_builder,
     )
     mqtt_settings = config.get("mqtt", {})
-    transfer_settings = config.get("bearing_window_transfer", {})
     # 统一配置入口：环境变量优先，local.yaml 只作为本地开发兜底。
     os.environ.setdefault("EDGE_NODE_ID", EDGE_NODE_ID)
     os.environ.setdefault("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1")))
@@ -192,30 +190,6 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     # 出站 HTTP 默认经过网络模拟器代理链路（links.yaml: edge_01__to__scheduler__http）。
     os.environ.setdefault("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:18011")
     os.environ.setdefault("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
-    os.environ.setdefault(
-        "EDGE_BEARING_WINDOW_CACHE_DIR",
-        str(
-            Path(__file__).resolve().parents[1]
-            / str(transfer_settings.get("cache_directory", "edge_service/data/bearing_windows"))
-        ),
-    )
-    os.environ.setdefault(
-        "EDGE_WINDOW_HARD_LIMIT_GIB", str(transfer_settings.get("hard_limit_gib", 20))
-    )
-    os.environ.setdefault(
-        "EDGE_WINDOW_WARNING_GIB", str(transfer_settings.get("warning_gib", 16))
-    )
-    os.environ.setdefault(
-        "EDGE_WINDOW_RESERVED_FREE_GIB", str(transfer_settings.get("reserved_free_gib", 10))
-    )
-    os.environ.setdefault(
-        "EDGE_WINDOW_DISPATCH_INTERVAL_SECONDS",
-        str(transfer_settings.get("dispatch_interval_seconds", 1.0)),
-    )
-    os.environ.setdefault(
-        "EDGE_WINDOW_PACKET_CLOUD_CONFIDENCE_THRESHOLD",
-        str(transfer_settings.get("packet_cloud_confidence_threshold", 0.0)),
-    )
     runtime_config = EdgeRuntimeConfig.from_env()
     packet_route_error_recorder = PacketRouteErrorRecorder(
         os.getenv(
@@ -378,17 +352,6 @@ def health() -> dict[str, object]:
         "mqtt_capacity": runtime_assembly.service.mqtt_ingress.capacity_snapshot(),
         # 阶段 7：模型队列容量与满载指标（等待数/容量/满载累计/历史峰值）。
         "model_queue": runtime_assembly.coordinator.pipeline.queue_snapshot(),
-        "legacy_bearing_aggregation_enabled": runtime_assembly.window_review_store is not None,
-        "bearing_window_cache_bytes": (
-            None
-            if runtime_assembly.window_review_store is None
-            else runtime_assembly.window_review_store.usage_bytes()
-        ),
-        "bearing_window_cache_warning": (
-            False
-            if runtime_assembly.window_review_store is None
-            else runtime_assembly.window_review_store.warning
-        ),
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
         # 阶段 5：关键外部发送队列指标（积压、死信、最老记录年龄）。
@@ -403,7 +366,6 @@ def health() -> dict[str, object]:
         "outbound_routes": {
             # 阶段 4：暴露出站链路地址，便于确认流量是否经过网络模拟代理。
             "scheduler_base_url": runtime_assembly.service.config.scheduler.base_url,
-            "cloud_base_url": runtime_assembly.service.config.window_transfer.cloud_base_url,
             "cloud_node_urls": dict(runtime_assembly.service.config.cloud_node_urls),
             "mqtt_host": runtime_assembly.service.config.mqtt.host,
             "mqtt_port": runtime_assembly.service.config.mqtt.port,
@@ -471,37 +433,12 @@ def edge_device_arbitration_result(payload: dict = Body(default=None)) -> JSONRe
 def submit_edge_packet(payload: dict) -> JSONResponse:
     try:
         accepted = runtime_assembly.coordinator.receive_raw_packet(payload)
-    except WindowTransferError as error:
-        return JSONResponse(
-            status_code=error.status_code,
-            content={"accepted": False, "error_code": error.code, "message": str(error)},
-        )
     except Exception as error:
         return JSONResponse(status_code=503, content={"accepted": False, "error_code": "EDGE_INGRESS_UNAVAILABLE", "message": str(error)})
     if not accepted:
         return JSONResponse(status_code=409, content={"accepted": False, "error_code": "EDGE_PACKET_REJECTED", "packet_id": payload.get("packet_id")})
     return JSONResponse(status_code=202, content={"accepted": True, "packet_id": payload.get("packet_id")})
 
-
-@app.post("/edge/raw-context-requests", response_model=None)
-def raw_context_request(payload: dict) -> dict | JSONResponse:
-    if runtime_assembly.window_review_store is None:
-        return JSONResponse(
-            status_code=410,
-            content={"error_code": "LEGACY_BEARING_AGGREGATION_DISABLED"},
-        )
-    try:
-        record = runtime_assembly.window_review_store.attach_context_request(payload)
-        return {
-            "request_id": payload.get("request_id"),
-            "status": "accepted",
-            "window_id": record["window_id"],
-        }
-    except WindowTransferError as error:
-        return JSONResponse(
-            status_code=error.status_code,
-            content={"error_code": error.code, "message": str(error)},
-        )
 
 @app.post("/edge/cloud-review-tasks", response_model=None)
 def submit_cloud_review_task(payload: dict) -> dict | JSONResponse:

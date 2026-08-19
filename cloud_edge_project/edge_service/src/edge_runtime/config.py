@@ -40,21 +40,9 @@ class ControlServerConfig:
 
 
 @dataclass(frozen=True)
-class WindowTransferConfig:
-    cache_directory: Path = Path("data/edge_bearing_windows")
-    cloud_base_url: str = "http://127.0.0.1:8004"
-    hard_limit_bytes: int = 20 * 1024**3
-    warning_bytes: int = 16 * 1024**3
-    reserved_free_bytes: int = 10 * 1024**3
-    dispatch_interval_seconds: float = 1.0
-    packet_cloud_confidence_threshold: float = 0.0
-
-
-@dataclass(frozen=True)
 class V12RuntimeConfig:
     enabled: bool = True
     database_path: Path = Path("data/edge_v12.db")
-    legacy_realtime_aggregation: bool = False
     cloud_now_timeout_ms: int = 3_000
     round_finalize_grace_ms: int = 500
     round_timeout_ms: int = 3_500
@@ -105,7 +93,6 @@ class EdgeRuntimeConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
-    window_transfer: WindowTransferConfig = field(default_factory=WindowTransferConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     suggestion_llm: SuggestionLlmConfig = field(default_factory=SuggestionLlmConfig)
@@ -116,12 +103,15 @@ class EdgeRuntimeConfig:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "EdgeRuntimeConfig":
         env = os.environ if environ is None else environ
         edge_node_id = env.get("EDGE_NODE_ID", "edge_01").strip()
-        cloud_base_url = env.get("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021").rstrip("/")
         cloud_node_urls = json.loads(env.get("EDGE_CLOUD_NODE_URLS_JSON", "{}"))
         if not isinstance(cloud_node_urls, dict):
             raise ValueError("EDGE_CLOUD_NODE_URLS_JSON must be a JSON object")
         if not cloud_node_urls:
-            cloud_node_urls = {"cloud_01": cloud_base_url}
+            cloud_node_urls = {
+                "cloud_01": env.get(
+                    "CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021"
+                ).rstrip("/")
+            }
         return cls(
             edge_node_id=edge_node_id,
             mqtt=MqttConfig(
@@ -171,27 +161,9 @@ class EdgeRuntimeConfig:
                 host=env.get("EDGE_CONTROL_HOST", "0.0.0.0").strip(),
                 port=int(env.get("EDGE_CONTROL_PORT", "8011")),
             ),
-            window_transfer=WindowTransferConfig(
-                cache_directory=Path(
-                    env.get("EDGE_BEARING_WINDOW_CACHE_DIR", "data/bearing_windows")
-                ),
-                cloud_base_url=cloud_base_url,
-                hard_limit_bytes=int(env.get("EDGE_WINDOW_HARD_LIMIT_GIB", "20")) * 1024**3,
-                warning_bytes=int(env.get("EDGE_WINDOW_WARNING_GIB", "16")) * 1024**3,
-                reserved_free_bytes=int(env.get("EDGE_WINDOW_RESERVED_FREE_GIB", "10")) * 1024**3,
-                dispatch_interval_seconds=float(
-                    env.get("EDGE_WINDOW_DISPATCH_INTERVAL_SECONDS", "1.0")
-                ),
-                packet_cloud_confidence_threshold=float(
-                    env.get("EDGE_WINDOW_PACKET_CLOUD_CONFIDENCE_THRESHOLD", "0.0")
-                ),
-            ),
             v12=V12RuntimeConfig(
                 enabled=env.get("EDGE_V12_ENABLED", "true").strip().lower() == "true",
                 database_path=Path(env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db")),
-                legacy_realtime_aggregation=(
-                    env.get("EDGE_LEGACY_REALTIME_AGGREGATION", "false").strip().lower() == "true"
-                ),
                 cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
                 round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
                 round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
@@ -248,8 +220,6 @@ class EdgeRuntimeConfig:
             errors.append("MQTT host and client_id must be non-empty")
         if not self.mqtt.device_result_topic.strip():
             errors.append("mqtt.device_result_topic must be non-empty")
-        if not 0.0 <= self.window_transfer.packet_cloud_confidence_threshold <= 1.0:
-            errors.append("packet_cloud_confidence_threshold must be between 0 and 1")
         if not self.scheduler.base_url.startswith(("http://", "https://")):
             errors.append("scheduler.base_url must use HTTP or HTTPS")
         if self.scheduler.heartbeat_interval_seconds != 1.0:
@@ -267,17 +237,8 @@ class EdgeRuntimeConfig:
             for node_id, url in self.cloud_node_urls.items()
         ):
             errors.append("cloud_node_urls must map node IDs to HTTP(S) URLs")
-        transfer = self.window_transfer
-        if not transfer.cloud_base_url.startswith(("http://", "https://")):
-            errors.append("window_transfer.cloud_base_url must use HTTP or HTTPS")
-        if not 0 < transfer.warning_bytes < transfer.hard_limit_bytes:
-            errors.append("window transfer warning limit must be below the hard limit")
-        if transfer.reserved_free_bytes < 0 or transfer.dispatch_interval_seconds <= 0:
-            errors.append("window transfer reserve and interval are invalid")
         if self.v12.enabled and not str(self.v12.database_path).strip():
             errors.append("v12.database_path must be non-empty")
-        if self.v12.enabled and self.v12.legacy_realtime_aggregation:
-            errors.append("v12 and legacy realtime aggregation cannot both be enabled")
         if self.v12.cloud_now_timeout_ms <= 0 or self.v12.round_finalize_grace_ms < 0:
             errors.append("v12 cloud-now timeout and finalize grace are invalid")
         if self.v12.round_timeout_ms < self.v12.cloud_now_timeout_ms + self.v12.round_finalize_grace_ms:
