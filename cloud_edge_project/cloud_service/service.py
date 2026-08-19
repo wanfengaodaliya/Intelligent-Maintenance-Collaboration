@@ -14,6 +14,7 @@ from cloud_service.moment_light_adapt import (
     MomentLightAdaptRunner,
     MomentReviewPolicy,
 )
+from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.packet_diagnosis import (
     DiagnosisModel,
     PacketDiagnosis,
@@ -164,6 +165,7 @@ def _infer_v12_moment(
         "window_start_ns": window["window_start_ns"],
         "window_end_ns": window["window_end_ns"],
         "bearing_state": bearing_state,
+        "edge_label": _edge_result_label(edge),
         "confidence": prediction.confidence,
         "data_quality_score": 1.0,
         "risk_level": risk_level,
@@ -172,12 +174,18 @@ def _infer_v12_moment(
         "model_version": prediction.model_version,
         "created_at_ns": time.time_ns(),
     }
+    MomentReviewRepository(settings.database_path).save(result)
     return {
         "success": True,
         "review_id": review_id,
         "cloud_packet_result": result,
         "review_result": result,
     }
+
+
+def _edge_result_label(edge: dict[str, Any]) -> str | None:
+    inference = edge.get("edge_inference") or {}
+    return inference.get("edge_result") or inference.get("label")
 
 
 def _moment_vibration(window: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +231,7 @@ def _cloud_packet_result(
 ) -> dict[str, Any]:
     edge = request["edge_perception_result"]
     inference = edge.get("edge_inference") or {}
-    edge_label = inference.get("edge_result") or inference.get("label")
+    edge_label = _edge_result_label(edge)
     return {
         "review_id": review_id,
         "device_id": edge["device_id"],

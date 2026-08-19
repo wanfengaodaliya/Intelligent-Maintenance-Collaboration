@@ -68,18 +68,21 @@ class LabelConfirmationRepository:
         initialize_database(self.database_path)
 
     def save(self, confirmation: dict[str, Any]) -> dict[str, Any]:
+        risk_level = confirmation.get("confirmed_risk_level")
+        risk_level = risk_level if risk_level in {"normal", "warning", "fault"} else None
         with connect(self.database_path) as connection:
             connection.execute(
                 """INSERT INTO label_confirmation(
-                       packet_id,confirmed_label,label_source,confirmed_at_ns
-                   ) VALUES (?,?,?,?)
+                       packet_id,confirmed_label,label_source,confirmed_risk_level,confirmed_at_ns
+                   ) VALUES (?,?,?,?,?)
                    ON CONFLICT(packet_id) DO UPDATE SET
                        confirmed_label=excluded.confirmed_label,
                        label_source=excluded.label_source,
+                       confirmed_risk_level=excluded.confirmed_risk_level,
                        confirmed_at_ns=excluded.confirmed_at_ns""",
                 (
                     confirmation["packet_id"], confirmation["confirmed_label"],
-                    confirmation["label_source"],
+                    confirmation["label_source"], risk_level,
                     confirmation.get("confirmed_at_ns", time.time_ns()),
                 ),
             )

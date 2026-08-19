@@ -43,6 +43,23 @@ class LabelConfirmationResolver:
                 selected_priority = priority
         return selected
 
+    def confirm_sources(self, sample: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Return every valid confirmation keyed by its label source.
+
+        Lets callers tell whether a sample already has an authoritative label
+        (human_confirmed / dataset_ground_truth) or only a cloud_reference
+        fallback that still needs human verification.
+        """
+
+        sources: dict[str, dict[str, Any]] = {}
+        for provider in self.providers:
+            method = getattr(provider, "confirm", provider)
+            confirmation = method(sample)
+            if not _valid_confirmation(confirmation, sample.get("packet_id")):
+                continue
+            sources[confirmation["label_source"]] = dict(confirmation)
+        return sources
+
 
 class SnapshotLabelProvider:
     """Freeze one provider result per packet for a single dataset build."""

@@ -1,4 +1,4 @@
-"""Frozen analysis defaults."""
+"""Frozen analysis defaults for the raw_analysis signal operators."""
 
 from __future__ import annotations
 

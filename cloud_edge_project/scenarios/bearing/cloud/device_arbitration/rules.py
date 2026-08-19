@@ -23,29 +23,6 @@ def evaluate_rules(
                 f"{unit.unit_id} is fault with high risk",
             )
 
-    for unit in context.decision_units:
-        if _has_fact(unit.scenario_payload.get("rule_facts"), "CONFIRMED_SEVERE_FAULT"):
-            return _shutdown(
-                "CONFIRMED_SEVERE_FAULT",
-                unit.unit_id,
-                unit.confidence,
-                f"{unit.unit_id} has a confirmed severe fault",
-            )
-
-    for unit in context.decision_units:
-        facts = unit.scenario_payload.get("rule_facts")
-        if (
-            unit.confidence >= config.abnormal_min_confidence
-            and _has_fact(facts, "SUSTAINED_ABNORMAL")
-            and _has_fact(facts, "CLOUD_REVIEW_CONFIRMED")
-        ):
-            return _shutdown(
-                "SUSTAINED_CLOUD_CONFIRMED_ABNORMAL",
-                unit.unit_id,
-                unit.confidence,
-                f"{unit.unit_id} is sustained abnormal and cloud confirmed",
-            )
-
     high_risk_units = [
         unit
         for unit in context.decision_units
@@ -66,10 +43,6 @@ def evaluate_rules(
         )
 
     return RuleDecision(triggered=False)
-
-
-def _has_fact(value: object, expected: str) -> bool:
-    return isinstance(value, list) and expected in value
 
 
 def _shutdown(

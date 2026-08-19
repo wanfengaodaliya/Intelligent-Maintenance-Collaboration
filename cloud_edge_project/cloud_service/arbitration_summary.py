@@ -1,10 +1,13 @@
 """LLM-only explanation layer; it never changes structured arbitration fields."""
 from __future__ import annotations
+import logging
 import os, time
 from pathlib import Path
 from typing import Any
 from cloud_service.storage.database import connect, initialize_database
 import requests
+
+LOGGER = logging.getLogger(__name__)
 
 class ArbitrationSummaryService:
     def __init__(self, database_path: Path): self.database_path=Path(database_path); initialize_database(self.database_path)
@@ -12,7 +15,8 @@ class ArbitrationSummaryService:
         try:
             summary, advice=self._generate(result)
             status,error="succeeded",None
-        except Exception:
+        except Exception as exc:
+            LOGGER.exception("arbitration summary generation failed: %s", exc)
             summary,advice,status,error=None,None,"failed","LLM_SUMMARY_FAILED"
         with connect(self.database_path) as c:
             c.execute("INSERT INTO arbitration_summary(arbitration_id,status,summary,maintenance_advice,error_code,created_at_ns) VALUES (?,?,?,?,?,?) ON CONFLICT(arbitration_id) DO NOTHING",(result['arbitration_id'],status,summary,advice,error,time.time_ns()))

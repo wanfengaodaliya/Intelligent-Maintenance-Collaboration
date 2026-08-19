@@ -24,6 +24,7 @@ def _request() -> dict:
                 "bearing_id": "bearing_a",
                 "bearing_result_id": "bearing_a_r2",
                 "confidence": 0.7,
+                "data_quality_score": 0.9,
                 "risk_level": "MEDIUM",
                 "action_level": 1,
             },
@@ -31,6 +32,7 @@ def _request() -> dict:
                 "bearing_id": "bearing_b",
                 "bearing_result_id": "bearing_b_r2",
                 "confidence": 0.6,
+                "data_quality_score": 0.8,
                 "risk_level": "HIGH",
                 "action_level": 3,
             },
@@ -48,6 +50,8 @@ def test_v12_device_arbitration_adapts_and_returns_identity() -> None:
     assert adapted["scenario_payload"]["bearing_results"][0]["recommended_action"] == (
         "enhanced_monitoring"
     )
+    assert adapted["scenario_payload"]["bearing_results"][0]["data_quality_score"] == 0.9
+    assert adapted["scenario_payload"]["bearing_results"][1]["data_quality_score"] == 0.8
     assert attach_v12_identity({"arbitration_id": "arb_01"}, adapted) == {
         "arbitration_id": "arb_01",
         "device_id": "machine_01",
@@ -64,6 +68,18 @@ def test_v12_device_arbitration_rejects_mismatched_result_identity() -> None:
 
     with pytest.raises(ArbitrationValidationError, match="bearing_result_ids"):
         adapt_v12_device_arbitration_request(request)
+
+
+def test_v12_device_arbitration_falls_back_to_confidence_without_quality() -> None:
+    request = _request()
+    for item in request["bearing_results"]:
+        item.pop("data_quality_score")
+
+    adapted = adapt_v12_device_arbitration_request(request)
+
+    results = adapted["scenario_payload"]["bearing_results"]
+    assert results[0]["data_quality_score"] == results[0]["confidence"]
+    assert results[1]["data_quality_score"] == results[1]["confidence"]
 
 
 def test_cloud_endpoint_accepts_scheduler_v12_arbitration_payload(

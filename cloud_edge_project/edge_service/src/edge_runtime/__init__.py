@@ -9,7 +9,6 @@ from .config import (
     SchedulerConfig,
     SuggestionLlmConfig,
     V12RuntimeConfig,
-    WindowTransferConfig,
 )
 from .contracts import action_level_for
 from .coordinator import EdgeRuntimeCoordinator
@@ -32,7 +31,6 @@ __all__ = [
     "MqttConfig",
     "PacketRouteErrorRecorder",
     "SuggestionLlmConfig",
-    "WindowTransferConfig",
     "V12RuntimeConfig",
     "SchedulerConfig",
     "action_level_for",

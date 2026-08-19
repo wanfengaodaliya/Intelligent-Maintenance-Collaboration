@@ -1,4 +1,4 @@
-"""FFT/PSD and deterministic spectral peak extraction."""
+"""FFT/PSD and deterministic spectral peak extraction for raw_analysis."""
 
 from __future__ import annotations
 

@@ -40,6 +40,7 @@ class CloudSettings:
     )
     moment_deployment_dir: Path = PROJECT_ROOT / "local_experiment/deploy/light_adapt"
     moment_device: str = "auto"
+    global_analysis_poll_seconds: float = 60.0
 
 
 def load_cloud_settings() -> CloudSettings:
@@ -86,4 +87,7 @@ def load_cloud_settings() -> CloudSettings:
             "local_experiment/deploy/light_adapt",
         ),
         moment_device=os.getenv("CLOUD_MOMENT_DEVICE", "auto").strip().lower(),
+        global_analysis_poll_seconds=float(
+            os.getenv("GLOBAL_ANALYSIS_POLL_SECONDS", "60")
+        ),
     )

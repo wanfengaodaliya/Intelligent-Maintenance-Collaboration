@@ -53,6 +53,101 @@ def _result(sample_id: str, truth: str, baseline: str, candidate: str):
     }
 
 
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _bundle_payload(artifact_dir: Path, files: dict[str, bytes], primary: str) -> dict:
+    for name, data in files.items():
+        (artifact_dir / name).write_bytes(data)
+    return {
+        "candidate_version": "edge_v2",
+        "artifact_path": str(artifact_dir),
+        "artifact_sha256": _sha256_bytes(files[primary]),
+        "artifact_bundle": [
+            {"rel_path": name, "sha256": _sha256_bytes(data)}
+            for name, data in files.items()
+        ],
+        "model_type": "distilled_h5",
+        "feature_pipeline_version": "edge_feature_v1",
+        "input_feature_schema": {"vibration.rms": "number"},
+        "training_dataset_id": "dataset_001",
+    }
+
+
+def test_candidate_registry_accepts_multi_file_bundle(tmp_path: Path):
+    registry = CandidateRegistry(tmp_path)
+    artifact_dir = tmp_path / "candidate_v2"
+    artifact_dir.mkdir()
+    payload = _bundle_payload(
+        artifact_dir,
+        {
+            "best_model.pt": b"pt-bytes",
+            "condition_norm.json": b'{"mean": [0.0]}',
+            "model_metadata.json": b'{"version": "v2"}',
+        },
+        primary="best_model.pt",
+    )
+
+    candidate = registry.register(_manifest(), payload)
+
+    assert candidate["artifact_bundle"]["entries"][0]["rel_path"] == "best_model.pt"
+    assert candidate["artifact_bundle"]["artifact_sha256"] == _sha256_bytes(b"pt-bytes")
+    assert candidate["model_type"] == "distilled_h5"
+
+
+def test_candidate_registry_rejects_bundle_with_tampered_file(tmp_path: Path):
+    registry = CandidateRegistry(tmp_path)
+    artifact_dir = tmp_path / "candidate_v2"
+    artifact_dir.mkdir()
+    payload = _bundle_payload(
+        artifact_dir,
+        {"best_model.pt": b"pt-bytes", "condition_norm.json": b'{"mean": [0.0]}'},
+        primary="best_model.pt",
+    )
+    payload["artifact_bundle"][1]["sha256"] = "0" * 64
+
+    with pytest.raises(ValueError) as error:
+        registry.register(_manifest(), payload)
+    assert "BUNDLE_ARTIFACT_SHA256_MISMATCH" in str(error.value)
+
+
+def test_candidate_registry_requires_primary_in_bundle(tmp_path: Path):
+    registry = CandidateRegistry(tmp_path)
+    artifact_dir = tmp_path / "candidate_v2"
+    artifact_dir.mkdir()
+    payload = _bundle_payload(
+        artifact_dir,
+        {"best_model.pt": b"pt-bytes", "condition_norm.json": b'{"mean": [0.0]}'},
+        primary="best_model.pt",
+    )
+    payload["artifact_bundle"] = payload["artifact_bundle"][1:]
+
+    with pytest.raises(ValueError) as error:
+        registry.register(_manifest(), payload)
+    assert "BUNDLE_MISSING_PRIMARY_ARTIFACT" in str(error.value)
+
+
+def test_candidate_registry_keeps_single_file_compatibility(tmp_path: Path):
+    registry = CandidateRegistry(tmp_path)
+    artifact = tmp_path / "candidate.bin"
+    artifact.write_bytes(b"single")
+    payload = {
+        "candidate_version": "edge_v2",
+        "artifact_path": "candidate.bin",
+        "artifact_sha256": _sha256_bytes(b"single"),
+        "model_type": "generic",
+        "feature_pipeline_version": "edge_feature_v1",
+        "input_feature_schema": {"vibration.rms": "number"},
+        "training_dataset_id": "dataset_001",
+    }
+
+    candidate = registry.register(_manifest(), payload)
+
+    assert candidate["artifact_bundle"] is None
+    assert candidate["artifact_sha256"] == _sha256_bytes(b"single")
+
+
 def test_worse_candidate_fails_hard_gate_and_cannot_be_approved():
     results = [
         _result("sample_1", "fault", "fault", "warning"),

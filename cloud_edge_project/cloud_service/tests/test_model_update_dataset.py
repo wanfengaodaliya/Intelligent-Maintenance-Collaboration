@@ -2,11 +2,17 @@ from pathlib import Path
 
 from cloud_service.model_update.contracts import ModelUpdateConfig
 from cloud_service.model_update.dataset_builder import DatasetBuilder
-from cloud_service.model_update.dataset_repository import PacketSourceRepository
+from cloud_service.model_update.dataset_repository import (
+    LabelConfirmationRepository,
+    PacketSourceRepository,
+)
 from cloud_service.model_update.label_confirmation import LabelConfirmationResolver
 from cloud_service.storage.database import connect, initialize_database
 from scenarios.bearing.cloud.model_update.dataset_label_provider import (
     DatasetLabelProvider,
+)
+from scenarios.bearing.cloud.model_update.human_review_provider import (
+    HumanReviewProvider,
 )
 from scenarios.bearing.cloud.model_update.training_data_source import (
     BearingTrainingDataSource,
@@ -331,3 +337,60 @@ def test_default_training_source_reads_history_and_marks_reviewed_focus(tmp_path
     assert samples[0]["is_cloud_reviewed"] is True
     assert samples[1]["is_cloud_reviewed"] is False
     assert "cloud_enhanced_features" not in samples[0]["features"]
+
+
+def test_human_confirmed_risk_level_survives_repository_and_provider(
+    tmp_path: Path,
+):
+    database_path = tmp_path / "cloud.db"
+    initialize_database(database_path)
+    repository = LabelConfirmationRepository(database_path)
+    repository.save(
+        {
+            "packet_id": "packet_9",
+            "confirmed_label": "outer_ring_damage",
+            "label_source": "human_confirmed",
+            "confirmed_risk_level": "fault",
+        }
+    )
+
+    confirmation = HumanReviewProvider(repository).confirm(
+        {"packet_id": "packet_9", "cloud_label": "normal"}
+    )
+
+    assert confirmation["confirmed_label"] == "outer_ring_damage"
+    assert confirmation["confirmed_risk_level"] == "fault"
+
+
+def test_human_review_outranks_cloud_reference_in_resolver(tmp_path: Path):
+    database_path = tmp_path / "cloud.db"
+    initialize_database(database_path)
+    repository = LabelConfirmationRepository(database_path)
+    repository.save(
+        {
+            "packet_id": "packet_10",
+            "confirmed_label": "inner_ring_damage",
+            "label_source": "human_confirmed",
+            "confirmed_risk_level": "fault",
+        }
+    )
+    resolver = LabelConfirmationResolver(
+        [
+            HumanReviewProvider(repository),
+            lambda sample: {
+                "packet_id": sample["packet_id"],
+                "confirmed_label": sample["cloud_label"],
+                "label_source": "cloud_reference",
+            }
+            if sample.get("cloud_label")
+            else None,
+        ]
+    )
+
+    confirmation = resolver.confirm(
+        {"packet_id": "packet_10", "cloud_label": "normal"}
+    )
+
+    assert confirmation["label_source"] == "human_confirmed"
+    assert confirmation["confirmed_label"] == "inner_ring_damage"
+    assert confirmation["confirmed_risk_level"] == "fault"

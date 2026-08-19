@@ -12,7 +12,6 @@ from cloud_service.config import CloudSettings
 from cloud_service.errors import CloudServiceError
 from cloud_service.prompt import (
     build_cloud_messages,
-    build_enhanced_analysis_messages,
     build_v01_cloud_messages,
 )
 
@@ -184,22 +183,4 @@ def infer_v01_vllm(request: dict[str, Any], settings: CloudSettings) -> dict[str
             "action": action,
             "description": model_result["description"],
         },
-    }
-
-
-def summarize_enhanced_analysis(result: dict[str, Any], settings: CloudSettings) -> dict[str, Any]:
-    response = requests.post(settings.vllm_url, headers=_headers(settings), json={"model": settings.vllm_model_name, "messages": build_enhanced_analysis_messages(result), "temperature": 0.1, "max_tokens": 512, "response_format": {"type": "json_object"}}, timeout=settings.vllm_timeout_seconds)
-    response.raise_for_status()
-    parsed = _model_result(response.json()["choices"][0]["message"]["content"])
-    identity = result["input"]
-    return {
-        "review_id": result["review_id"],
-        "analysis_scope": "bearing_packet_review",
-        "device_id": identity["device_id"],
-        "task_id": identity["task_id"],
-        "bearing_id": identity["bearing_id"],
-        "sender_id": identity["sender_id"],
-        "packet_id": identity["anchor_packet_id"],
-        "model_name": settings.vllm_model_name,
-        **parsed,
     }

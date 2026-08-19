@@ -77,14 +77,3 @@ def build_v01_cloud_messages(request: dict[str, Any]) -> list[dict[str, str]]:
         {"role": "system", "content": V01_CLOUD_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
     ]
-
-
-def build_enhanced_analysis_messages(result: dict[str, Any]) -> list[dict[str, str]]:
-    """Build a compact final-review prompt without raw waveform samples."""
-
-    payload = {
-        "preprocessing": {"input": result["input"], "data_quality": result["data_quality"], "limitations": result["limitations"]},
-        "feature_extraction_and_operating_context": result.get("feature_context", {}),
-        "enhanced_analysis": {"signal_evidence": result["signal_evidence"], "history_evidence": result["history_evidence"], "model_evidence": result["model_evidence"], "operating_conditions": result["operating_conditions"]},
-    }
-    return [{"role": "system", "content": CLOUD_SYSTEM_PROMPT}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]

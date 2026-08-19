@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from cloud_service.global_analysis.service import GlobalAnalysisService
+from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.raw_analysis.service import RawAnalysisSampleService
 from cloud_service.task_results import TaskResultService
 
@@ -88,3 +89,44 @@ def test_default_global_analysis_uses_current_v12_revisions_and_physical_evidenc
     assert result["physical_evidence_analysis"]["event_sample_count"] == 1
     assert result["physical_evidence_analysis"]["partial_sample_count"] == 1
     assert result["physical_evidence_analysis"]["multi_scale"]["edge_feature_window_ms"] == 50
+
+
+def test_global_analysis_loads_packet_review_pairs_from_moment_record(tmp_path: Path) -> None:
+    database_path = tmp_path / "cloud.db"
+    results = TaskResultService(database_path)
+    assert results.ingest_device_decision(_device(result_id="device_round_r2", revision=2, replaces=None))["duplicate"] is False
+    MomentReviewRepository(database_path).save(
+        {
+            "review_id": "moment_dw_001",
+            "result_id": "cloud_dw_001",
+            "schema_version": "cloud-bearing-result/2.0",
+            "device_id": "machine_01",
+            "task_id": "task_001",
+            "bearing_id": "bearing_a",
+            "sender_id": "sender_a",
+            "decision_round_id": "round_001",
+            "diagnosis_window_id": "dw_001",
+            "window_start_sequence": 1,
+            "window_end_sequence": 1,
+            "window_start_ns": 1,
+            "window_end_ns": 2,
+            "bearing_state": "fault",
+            "edge_label": "normal",
+            "confidence": 0.9,
+            "data_quality_score": 0.9,
+            "risk_level": "high",
+            "action_grade": 3,
+            "recommended_action": "urgent_intervention",
+            "model_version": "edge_model_v1",
+            "created_at_ns": 10,
+        }
+    )
+    _add_evidence(database_path)
+
+    result = GlobalAnalysisService(database_path).analyze("bearing", "machine_01")
+
+    diagnosis = result["packet_diagnosis_analysis"]
+    assert diagnosis["reviewed_packet_count"] == 1
+    assert diagnosis["edge_cloud_agreement_count"] == 0
+    assert diagnosis["cloud_correction_count"] == 1
+    assert diagnosis["risk_underestimation_count"] == 1
