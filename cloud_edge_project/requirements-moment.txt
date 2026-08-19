@@ -1,5 +1,5 @@
 # 项目唯一的正式 Python 依赖源；统一安装到 Conda `moment` 环境。
-# Python 3.11.15 / CUDA 13.0（Torch wheel）为已验证组合。
+# Python 3.11.15；Torch 使用公开版本约束，避免默认 PyPI 源找不到本地 CUDA 后缀 wheel。
 fastapi==0.141.1
 uvicorn==0.52.3
 requests==2.34.2
@@ -7,7 +7,7 @@ numpy==1.25.2
 scipy==1.11.4
 paho-mqtt==2.1.0
 python-multipart==0.0.32
-torch==2.13.0+cu130
+torch==2.13.0
 transformers==5.15.0
 accelerate==1.14.0
 safetensors==0.8.0
