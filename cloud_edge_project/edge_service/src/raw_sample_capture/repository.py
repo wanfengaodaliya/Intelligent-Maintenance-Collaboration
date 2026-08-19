@@ -15,17 +15,22 @@ class RawSampleRepository:
     def __init__(
         self, root: Path | str, *, max_storage_bytes: int | None = None,
         retention_ns: int | None = None,
+        max_upload_attempts: int = 10,
     ) -> None:
         if max_storage_bytes is not None and max_storage_bytes <= 0:
             raise ValueError("max_storage_bytes must be positive")
         if retention_ns is not None and retention_ns <= 0:
             raise ValueError("retention_ns must be positive")
+        if max_upload_attempts <= 0:
+            raise ValueError("max_upload_attempts must be positive")
         self.root = Path(root)
         self.payload_directory = self.root / "payloads"
         self.payload_directory.mkdir(parents=True, exist_ok=True)
         self.database_path = self.root / "raw_sample_queue.db"
         self.max_storage_bytes = max_storage_bytes
         self.retention_ns = retention_ns
+        # 阶段 5：上传重试上限，超过后进入死信等待人工恢复，禁止无限重试。
+        self.max_upload_attempts = max_upload_attempts
         self._initialize()
         self._recover_uploading()
 
@@ -157,6 +162,15 @@ class RawSampleRepository:
                 "SELECT attempt_count FROM raw_sample_queue WHERE sample_id=?", (sample_id,)
             ).fetchone()
             attempts = int(row["attempt_count"]) + 1
+            # 阶段 5：达到重试上限进入死信，保留现场等待人工恢复入口处理。
+            if attempts >= self.max_upload_attempts:
+                connection.execute(
+                    """UPDATE raw_sample_queue
+                    SET status='DEAD_LETTER',attempt_count=?,next_attempt_at_ns=NULL,last_error=?
+                    WHERE sample_id=?""",
+                    (attempts, error, sample_id),
+                )
+                return
             delay_seconds = min(2 ** (attempts - 1), max_backoff_seconds)
             connection.execute(
                 """UPDATE raw_sample_queue
@@ -164,6 +178,30 @@ class RawSampleRepository:
                 WHERE sample_id=?""",
                 (attempts, now_ns + delay_seconds * 1_000_000_000, error, sample_id),
             )
+
+    def requeue_dead_letter(self, sample_id: str) -> bool:
+        """人工恢复入口：将死信样本重置为待上传（attempt 清零）。"""
+        with self._connect() as connection:
+            return connection.execute(
+                """UPDATE raw_sample_queue
+                SET status='PENDING',attempt_count=0,next_attempt_at_ns=NULL
+                WHERE sample_id=? AND status='DEAD_LETTER'""",
+                (sample_id,),
+            ).rowcount == 1
+
+    def health(self) -> dict[str, int]:
+        """阶段 5：原始样本队列指标——状态计数与待上传积压。"""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS total FROM raw_sample_queue GROUP BY status"
+            ).fetchall()
+        counts = {status: 0 for status in (
+            "PENDING", "UPLOADING", "ACKNOWLEDGED", "CONFLICT", "EXPIRED", "DEAD_LETTER",
+        )}
+        for row in rows:
+            counts[str(row["status"])] = int(row["total"])
+        counts["backlog"] = counts["PENDING"] + counts["UPLOADING"]
+        return counts
 
     def _write_payload(self, sample: RawAnalysisSample) -> Path:
         target = self.payload_directory / f"{sample.sample_id}.json"
@@ -215,13 +253,39 @@ class RawSampleRepository:
                 payload_sha256 TEXT NOT NULL,
                 payload_path TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('PENDING','UPLOADING','ACKNOWLEDGED','CONFLICT','EXPIRED')),
+                status TEXT NOT NULL CHECK(status IN ('PENDING','UPLOADING','ACKNOWLEDGED','CONFLICT','EXPIRED','DEAD_LETTER')),
                 attempt_count INTEGER NOT NULL,
                 next_attempt_at_ns INTEGER,
                 last_error TEXT,
                 created_at_ns INTEGER NOT NULL
                 )"""
             )
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='raw_sample_queue'"
+            ).fetchone()
+            # 阶段 5：旧表 CHECK 不含 DEAD_LETTER，需重建迁移，数据原样保留。
+            if schema is not None and "DEAD_LETTER" not in schema["sql"]:
+                connection.execute("ALTER TABLE raw_sample_queue RENAME TO raw_sample_queue_legacy")
+                connection.execute(
+                    """CREATE TABLE raw_sample_queue(
+                    sample_id TEXT PRIMARY KEY,
+                    payload_sha256 TEXT NOT NULL,
+                    payload_path TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PENDING','UPLOADING','ACKNOWLEDGED','CONFLICT','EXPIRED','DEAD_LETTER')),
+                    attempt_count INTEGER NOT NULL,
+                    next_attempt_at_ns INTEGER,
+                    last_error TEXT,
+                    created_at_ns INTEGER NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO raw_sample_queue
+                    SELECT sample_id,payload_sha256,payload_path,metadata_json,status,
+                           attempt_count,next_attempt_at_ns,last_error,created_at_ns
+                    FROM raw_sample_queue_legacy"""
+                )
+                connection.execute("DROP TABLE raw_sample_queue_legacy")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)

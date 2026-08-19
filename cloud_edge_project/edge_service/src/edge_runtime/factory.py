@@ -188,6 +188,7 @@ def build_edge_runtime(
                 raw_config.directory,
                 max_storage_bytes=raw_config.max_local_storage_mb * 1024 * 1024,
                 retention_ns=raw_config.local_retention_hours * 60 * 60 * 1_000_000_000,
+                max_upload_attempts=raw_config.max_upload_attempts,
             ),
         )
         raw_sample_uploader = RawAnalysisSampleUploader(
@@ -204,6 +205,7 @@ def build_edge_runtime(
             config.v12.database_path,
             scheduler_client.post,
             payload_enricher=_enrich_uploaded_payload,
+            max_attempts=config.v12.result_upload_max_attempts,
         )
         device_result_outbox = DeviceResultOutbox(
             config.v12.database_path,

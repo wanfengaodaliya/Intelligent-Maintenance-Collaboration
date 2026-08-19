@@ -11,18 +11,30 @@ from typing import Any, Callable, Mapping
 from core.diagnosis_contracts import BearingDecisionResult, DeviceDecisionResult
 
 
+PENDING = "PENDING"
+UPLOADING = "UPLOADING"
+ACKNOWLEDGED = "ACKNOWLEDGED"
+CONFLICT = "CONFLICT"
+DEAD_LETTER = "DEAD_LETTER"
+
+
 class ResultUploader:
     def __init__(
         self, database_path, post: Callable[[str, dict], Mapping[str, object]],
         *,
         max_backoff_seconds: int = 300,
+        max_attempts: int = 8,
         payload_enricher: Callable[[Mapping[str, Any], str], Mapping[str, Any]] | None = None,
     ) -> None:
         if max_backoff_seconds <= 0:
             raise ValueError("max_backoff_seconds must be positive")
+        if max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
         self.database_path = str(database_path)
         self.post = post
         self.max_backoff_seconds = max_backoff_seconds
+        # 阶段 5：重试上限，超过后进入死信等待人工恢复，禁止无限重试。
+        self.max_attempts = max_attempts
         # 阶段 4：出站上报载荷统一附加 trace 身份字段（route_id 为上报路径）。
         self._payload_enricher = payload_enricher
         self._initialize()
@@ -61,6 +73,15 @@ class ResultUploader:
                 )
         except Exception as error:
             attempts = int(row["attempt_count"]) + 1
+            if attempts >= self.max_attempts:
+                # 阶段 5：达到重试上限进入死信，保留现场等待人工恢复入口处理。
+                with self._connect() as connection:
+                    connection.execute(
+                        """UPDATE v12_result_upload
+                        SET status=?,attempt_count=?,last_error=? WHERE result_id=?""",
+                        (DEAD_LETTER, attempts, f"{type(error).__name__}: {error}", row["result_id"]),
+                    )
+                return 1
             delay_seconds = min(2 ** (attempts - 1), self.max_backoff_seconds)
             with self._connect() as connection:
                 connection.execute(
@@ -73,6 +94,40 @@ class ResultUploader:
                     ),
                 )
         return 1
+
+    def health(self) -> dict[str, Any]:
+        """阶段 5：上报队列指标——状态计数、积压与最老记录年龄。"""
+        now = time.time_ns()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS total FROM v12_result_upload GROUP BY status"
+            ).fetchall()
+            oldest = connection.execute(
+                """SELECT MIN(created_at_ns) AS oldest_ns FROM v12_result_upload
+                WHERE status IN (?, ?)""",
+                (PENDING, UPLOADING),
+            ).fetchone()
+        counts: dict[str, Any] = {
+            status: 0 for status in (PENDING, UPLOADING, ACKNOWLEDGED, CONFLICT, DEAD_LETTER)
+        }
+        for row in rows:
+            counts[str(row["status"])] = int(row["total"])
+        counts["backlog"] = counts[PENDING] + counts[UPLOADING]
+        oldest_ns = oldest["oldest_ns"] if oldest is not None else None
+        counts["oldest_backlog_age_ms"] = (
+            None if oldest_ns is None else max((now - int(oldest_ns)) / 1_000_000.0, 0.0)
+        )
+        return counts
+
+    def requeue_dead_letter(self, result_id: str) -> bool:
+        """人工恢复入口：将死信记录重置为待上传（attempt 清零）。"""
+        with self._connect() as connection:
+            return connection.execute(
+                """UPDATE v12_result_upload
+                SET status='PENDING',attempt_count=0,next_attempt_at_ns=NULL
+                WHERE result_id=? AND status=?""",
+                (result_id, DEAD_LETTER),
+            ).rowcount == 1
 
     def _enqueue(self, path: str, payload: dict) -> None:
         if self._payload_enricher is not None:

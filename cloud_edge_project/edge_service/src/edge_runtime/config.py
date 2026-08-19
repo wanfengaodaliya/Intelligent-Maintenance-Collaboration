@@ -65,6 +65,8 @@ class V12RuntimeConfig:
     http_read_timeout_ms: int = 2_000
     late_correction_retention_ms: int = 3_600_000
     device_result_publish_max_attempts: int = 5
+    # 阶段 5：结果上报重试上限，超过后进入死信等待人工恢复。
+    result_upload_max_attempts: int = 8
     # 阶段 5：已发布 Outbox 记录的保留期（小时），0 表示禁用自动清理。
     outbox_published_retention_hours: int = 168
 
@@ -84,6 +86,8 @@ class RawSampleCaptureConfig:
     local_retention_hours: int = 24
     max_local_storage_mb: int = 2_048
     upload_batch_size: int = 1
+    # 阶段 5：原始样本上传重试上限，超过后进入死信等待人工恢复。
+    max_upload_attempts: int = 10
 
 
 @dataclass(frozen=True)
@@ -202,6 +206,9 @@ class EdgeRuntimeConfig:
                 device_result_publish_max_attempts=int(
                     env.get("EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS", "5")
                 ),
+                result_upload_max_attempts=int(
+                    env.get("EDGE_RESULT_UPLOAD_MAX_ATTEMPTS", "8")
+                ),
                 outbox_published_retention_hours=int(
                     env.get("EDGE_OUTBOX_PUBLISHED_RETENTION_HOURS", "168")
                 ),
@@ -218,6 +225,7 @@ class EdgeRuntimeConfig:
                 local_retention_hours=int(env.get("EDGE_RAW_SAMPLE_RETENTION_HOURS", "24")),
                 max_local_storage_mb=int(env.get("EDGE_RAW_SAMPLE_MAX_STORAGE_MB", "2048")),
                 upload_batch_size=int(env.get("EDGE_RAW_SAMPLE_UPLOAD_BATCH_SIZE", "1")),
+                max_upload_attempts=int(env.get("EDGE_RAW_SAMPLE_MAX_UPLOAD_ATTEMPTS", "10")),
             ),
             cloud_node_urls=cloud_node_urls,
         )
@@ -289,6 +297,8 @@ class EdgeRuntimeConfig:
             errors.append("v12.late_correction_retention_ms must be positive")
         if self.v12.device_result_publish_max_attempts <= 0:
             errors.append("v12.device_result_publish_max_attempts must be positive")
+        if self.v12.result_upload_max_attempts <= 0:
+            errors.append("v12.result_upload_max_attempts must be positive")
         if self.v12.outbox_published_retention_hours < 0:
             errors.append("v12.outbox_published_retention_hours must not be negative")
         if not 0.1 <= self.maintenance.interval_seconds <= 10.0:
@@ -308,6 +318,8 @@ class EdgeRuntimeConfig:
             errors.append("raw sample capture retention and storage limits must be positive")
         if raw_capture.upload_batch_size <= 0:
             errors.append("raw_sample_capture.upload_batch_size must be positive")
+        if raw_capture.max_upload_attempts <= 0:
+            errors.append("raw_sample_capture.max_upload_attempts must be positive")
         suggestion = self.suggestion_llm
         if suggestion.enabled:
             if not suggestion.base_url.startswith(("http://", "https://")):
