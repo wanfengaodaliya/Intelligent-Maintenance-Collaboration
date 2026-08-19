@@ -40,7 +40,7 @@ CLOUD_REQUEST = {
     "source_node": "edge_1",
     "data": TASK["data"],
     "edge_result": {
-        "label": "abnormal",
+        "label": "fault",
         "confidence": 0.72,
         "risk_level": "medium",
     },
@@ -100,7 +100,7 @@ def test_edge_v01_returns_documented_contract():
         "need_cloud",
     }
     assert (result["label"], result["confidence"], result["risk_level"], result["need_cloud"]) == (
-        "abnormal",
+        "fault",
         0.92,
         "high",
         False,
@@ -147,7 +147,7 @@ def test_cloud_v01_uses_vllm_when_configured(monkeypatch, tmp_path: Path):
             "task_id": payload["task_id"],
             "node_id": "cloud_1",
             "model_name": "qwen3.5-2b-local",
-            "label": "abnormal",
+            "label": "fault",
             "confidence": 0.88,
             "risk_level": "medium",
             "cloud_latency_ms": 12.3,

@@ -53,7 +53,7 @@ def v01_schedule_request() -> dict:
         },
         "edge_result": {
             "task_id": "task_0001",
-            "label": "abnormal",
+            "label": "fault",
             "confidence": 0.72,
             "edge_latency_ms": 38,
             "need_cloud": True,
@@ -85,7 +85,7 @@ def task_log(**overrides) -> dict:
         "total_latency_ms": 154,
         "edge_confidence": 0.72,
         "cloud_confidence": 0.93,
-        "final_label": "abnormal",
+        "final_label": "fault",
         "final_confidence": 0.93,
         "success": True,
         "has_conflict": False,
