@@ -137,6 +137,11 @@ class ModelClient:
             payload["remaining_timeout_ms"] = remaining_timeout_ms
         try:
             body = self._request_json(self.cfg.infer_path, payload, read_timeout_s=read_timeout)
+        except TimeoutError:
+            # urllib 的读取超时抛裸 TimeoutError（socket.timeout），不经过 URLError。
+            return ModelInferResult(success=False, timed_out=True,
+                                    latency_ms=(self._clock() - t0) * 1000.0,
+                                    error="MODEL_INFERENCE_TIMEOUT")
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():

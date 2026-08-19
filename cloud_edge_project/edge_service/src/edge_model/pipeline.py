@@ -105,7 +105,8 @@ class EdgeModelPipeline:
         self._probe_thread = None
 
     def _readiness_probe_loop(self) -> None:
-        interval = self.cfg.model_client.readiness_probe_interval_s
+        # 周期取实际发起探测的客户端配置（与 base_url/pin 同源）。
+        interval = self.model_client.cfg.readiness_probe_interval_s
         while not self._probe_stop.is_set():
             self.probe_readiness_once()
             self._probe_stop.wait(interval)
@@ -214,7 +215,9 @@ class EdgeModelPipeline:
                 sender_id=task.sender_id,
                 sequence_number=task.sequence_number,
                 execution_mode=EXECUTION_CODE_FALLBACK,
-                fallback_reason=REASON_CODE_FALLBACK_FAILED,
+                # 阶段 7.5：保留模型路线的原始失败原因（方案 7.3 错误码可区分）；
+                # 降级失败的最终语义由 completed.error_code 承载。
+                fallback_reason=reason or REASON_CODE_FALLBACK_FAILED,
                 output_valid=False,
                 breaker_state=breaker_state,
                 note="model_route_reason=%s; fallback_error=%r" % (reason, exc),

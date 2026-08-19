@@ -88,9 +88,11 @@ def test_client_readiness_service_down_has_no_mismatch() -> None:
 
 
 class _StubModelClient:
-    def __init__(self, results):
+    def __init__(self, results, probe_interval_s=0.05):
         self._results = list(results)
         self.readiness_calls = 0
+        # 探针周期从实际客户端配置读取（与 ModelClient.cfg 同构）。
+        self.cfg = SimpleNamespace(readiness_probe_interval_s=probe_interval_s)
 
     def readiness(self):
         self.readiness_calls += 1
