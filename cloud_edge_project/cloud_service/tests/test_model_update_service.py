@@ -484,7 +484,7 @@ def test_approval_is_forbidden_before_validation_passes(tmp_path: Path):
         service.approve(created["update_id"], confirmed_by="operator")
 
 
-def test_api_exposes_final_lifecycle_routes_without_model_download():
+def test_api_exposes_final_lifecycle_routes_with_model_download():
     completed = subprocess.run(
         [
             sys.executable,
@@ -503,4 +503,4 @@ def test_api_exposes_final_lifecycle_routes_without_model_download():
     assert "/cloud/model-update/{update_id}/start-training" in paths
     assert "/cloud/model-update/{update_id}/handoff-distribution" in paths
     assert "/cloud/model-update/{update_id}/post-validate" in paths
-    assert "/cloud/model-update/{update_id}/file" not in paths
+    assert "/cloud/model-update/{update_id}/file" in paths

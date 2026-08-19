@@ -138,6 +138,33 @@ class ModelUpdateService:
     def get(self, update_id: str) -> dict[str, Any]:
         return self._task(update_id)
 
+    def get_download_artifact(self, update_id: str) -> dict[str, Any]:
+        """Return the frozen candidate artifact descriptor for edge pull.
+
+        The artifact is registered during training-result handoff and stays
+        frozen for download once approved; edge nodes pull it to activate a
+        new version locally.
+        """
+
+        task = self._task(update_id)
+        artifact = task.get("candidate_artifact")
+        if not isinstance(artifact, dict) or not artifact.get("artifact_path"):
+            raise ModelUpdateError("CANDIDATE_ARTIFACT_NOT_FOUND")
+        if task["status"] not in {
+            "trained",
+            "waiting_confirmation",
+            "approved",
+            "handoff_to_distribution",
+            "distribution_in_progress",
+            "distribution_succeeded",
+            "verifying",
+            "ineffective",
+            "partial_improvement",
+            "succeeded",
+        }:
+            raise ModelUpdateError("ARTIFACT_NOT_READY")
+        return artifact
+
     def list_pending_human_confirmation(self, update_id: str) -> dict[str, Any]:
         """List samples that still lack an authoritative label.
 

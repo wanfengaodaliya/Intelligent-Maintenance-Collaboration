@@ -14,6 +14,10 @@ from scipy.signal import resample_poly
 
 from edge_model.code_fallback import CodeFallbackRunner
 from edge_model.contracts import EdgeResult, PacketInferenceTask
+from edge_model.version_store import (
+    resolve_active_version,
+    version_dir,
+)
 
 
 EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[2]
@@ -22,12 +26,28 @@ from edge_diagnosis.h5_network import PhysicalFusionModel
 
 
 H5_LABELS = ("healthy", "outer_ring_damage", "inner_ring_damage")
+# 基线默认版本：未配置 EDGE_MODEL_VERSION 且无激活指针时回退到该版本。
 RUNTIME_MODEL_VERSION = "distilled_h5_kd_fold3_a9f20442"
 DEFAULT_MODEL_DIR = EDGE_SERVICE_ROOT / "models" / "distilled_h5"
-DEFAULT_CHECKPOINT = DEFAULT_MODEL_DIR / "best_model.pt"
-DEFAULT_CHECKSUM = DEFAULT_CHECKPOINT.with_name("checkpoint_sha256.txt")
-DEFAULT_PHYSICAL_NORMALIZATION = DEFAULT_MODEL_DIR / "physical_feature_normalization.json"
-DEFAULT_CONDITION_NORMALIZATION = DEFAULT_MODEL_DIR / "condition_norm.json"
+
+
+def _resolve_model_dir() -> Path:
+    version = resolve_active_version(
+        "distilled_h5", default_version=RUNTIME_MODEL_VERSION
+    )
+    return version_dir("distilled_h5", version)
+
+
+def _resolve_model_version(model_dir: Path) -> str:
+    manifest = model_dir / "manifest.json"
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        version = data.get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return model_dir.name
 
 
 class H5ModelArtifactError(RuntimeError):
@@ -35,19 +55,25 @@ class H5ModelArtifactError(RuntimeError):
 
 
 class DistilledH5DiagnosticModel(CodeFallbackRunner):
-    """Run the frozen 50 ms H5 model from a validated raw edge packet."""
+    """Run the frozen 50 ms H5 model from a validated raw edge packet.
+
+    ``model_dir`` points at a version directory under ``models/distilled_h5/``.
+    When omitted, the active version is resolved from ``EDGE_MODEL_VERSION`` /
+    ``active_version.json`` and defaults to the baseline version.
+    """
 
     def __init__(
         self,
-        checkpoint_path: Path | str = DEFAULT_CHECKPOINT,
-        checksum_path: Path | str = DEFAULT_CHECKSUM,
-        physical_normalization_path: Path | str = DEFAULT_PHYSICAL_NORMALIZATION,
-        condition_normalization_path: Path | str = DEFAULT_CONDITION_NORMALIZATION,
+        model_dir: Path | str | None = None,
         *,
         device: str = "cpu",
+        model_version: str | None = None,
     ) -> None:
-        self.checkpoint_path = Path(checkpoint_path)
-        self.checksum_path = Path(checksum_path)
+        self.model_dir = Path(model_dir) if model_dir else _resolve_model_dir()
+        self.checkpoint_path = self.model_dir / "best_model.pt"
+        self.checksum_path = self.model_dir / "checkpoint_sha256.txt"
+        physical_normalization_path = self.model_dir / "physical_feature_normalization.json"
+        condition_normalization_path = self.model_dir / "condition_norm.json"
         self.device = torch.device(device)
         self._verify_checkpoint()
         self.physical_mean, self.physical_std = _normalization(
@@ -77,8 +103,9 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
             raise H5ModelArtifactError("distilled H5 checkpoint cannot be loaded") from exc
         self.model.to(self.device)
         self.model.eval()
-        self.rule_version = RUNTIME_MODEL_VERSION
-        self.model_version = RUNTIME_MODEL_VERSION
+        resolved = model_version or _resolve_model_version(self.model_dir)
+        self.rule_version = resolved
+        self.model_version = resolved
         self.deployment_status = "production"
 
     def _verify_checkpoint(self) -> None:

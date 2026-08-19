@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import io
 import json
 import logging
 import os
 import sqlite3
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import requests
 from fastapi import Body, FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 LOGGER = logging.getLogger(__name__)
 
@@ -765,6 +767,55 @@ def execute_model_update_rollback(
         )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
+
+
+@app.get("/cloud/model-update/{update_id}/file", response_model=None)
+def download_model_update_artifact(update_id: str) -> Response | JSONResponse:
+    """Serve the frozen candidate artifact for edge pull.
+
+    A multi-file bundle is zipped with a manifest.json listing per-file
+    sha256; a single-file artifact is streamed directly.
+    """
+    try:
+        artifact = _model_update_service().get_download_artifact(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+    artifact_path = Path(artifact["artifact_path"])
+    if not artifact_path.exists():
+        return JSONResponse({"error": "ARTIFACT_FILE_MISSING"}, status_code=404)
+    bundle = artifact.get("artifact_bundle")
+    if isinstance(bundle, dict) and bundle.get("entries") and artifact_path.is_dir():
+        manifest = {
+            "version": artifact["candidate_version"],
+            "model_type": artifact["model_type"],
+            "model_family": artifact.get("model_family", "edge"),
+            "feature_pipeline_version": artifact["feature_pipeline_version"],
+            "files": {
+                entry["rel_path"]: entry["sha256"]
+                for entry in bundle["entries"]
+            },
+        }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for entry in bundle["entries"]:
+                archive.write(
+                    artifact_path / entry["rel_path"], arcname=entry["rel_path"]
+                )
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+            )
+        filename = f"{artifact['candidate_version']}.zip"
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    return FileResponse(
+        artifact_path,
+        media_type="application/octet-stream",
+        filename=Path(artifact_path).name,
+    )
 
 
 @app.post("/cloud/edge-feature-summaries", response_model=None)

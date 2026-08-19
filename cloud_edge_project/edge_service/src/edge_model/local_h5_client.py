@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .model_client import ModelInferResult, ReadinessResult
+from .version_store import resolve_active_version
 
 # 与 models/distilled_h5 制品内的 RUNTIME_MODEL_VERSION 保持一致
 # （由测试守护两处常量同步；本常量必须在无 torch 环境可导入）。
@@ -86,7 +87,10 @@ class LocalH5ModelClient:
 
     @property
     def model_version(self) -> str:
-        return H5_RUNTIME_MODEL_VERSION
+        # 激活版本由 EDGE_MODEL_VERSION / active_version.json 解析，缺省回退基线。
+        return resolve_active_version(
+            "distilled_h5", default_version=H5_RUNTIME_MODEL_VERSION
+        )
 
     # ---- 就绪探针（pipeline 周期调用） ----
 
