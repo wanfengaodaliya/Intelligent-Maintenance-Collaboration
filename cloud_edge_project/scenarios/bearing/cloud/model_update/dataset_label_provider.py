@@ -37,7 +37,7 @@ class DatasetLabelProvider:
                 and isinstance(value.get("confirmed_label"), str)
                 and value["confirmed_label"]
                 and value.get("confirmed_risk_level")
-                in {None, "normal", "warning", "abnormal"}
+                in {None, "normal", "warning", "fault"}
             ):
                 self.label_mapping[str(code).upper()] = dict(value)
 

@@ -107,7 +107,7 @@ class DatasetBuilder:
                 "label_source": confirmation["label_source"],
             }
             if confirmation.get("confirmed_risk_level") in {
-                "normal", "warning", "abnormal"
+                "normal", "warning", "fault"
             }:
                 frozen["confirmed_risk_level"] = confirmation[
                     "confirmed_risk_level"

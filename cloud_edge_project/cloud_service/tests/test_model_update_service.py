@@ -29,7 +29,7 @@ class StaticTrainingDataSource:
                 "source_file": f"{group}.mat",
                 "features": {"vibration": {"rms": float(index), "kurtosis": 3.0}},
                 "historical_edge_result": {"label": "normal"},
-                "cloud_label": "abnormal",
+                "cloud_label": "fault",
                 "is_cloud_reviewed": True,
             }
             for index, group in enumerate(("a", "b", "c"), 1)
@@ -53,7 +53,7 @@ class ChangingLabelProvider:
         self.calls[packet_id] = count + 1
         return {
             "packet_id": packet_id,
-            "confirmed_label": "abnormal" if count == 0 else "normal",
+            "confirmed_label": "fault" if count == 0 else "normal",
             "label_source": "cloud_reference",
         }
 

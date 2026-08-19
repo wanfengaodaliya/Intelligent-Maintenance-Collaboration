@@ -11,7 +11,7 @@ from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyz
 def test_device_health_reports_counts_recent_risk_and_trend():
     rows = [
         {"final_state": state, "completed_at_ns": index}
-        for index, state in enumerate(["normal", "normal", "warning", "abnormal", "abnormal"])
+        for index, state in enumerate(["normal", "normal", "warning", "fault", "fault"])
     ]
     result = analyze_device_health(rows, GlobalAnalysisConfig())
     assert result["status"] == "succeeded"
@@ -29,7 +29,7 @@ def test_device_health_uses_null_rates_when_there_are_no_valid_rows():
 
 
 def test_bearing_risk_is_dynamic_and_detects_multiple_degrading_bearings():
-    states = ["normal", "normal", "warning", "abnormal", "abnormal"]
+    states = ["normal", "normal", "warning", "fault", "fault"]
     rows = [
         {"bearing_id": bearing, "bearing_state": state, "completed_at_ns": index}
         for bearing in ("bearing_01", "bearing_02")
@@ -52,11 +52,11 @@ def test_bearing_risk_is_insufficient_until_one_bearing_has_enough_history():
 def test_packet_model_reports_direction_version_and_condition_weakness():
     rows = [
         {
-            "edge_label": "normal", "cloud_label": "abnormal", "edge_model_version": "v1",
+            "edge_label": "normal", "cloud_label": "fault", "edge_model_version": "v1",
             "operating_context": {"load_torque_nm": 500},
         },
         {
-            "edge_label": "abnormal", "cloud_label": "abnormal", "edge_model_version": "v1",
+            "edge_label": "fault", "cloud_label": "fault", "edge_model_version": "v1",
             "operating_context": {"load_torque_nm": 500},
         },
         {
@@ -85,7 +85,7 @@ def test_packet_model_marks_absent_upstream_history_not_available():
 
 
 def test_bearing_aggregation_reports_not_available_trigger_analysis():
-    rows = [{"edge_state": "normal", "cloud_state": "abnormal", "aggregation_version": "v1"}]
+    rows = [{"edge_state": "normal", "cloud_state": "fault", "aggregation_version": "v1"}]
     result = analyze_bearing_aggregation(rows, GlobalAnalysisConfig(min_bearing_review_count=1))
     assert result["status"] == "succeeded"
     assert result["bearing_underestimation_count"] == 1

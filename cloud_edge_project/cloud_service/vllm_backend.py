@@ -18,7 +18,7 @@ from cloud_service.prompt import (
 
 
 CLOUD_NODE_ID = "cloud_1"
-ALLOWED_LABELS = {"normal", "abnormal"}
+ALLOWED_LABELS = {"normal", "fault"}
 ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
 ALLOWED_RECOMMENDED_ACTIONS = {
     "record_only",
@@ -52,7 +52,7 @@ def _model_result(content: Any) -> dict[str, Any]:
 
     label = parsed.get("label")
     if label not in ALLOWED_LABELS:
-        raise ValueError("model label must be normal or abnormal")
+        raise ValueError("model label must be normal or fault")
 
     confidence = parsed.get("confidence")
     if (

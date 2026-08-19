@@ -373,7 +373,7 @@ def test_bearing_actions_shim_values_and_errors() -> None:
 
     assert ACTION_TO_GRADE["shutdown"] == 4
     assert GRADE_TO_ACTION[0] == "continue_operation"
-    assert ACTION_TO_STATE["shutdown"] == "abnormal"
+    assert ACTION_TO_STATE["shutdown"] == "fault"
     assert action_for_grade(4) == "shutdown"
 
     with pytest.raises(ValueError, match="action grade must be an integer from 0 to 4"):

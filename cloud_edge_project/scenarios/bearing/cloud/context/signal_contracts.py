@@ -36,7 +36,7 @@ DURATION_MS = 50
 
 PROCESSING_STATUSES = {"perception_completed", "perception_rejected"}
 PERCEPTION_QUALITY_STATUSES = {"good", "warning"}
-EDGE_RESULTS = {"normal", "warning", "abnormal"}
+EDGE_RESULTS = {"normal", "warning", "fault"}
 QUALITY_FLAGS = {
     "LOW_CURRENT_VARIATION", "WAVEFORM_CLIPPING", "MISSING_SAMPLES",
     "NONFINITE_SAMPLE", "DC_OFFSET_PRESENT", "CONTEXT_UNSTABLE",
@@ -104,7 +104,7 @@ def validate_schedule_request(payload: dict[str, Any]) -> dict[str, Any]:
 
     edge_result = require_mapping(require_field(request, "edge_result", packet_id), "edge_result", packet_id)
     if require_field(edge_result, "label", packet_id) not in LABELS:
-        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", packet_id)
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or fault", packet_id)
     require_confidence(require_field(edge_result, "confidence", packet_id), "edge_result.confidence", packet_id)
     if require_field(edge_result, "risk_level", packet_id) not in RISK_LEVELS:
         raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", packet_id)
@@ -135,7 +135,7 @@ def validate_cloud_request(payload: dict[str, Any]) -> dict[str, Any]:
     packet_id = packet["packet_id"]
     edge_result = require_mapping(require_field(request, "edge_result", packet_id), "edge_result", packet_id)
     if require_field(edge_result, "label", packet_id) not in LABELS:
-        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or abnormal", packet_id)
+        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or fault", packet_id)
     require_confidence(require_field(edge_result, "confidence", packet_id), "edge_result.confidence", packet_id)
     if require_field(edge_result, "risk_level", packet_id) not in RISK_LEVELS:
         raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", packet_id)
@@ -153,13 +153,13 @@ def validate_task_trace(payload: dict[str, Any]) -> dict[str, Any]:
     if require_field(trace, "route", packet_id) not in ROUTES:
         raise ContractError("INVALID_PACKET", "route must be edge, cloud, or fallback_edge", packet_id)
     if require_field(trace, "edge_label", packet_id) not in LABELS:
-        raise ContractError("INVALID_PACKET", "edge_label must be normal or abnormal", packet_id)
+        raise ContractError("INVALID_PACKET", "edge_label must be normal or fault", packet_id)
     require_confidence(require_field(trace, "edge_confidence", packet_id), "edge_confidence", packet_id)
     cloud_confidence = trace.get("cloud_confidence")
     if cloud_confidence is not None:
         require_confidence(cloud_confidence, "cloud_confidence", packet_id)
     if require_field(trace, "final_label", packet_id) not in LABELS:
-        raise ContractError("INVALID_PACKET", "final_label must be normal or abnormal", packet_id)
+        raise ContractError("INVALID_PACKET", "final_label must be normal or fault", packet_id)
     require_confidence(require_field(trace, "final_confidence", packet_id), "final_confidence", packet_id)
     if require_field(trace, "risk_level", packet_id) not in RISK_LEVELS:
         raise ContractError("INVALID_PACKET", "risk_level must be low, medium, or high", packet_id)

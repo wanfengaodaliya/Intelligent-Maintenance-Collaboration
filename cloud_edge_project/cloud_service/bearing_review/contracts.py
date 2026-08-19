@@ -40,7 +40,7 @@ def validate_bearing_review_request(payload: Any) -> dict[str, Any]:
             raise BearingReviewValidationError("INVALID_BEARING_REVIEW")
         result["edge_node_id"] = edge_node_id.strip()
     edge = payload.get("edge_bearing_result")
-    if not isinstance(edge, dict) or edge.get("bearing_state") not in {"normal", "warning", "abnormal"}:
+    if not isinstance(edge, dict) or edge.get("bearing_state") not in {"normal", "warning", "fault"}:
         raise BearingReviewValidationError("INVALID_EDGE_BEARING_RESULT")
     confidence = edge.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not isfinite(float(confidence)) or not 0 <= confidence <= 1:

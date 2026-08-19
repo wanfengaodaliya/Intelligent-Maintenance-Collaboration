@@ -16,7 +16,7 @@ CLOUD_SYSTEM_PROMPT = """
 
 只能返回一个合法 JSON 对象，不要输出 Markdown、代码围栏或额外说明：
 {
-  "label": "normal 或 abnormal",
+  "label": "normal 或 fault",
   "confidence": 0.0,
   "risk_level": "low、medium 或 high",
   "recommended_action": "record_only、flag_for_task_aggregation 或 urgent_bearing_attention",
@@ -31,7 +31,7 @@ V01_CLOUD_SYSTEM_PROMPT = """
 
 只能返回一个合法 JSON 对象，不要输出 Markdown、代码围栏或额外说明：
 {
-  "label": "normal 或 abnormal",
+  "label": "normal 或 fault",
   "confidence": 0.0,
   "risk_level": "low、medium 或 high",
   "recommended_action": "record_only、flag_for_task_aggregation 或 urgent_bearing_attention",

@@ -124,7 +124,7 @@ python - <<'PY'
 import json
 import requests
 
-with open("examples/sensor_packet_abnormal.json", encoding="utf-8") as file:
+with open("examples/sensor_packet_fault.json", encoding="utf-8") as file:
     packet = json.load(file)
 
 response = requests.post(
@@ -132,7 +132,7 @@ response = requests.post(
     json={
         "packet": packet,
         "edge_result": {
-            "label": "abnormal",
+            "label": "fault",
             "confidence": 0.72,
             "risk_level": "medium",
         },

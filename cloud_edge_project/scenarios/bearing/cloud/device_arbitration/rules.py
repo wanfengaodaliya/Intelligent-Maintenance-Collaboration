@@ -12,7 +12,7 @@ def evaluate_rules(
 ) -> RuleDecision:
     for unit in context.decision_units:
         if (
-            unit.state == "abnormal"
+            unit.state == "fault"
             and unit.risk_level == "high"
             and unit.confidence >= config.abnormal_min_confidence
         ):
@@ -20,7 +20,7 @@ def evaluate_rules(
                 "HIGH_RISK_ABNORMAL",
                 unit.unit_id,
                 unit.confidence,
-                f"{unit.unit_id} is abnormal with high risk",
+                f"{unit.unit_id} is fault with high risk",
             )
 
     for unit in context.decision_units:

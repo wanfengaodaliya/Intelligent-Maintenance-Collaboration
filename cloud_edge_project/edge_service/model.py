@@ -67,9 +67,9 @@ def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
         float(data["current"]) >= 10.0,
         float(data["load"]) >= 0.7,
     ))
-    label = "abnormal" if signals >= 2 else "normal"
-    confidence = round(0.6 + signals * 0.08 if label == "abnormal" else 0.9 - signals * 0.03, 2)
-    risk_level = "high" if signals >= 3 else "medium" if label == "abnormal" else "low"
+    label = "fault" if signals >= 2 else "normal"
+    confidence = round(0.6 + signals * 0.08 if label == "fault" else 0.9 - signals * 0.03, 2)
+    risk_level = "high" if signals >= 3 else "medium" if label == "fault" else "low"
     return {
         "task_id": validated["task_id"],
         "node_id": EDGE_NODE_ID,
@@ -78,7 +78,7 @@ def infer_edge_v01(task: dict[str, Any]) -> dict[str, Any]:
         "confidence": confidence,
         "risk_level": risk_level,
         "edge_latency_ms": 1.0,
-        "need_cloud": label == "abnormal" and confidence < 0.9,
+        "need_cloud": label == "fault" and confidence < 0.9,
     }
 
 
@@ -97,8 +97,8 @@ def infer_edge(packet: dict[str, Any]) -> dict[str, Any]:
     anomaly_score += min(max((float(data["current"]) - 1.2) / 1.0, 0.0), 1.0) * 0.1
     anomaly_score += min(max((float(data["load"]) - 0.6) / 0.4, 0.0), 1.0) * 0.1
 
-    label = "abnormal" if anomaly_score >= 0.45 else "normal"
-    if label == "abnormal":
+    label = "fault" if anomaly_score >= 0.45 else "normal"
+    if label == "fault":
         confidence = 0.62 + min(anomaly_score, 1.0) * 0.22
     else:
         confidence = 0.86 + (1.0 - anomaly_score) * 0.1

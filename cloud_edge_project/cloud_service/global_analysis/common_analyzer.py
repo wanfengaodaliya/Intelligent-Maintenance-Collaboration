@@ -8,27 +8,34 @@ from typing import Any
 DEFAULT_TASK_LIMIT = 20
 MIN_TASK_COUNT = 5
 TREND_THRESHOLD = 0.30
-_STATE_SCORES = {"normal": 0, "warning": 1, "abnormal": 2}
+_STATE_SCORES = {"normal": 0, "warning": 1, "fault": 2}
+
+
+def _normalized_state(state: object) -> object:
+    # 兼容历史存量数据中的 "abnormal"，统一归一化为 "fault"。
+    return "fault" if state == "abnormal" else state
 
 
 def analyze_state_trend(task_results: list[dict[str, Any]]) -> dict[str, Any]:
     """统计有效任务的状态占比并比较前后两个时间窗口。"""
 
-    valid_rows = [row for row in task_results if row.get("state") in _STATE_SCORES]
+    valid_rows = [row for row in task_results if _normalized_state(row.get("state")) in _STATE_SCORES]
     valid_rows.sort(key=lambda row: row.get("completed_at_ns", 0))
     count = len(valid_rows)
-    counts = {state: sum(row["state"] == state for row in valid_rows) for state in _STATE_SCORES}
+    counts = {state: sum(_normalized_state(row["state"]) == state for row in valid_rows) for state in _STATE_SCORES}
+    # 统计指标名保持 normal/warning/abnormal_rate，内部状态值已统一为 fault。
     rates = {
-        f"{state}_rate": counts[state] / count if count else 0.0
-        for state in _STATE_SCORES
+        "normal_rate": counts["normal"] / count if count else 0.0,
+        "warning_rate": counts["warning"] / count if count else 0.0,
+        "abnormal_rate": counts["fault"] / count if count else 0.0,
     }
-    latest_state = valid_rows[-1]["state"] if valid_rows else None
+    latest_state = _normalized_state(valid_rows[-1]["state"]) if valid_rows else None
     result: dict[str, Any] = {
         "valid_task_count": count,
         "latest_state": latest_state,
         "normal_count": counts["normal"],
         "warning_count": counts["warning"],
-        "abnormal_count": counts["abnormal"],
+        "abnormal_count": counts["fault"],
         **rates,
     }
     if count < MIN_TASK_COUNT:

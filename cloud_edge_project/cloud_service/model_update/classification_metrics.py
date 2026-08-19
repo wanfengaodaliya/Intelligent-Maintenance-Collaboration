@@ -1,7 +1,7 @@
 """Generic prediction metrics shared by scenario candidate adapters.
 
 These metrics operate on the generic risk-level labels ``normal`` / ``warning`` /
-``abnormal`` from the common diagnostic contracts, so they belong to the generic
+``fault`` from the common diagnostic contracts, so they belong to the generic
 model-update layer rather than any single scenario.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-RISK_LEVELS = ("normal", "warning", "abnormal")
+RISK_LEVELS = ("normal", "warning", "fault")
 RISK_RANK = {label: index for index, label in enumerate(RISK_LEVELS)}
 
 
@@ -55,14 +55,14 @@ def classification_metrics(
         precisions.append(precision)
         recalls.append(recall)
         f1_values.append(f1)
-    abnormal_total = sum(risk == "abnormal" for risk in truth_risks)
-    abnormal_recall = (
+    fault_total = sum(risk == "fault" for risk in truth_risks)
+    fault_recall = (
         sum(
-            truth == "abnormal" and prediction == "abnormal"
+            truth == "fault" and prediction == "fault"
             for truth, prediction in zip(truth_risks, prediction_risks)
         )
-        / abnormal_total
-        if abnormal_total
+        / fault_total
+        if fault_total
         else 0.0
     )
     return {
@@ -70,7 +70,7 @@ def classification_metrics(
         "precision": sum(precisions) / len(labels),
         "recall": sum(recalls) / len(labels),
         "f1": sum(f1_values) / len(labels),
-        "abnormal_recall": abnormal_recall,
+        "fault_recall": fault_recall,
         "risk_underestimation_rate": sum(
             RISK_RANK[prediction] < RISK_RANK[truth]
             for truth, prediction in zip(truth_risks, prediction_risks)

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .schema import DDL, MODEL_UPDATE_TASK_DDL, SCHEMA_VERSION
+from .schema import DDL, EDGE_PACKET_SUMMARY_DDL, MODEL_UPDATE_TASK_DDL, SCHEMA_VERSION
 
 
 @contextmanager
@@ -42,6 +42,7 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v10_to_v11_identity_fields(connection)
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
+        _migrate_v16_to_v17_fault_labels(connection)
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
@@ -84,7 +85,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "traceable offline model update workflow",
+                "unify abnormal labels to fault",
             ),
         )
 
@@ -175,6 +176,147 @@ def _json(value: object) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _migrate_v16_to_v17_fault_labels(connection: sqlite3.Connection) -> None:
+    """Rebuild the summary CHECK constraint and rewrite stored abnormal labels."""
+
+    if not _table_exists(connection, "edge_packet_summary"):
+        return
+
+    create_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='edge_packet_summary'"
+    ).fetchone()[0]
+    if create_sql and "'abnormal'" in create_sql:
+        _rebuild_summary_table_for_fault(connection)
+    _rewrite_abnormal_labels(connection)
+
+
+def _rebuild_summary_table_for_fault(connection: sqlite3.Connection) -> None:
+    """Replace the v16 summary table (abnormal CHECK) with the v17 definition."""
+
+    foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+    legacy_alter_table = connection.execute(
+        "PRAGMA legacy_alter_table"
+    ).fetchone()[0]
+    # PRAGMA directives are no-ops inside a transaction: commit any pending
+    # work from earlier migrations before changing them.
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        legacy_table = "edge_packet_summary_legacy_v16"
+        for index_name in (
+            "idx_edge_summary_sender_time",
+            "idx_edge_summary_edge_received",
+            "idx_edge_summary_device_task_bearing",
+        ):
+            connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+        connection.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+        connection.execute(
+            f"ALTER TABLE edge_packet_summary RENAME TO {legacy_table}"
+        )
+        for statement in EDGE_PACKET_SUMMARY_DDL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+        new_columns = [
+            item[1]
+            for item in connection.execute("PRAGMA table_info(edge_packet_summary)")
+        ]
+        legacy_columns = {
+            item[1]
+            for item in connection.execute(f"PRAGMA table_info({legacy_table})")
+        }
+        copied_columns = [column for column in new_columns if column in legacy_columns]
+        selects = []
+        for column in copied_columns:
+            if column == "edge_result":
+                selects.append(
+                    "CASE WHEN edge_result = 'abnormal' THEN 'fault' "
+                    "ELSE edge_result END"
+                )
+            elif column == "summary_json":
+                selects.append(
+                    "REPLACE(summary_json, '\"abnormal\"', '\"fault\"')"
+                )
+            else:
+                selects.append(column)
+        connection.execute(
+            f"INSERT INTO edge_packet_summary ({','.join(copied_columns)}) "
+            f"SELECT {','.join(selects)} FROM {legacy_table}"
+        )
+        connection.execute(f"DROP TABLE {legacy_table}")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"v16 to v17 migration foreign key violations: {violations}"
+            )
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.execute(
+            f"PRAGMA legacy_alter_table = {int(legacy_alter_table)}"
+        )
+        connection.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
+
+
+def _rewrite_abnormal_labels(connection: sqlite3.Connection) -> None:
+    """Unify historical abnormal values to fault in unconstrained columns."""
+
+    plain_updates = (
+        ("bearing_review", ("edge_state",)),
+        ("bearing_task_result", ("edge_state", "cloud_state", "bearing_state")),
+        ("device_task_result", ("final_state",)),
+    )
+    for table, columns in plain_updates:
+        if not _table_exists(connection, table):
+            continue
+        existing = _columns(connection, table)
+        for column in columns:
+            if column not in existing:
+                continue
+            connection.execute(
+                f"UPDATE {table} SET {column} = 'fault' WHERE {column} = 'abnormal'"
+            )
+
+    json_updates = (
+        ("diagnosis_events", ("result_json", "human_review_json")),
+        ("device_arbitration_record", ("request_json", "result_json")),
+        ("global_analysis_result", ("result_json",)),
+        ("enhanced_analysis_result", ("result_json",)),
+        ("final_diagnosis_summary", ("summary_json",)),
+        ("bearing_review", ("result_json",)),
+        ("bearing_task_result", ("result_json",)),
+        ("device_task_result", ("result_json",)),
+        (
+            "model_update_task",
+            (
+                "validation_result_json",
+                "confirmation_result_json",
+                "distribution_result_json",
+                "post_validation_result_json",
+            ),
+        ),
+        ("workflow_review_job", ("request_json", "raw_batch_json", "result_json")),
+    )
+    for table, columns in json_updates:
+        if not _table_exists(connection, table):
+            continue
+        existing = _columns(connection, table)
+        for column in columns:
+            if column not in existing:
+                continue
+            connection.execute(
+                f"UPDATE {table} SET {column} = "
+                "REPLACE("
+                + column
+                + ", '\"abnormal\"', '\"fault\"') "
+                f"WHERE {column} LIKE '%abnormal%'"
+            )
 
 
 def _migrate_v1_to_sender_schema(connection: sqlite3.Connection) -> None:

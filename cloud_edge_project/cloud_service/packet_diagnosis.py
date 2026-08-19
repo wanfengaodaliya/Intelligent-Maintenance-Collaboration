@@ -31,10 +31,10 @@ class RuleBasedDiagnosisModel:
     def predict(self, features: dict[str, Any]) -> PacketDiagnosis:
         vibration = features["vibration"]
         imbalance = features["current_relationship"]["current_imbalance_ratio"]
-        abnormal = vibration["rms"] >= 1.0 or imbalance >= 0.1
-        if abnormal:
+        fault = vibration["rms"] >= 1.0 or imbalance >= 0.1
+        if fault:
             return PacketDiagnosis(
-                label="abnormal",
+                label="fault",
                 confidence=0.93,
                 risk_level="high",
                 recommended_action="urgent_bearing_attention",

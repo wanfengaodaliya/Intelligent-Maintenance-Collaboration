@@ -35,8 +35,8 @@ def _manifest():
         "test_sample_ids": ["sample_1", "sample_2", "sample_3"],
         "focus_sample_ids": ["sample_1", "sample_2", "sample_3"],
         "sample_labels": {
-            "sample_1": {"confirmed_label": "abnormal", "label_source": "dataset_ground_truth"},
-            "sample_2": {"confirmed_label": "abnormal", "label_source": "dataset_ground_truth"},
+            "sample_1": {"confirmed_label": "fault", "label_source": "dataset_ground_truth"},
+            "sample_2": {"confirmed_label": "fault", "label_source": "dataset_ground_truth"},
             "sample_3": {"confirmed_label": "normal", "label_source": "dataset_ground_truth"},
         },
     }
@@ -55,8 +55,8 @@ def _result(sample_id: str, truth: str, baseline: str, candidate: str):
 
 def test_worse_candidate_fails_hard_gate_and_cannot_be_approved():
     results = [
-        _result("sample_1", "abnormal", "abnormal", "warning"),
-        _result("sample_2", "abnormal", "warning", "normal"),
+        _result("sample_1", "fault", "fault", "warning"),
+        _result("sample_2", "fault", "warning", "normal"),
         _result("sample_3", "normal", "normal", "normal"),
     ]
 
@@ -72,8 +72,8 @@ def test_worse_candidate_fails_hard_gate_and_cannot_be_approved():
 
 def test_candidate_that_fixes_target_without_overall_regression_can_be_approved():
     results = [
-        _result("sample_1", "abnormal", "warning", "abnormal"),
-        _result("sample_2", "abnormal", "normal", "abnormal"),
+        _result("sample_1", "fault", "warning", "fault"),
+        _result("sample_2", "fault", "normal", "fault"),
         _result("sample_3", "normal", "normal", "normal"),
     ]
 
@@ -92,8 +92,8 @@ def test_candidate_that_fixes_target_without_overall_regression_can_be_approved(
 
 def test_validation_requires_the_exact_frozen_test_sample_ids():
     results = [
-        _result("sample_1", "abnormal", "warning", "abnormal"),
-        _result("sample_2", "abnormal", "warning", "abnormal"),
+        _result("sample_1", "fault", "warning", "fault"),
+        _result("sample_2", "fault", "warning", "fault"),
     ]
 
     with pytest.raises(ValueError, match="FROZEN_TEST_SET_MISMATCH"):
@@ -151,12 +151,12 @@ def test_detailed_fault_labels_use_explicit_risk_levels_for_target_metric():
         {
             "sample_id": sample_id,
             "confirmed_label": "outer_ring_damage",
-            "confirmed_risk_level": "abnormal",
+            "confirmed_risk_level": "fault",
             "label_source": "dataset_ground_truth",
             "baseline_prediction": "healthy",
             "baseline_risk_level": "normal",
             "candidate_prediction": "outer_ring_damage",
-            "candidate_risk_level": "abnormal",
+            "candidate_risk_level": "fault",
             "problem_context": {"operating_condition": "high_load"},
         }
         for sample_id in _manifest()["test_sample_ids"]
@@ -166,7 +166,7 @@ def test_detailed_fault_labels_use_explicit_risk_levels_for_target_metric():
     manifest["sample_labels"] = {
         sample_id: {
             "confirmed_label": "outer_ring_damage",
-            "confirmed_risk_level": "abnormal",
+            "confirmed_risk_level": "fault",
             "label_source": "dataset_ground_truth",
         }
         for sample_id in manifest["test_sample_ids"]
@@ -181,7 +181,7 @@ def test_detailed_fault_labels_use_explicit_risk_levels_for_target_metric():
 def test_validation_rejects_labels_that_do_not_match_frozen_manifest():
     results = [
         _result("sample_1", "normal", "normal", "normal"),
-        _result("sample_2", "abnormal", "warning", "abnormal"),
+        _result("sample_2", "fault", "warning", "fault"),
         _result("sample_3", "normal", "normal", "normal"),
     ]
 
@@ -193,8 +193,8 @@ def test_target_metric_uses_manifest_focus_ids_not_caller_context():
     manifest = _manifest()
     manifest["focus_sample_ids"] = ["sample_2"]
     results = [
-        _result("sample_1", "abnormal", "normal", "abnormal"),
-        _result("sample_2", "abnormal", "abnormal", "warning"),
+        _result("sample_1", "fault", "normal", "fault"),
+        _result("sample_2", "fault", "fault", "warning"),
         _result("sample_3", "normal", "normal", "normal"),
     ]
     results[1]["problem_context"] = {"operating_condition": "low_load"}

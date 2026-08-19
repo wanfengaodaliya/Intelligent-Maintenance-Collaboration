@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 
-SEVERITY = {"normal": 0, "warning": 1, "abnormal": 2}
+SEVERITY = {"normal": 0, "warning": 1, "fault": 2}
 
 
 def normalized_state(value: object) -> str | None:
-    if value == "fault":
-        value = "abnormal"
+    # 兼容历史存量数据中的 "abnormal"，统一归一化为 "fault"。
+    if value == "abnormal":
+        value = "fault"
     return value if isinstance(value, str) and value in SEVERITY else None
 
 
