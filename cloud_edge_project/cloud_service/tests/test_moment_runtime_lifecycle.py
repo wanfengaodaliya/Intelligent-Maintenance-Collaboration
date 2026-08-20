@@ -61,6 +61,8 @@ def test_cloud_lifespan_initializes_schema_before_accepting_requests(
 
     class _LoadedRunner:
         loaded = True
+        model_version = "moment-scl05-final"
+        gpu_available = False
 
     monkeypatch.setattr("cloud_service.app.preload_moment_runner", lambda settings: None)
     monkeypatch.setattr("cloud_service.app.get_moment_runner", lambda settings: _LoadedRunner())

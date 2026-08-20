@@ -12,7 +12,6 @@ from typing import Any, Callable
 import requests
 
 from .config import CloudSettings
-from .moment_light_adapt import MODEL_VERSION
 
 
 def build_status_payload(
@@ -24,6 +23,8 @@ def build_status_payload(
     health_status: str,
     queue_length: int,
     model_load_status: str,
+    model_version: str,
+    gpu_available: bool,
     last_task_activity_ns: int,
 ) -> dict[str, Any]:
     return {
@@ -35,13 +36,13 @@ def build_status_payload(
             "logical_cpu_count": max(int(os.cpu_count() or 1), 1),
             "cpu_utilization_percent": 0.0,
             "memory_available_mb": 0.0,
-            "gpu_available": model_load_status == "LOADED",
+            "gpu_available": gpu_available,
             "npu_available": False,
             "queue_length": queue_length,
         },
         "models": [
             {
-                "model_version": MODEL_VERSION,
+                "model_version": model_version,
                 "model_load_status": model_load_status,
             }
         ],
@@ -65,6 +66,7 @@ class CloudNodeStatusReporter:
         settings_provider: Callable[[], CloudSettings],
         queue_length_provider: Callable[[], int],
         health_provider: Callable[[], tuple[str, str]],
+        model_runtime_provider: Callable[[], tuple[str, bool]],
         last_activity_provider: Callable[[], int],
         timeout_seconds: float = 1.0,
         interval_seconds: float = 1.0,
@@ -77,6 +79,7 @@ class CloudNodeStatusReporter:
         self.settings_provider = settings_provider
         self.queue_length_provider = queue_length_provider
         self.health_provider = health_provider
+        self.model_runtime_provider = model_runtime_provider
         self.last_activity_provider = last_activity_provider
         self.timeout_seconds = timeout_seconds
         self.interval_seconds = interval_seconds
@@ -87,6 +90,7 @@ class CloudNodeStatusReporter:
     def report_once(self) -> bool:
         try:
             health_status, model_load_status = self.health_provider()
+            model_version, gpu_available = self.model_runtime_provider()
             payload = build_status_payload(
                 self.settings_provider(),
                 cloud_node_id=self.cloud_node_id,
@@ -95,6 +99,8 @@ class CloudNodeStatusReporter:
                 health_status=health_status,
                 queue_length=self.queue_length_provider(),
                 model_load_status=model_load_status,
+                model_version=model_version,
+                gpu_available=gpu_available,
                 last_task_activity_ns=self.last_activity_provider(),
             )
             response = self.http_post(

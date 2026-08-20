@@ -182,6 +182,8 @@ def client(tmp_path: Path, monkeypatch):
 
     class _LoadedRunner:
         loaded = True
+        model_version = "moment-scl05-final"
+        gpu_available = False
 
     monkeypatch.setattr(app_module, "preload_moment_runner", lambda settings: None)
     monkeypatch.setattr(app_module, "get_moment_runner", lambda settings: _LoadedRunner())

@@ -58,6 +58,7 @@ from cloud_service.device_arbitration.v12_contract import (
     is_v12_device_arbitration_request,
 )
 from cloud_service.status_reporter import CloudNodeStatusReporter
+from cloud_service.runtime_status import CloudRuntimeState
 from cloud_service.errors import CloudServiceError
 from cloud_service.service import (
     activate_moment_candidate,
@@ -93,6 +94,7 @@ from scenarios.bearing.cloud.global_analysis.analyzer import build_bearing_maint
 
 config = load_config()
 edge_status_registry = EdgeStatusRegistry()
+cloud_runtime_state = CloudRuntimeState()
 
 # Register the default bearing scenario handler at module level.
 # This ensures get_scenario_handler() works without core importing scenarios.
@@ -112,13 +114,18 @@ def build_cloud_status_reporter() -> CloudNodeStatusReporter:
             return "DEGRADED", "FAILED"
         return "ONLINE", "LOADED"
 
+    def model_runtime_provider() -> tuple[str, bool]:
+        runner = get_moment_runner(load_cloud_settings())
+        return runner.model_version, runner.gpu_available
+
     return CloudNodeStatusReporter(
         scheduler_base_url=scheduler_base_url,
         cloud_node_id=CLOUD_NODE_ID,
         settings_provider=load_cloud_settings,
-        queue_length_provider=lambda: 0,
+        queue_length_provider=lambda: cloud_runtime_state.snapshot().queue_length,
         health_provider=health_provider,
-        last_activity_provider=lambda: 0,
+        model_runtime_provider=model_runtime_provider,
+        last_activity_provider=lambda: cloud_runtime_state.snapshot().last_task_activity_ns,
     )
 
 
@@ -277,12 +284,16 @@ def get_edge_status(edge_node_id: str) -> dict | JSONResponse:
 def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         request = require_mapping(payload, "CloudRequest")
-        settings = load_cloud_settings()
-        handler = get_scenario_handler(
-            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
-            database_path=settings.database_path,
-        )
-        return handler.infer(request)
+        cloud_runtime_state.begin_inference()
+        try:
+            settings = load_cloud_settings()
+            handler = get_scenario_handler(
+                request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+                database_path=settings.database_path,
+            )
+            return handler.infer(request)
+        finally:
+            cloud_runtime_state.finish_inference()
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,

@@ -93,6 +93,16 @@ class MomentLightAdaptRunner:
     def model_version(self) -> str:
         return self._model_version
 
+    @property
+    def gpu_available(self) -> bool:
+        """Return the CUDA availability reported by the loaded PyTorch runtime."""
+        cuda = getattr(self._torch, "cuda", None)
+        checker = getattr(cuda, "is_available", None)
+        try:
+            return bool(checker()) if callable(checker) else False
+        except Exception:
+            return False
+
     def load(self) -> None:
         if self._model is not None:
             return
