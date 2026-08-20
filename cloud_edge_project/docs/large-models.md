@@ -2,7 +2,7 @@
 
 本仓库不随 Git 分发体积较大的预训练权重与训练产物。以下资产均已被 `.gitignore` 忽略，仅保留在本地，不上传至 GitHub。
 
-默认的小型随机森林模型（6.3MB）不受影响，依旧随仓库分发并可直接运行。下表中的 MOMENT 大模型仅用于增强型轴承复核链路（由 `legacy_context_enhanced_pipeline_enabled` / `moment_light_adapt` 控制，默认关闭），缺失时不改变默认运行行为。
+边缘端当前默认使用本地蒸馏 H5 模型（`model.edge_backend: "local_h5"`）。H5 制品同样不随 Git 分发，需要按 `edge_service/models/distilled_h5/active_version.json` 指向的版本目录放置 `best_model.pt`。下表中的 MOMENT 大模型用于云端 `moment_light_adapt` 复核链路。
 
 ## 未上传资产清单
 
@@ -55,16 +55,13 @@ hf download AutonLab/MOMENT-1-small --local-dir model_assets/moment/pretrained/M
 | `CLOUD_MOMENT_DEPLOYMENT_DIR` | `model_assets/moment/releases/moment-scl05-final` |
 | `CLOUD_MOMENT_DEVICE` | `auto` |
 
-## 默认小模型（已废弃，仅存档说明）
+## 边缘本地 H5 模型
 
-> **阶段 6 收口（2026-08）**：边缘本地诊断模型路线已全部淘汰，以下资产仅作历史归档，
-> **不可运行**，仓库中已删除对应代码与制品：
->
-> - `edge_service/models/bearing_random_forest/random_forest.joblib`（早期随机森林模型）
-> - `edge_service/models/distilled_h5/`（蒸馏三分支 H5 模型，含 `best_model.pt`）
-> - `edge_service/src/edge_diagnosis/`（H5 推理运行时代码）
->
-> 当前边缘诊断唯一路线为**正式模型服务**（`model.edge_backend: "official"`，
-> HTTP `/infer`，见 `edge_service/src/model_service/`）。降级语义为"诊断不可用/待云复核"，
-> 不允许回退旧模型。训练流水线产出的 checkpoint 归档见上文 LIGHT_ADAPT 章节，
-> 与边缘运行时不再耦合。
+当前边缘诊断默认路线为本地蒸馏 H5 模型：
+
+- 配置值：`model.edge_backend: "local_h5"`；
+- 制品根目录：`edge_service/models/distilled_h5/`；
+- 版本选择：`active_version.json` 中的 `version`；
+- 必需制品：`edge_service/models/distilled_h5/<version>/best_model.pt`。
+
+`official` 是可选的正式模型服务后端，并非当前默认路线。早期随机森林模型仅作历史归档，不应作为当前边缘诊断后端。若本地 H5 诊断不可用，当前链路会将任务标记为待云端复核，而不是切换到随机森林模型。
