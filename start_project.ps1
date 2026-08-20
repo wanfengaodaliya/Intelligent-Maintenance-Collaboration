@@ -29,8 +29,19 @@ if ($condaEnvs -notmatch "^\s*moment\s") { Write-Host "  moment env missing, cre
 Write-Host "  moment OK"
 
 Write-Host "[Check] MOMENT model ..."
-$p = Join-Path $CloudEdge "local_experiment\analysis\final_model\moment_final_chance\SCL05\fold_3\best_model.pt"
-if (-not (Test-Path $p)) { Write-Host "  MOMENT missing, download first"; exit 1 }
+$requiredMomentFiles = @(
+    (Join-Path $CloudEdge "model_assets\moment\releases\moment-scl05-final\best_model.pt"),
+    (Join-Path $CloudEdge "model_assets\moment\releases\moment-scl05-final\condition_norm.json"),
+    (Join-Path $CloudEdge "model_assets\moment\releases\moment-scl05-final\moment_model.py"),
+    (Join-Path $CloudEdge "model_assets\moment\pretrained\MOMENT-1-small\config.json"),
+    (Join-Path $CloudEdge "model_assets\moment\pretrained\MOMENT-1-small\model.safetensors")
+)
+$missingMomentFiles = @($requiredMomentFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
+if ($missingMomentFiles.Count -gt 0) {
+    Write-Host "  MOMENT assets missing, download them first:"
+    $missingMomentFiles | ForEach-Object { Write-Host "    - $_" }
+    exit 1
+}
 Write-Host "  MOMENT OK"
 
 Write-Host "[Check] H5 model ..."

@@ -20,6 +20,9 @@ interface-gap-analysis/
 experiments/
 local_experiment/
 
+# 云端 MOMENT 运行资产由 Hugging Face 下载，不提交大模型文件。
+/cloud_edge_project/model_assets/
+
 # 缓存目录。
 .cache/
 .pytest_cache/

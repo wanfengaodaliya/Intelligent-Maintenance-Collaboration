@@ -28,17 +28,17 @@ class CloudSettings:
     legacy_bearing_window_review_enabled: bool = False
     legacy_context_enhanced_pipeline_enabled: bool = False
     moment_checkpoint_path: Path = PROJECT_ROOT / (
-        "local_experiment/analysis/final_model/moment_final_chance/"
-        "SCL05/fold_3/best_model.pt"
+        "model_assets/moment/releases/moment-scl05-final/best_model.pt"
     )
     moment_condition_norm_path: Path = PROJECT_ROOT / (
-        "local_experiment/analysis/final_model/moment_final_chance/"
-        "SCL05/fold_3/condition_norm.json"
+        "model_assets/moment/releases/moment-scl05-final/condition_norm.json"
     )
     moment_pretrained_path: Path = PROJECT_ROOT / (
-        "experiments/diagnosis_models/moment/pretrained/MOMENT-1-small"
+        "model_assets/moment/pretrained/MOMENT-1-small"
     )
-    moment_deployment_dir: Path = PROJECT_ROOT / "local_experiment/deploy/light_adapt"
+    moment_deployment_dir: Path = PROJECT_ROOT / (
+        "model_assets/moment/releases/moment-scl05-final"
+    )
     moment_device: str = "auto"
     global_analysis_poll_seconds: float = 60.0
 
@@ -70,21 +70,19 @@ def load_cloud_settings() -> CloudSettings:
         ),
         moment_checkpoint_path=_artifact_path(
             "CLOUD_MOMENT_CHECKPOINT_PATH",
-            "local_experiment/analysis/final_model/moment_final_chance/"
-            "SCL05/fold_3/best_model.pt",
+            "model_assets/moment/releases/moment-scl05-final/best_model.pt",
         ),
         moment_condition_norm_path=_artifact_path(
             "CLOUD_MOMENT_CONDITION_NORM_PATH",
-            "local_experiment/analysis/final_model/moment_final_chance/"
-            "SCL05/fold_3/condition_norm.json",
+            "model_assets/moment/releases/moment-scl05-final/condition_norm.json",
         ),
         moment_pretrained_path=_artifact_path(
             "CLOUD_MOMENT_PRETRAINED_PATH",
-            "experiments/diagnosis_models/moment/pretrained/MOMENT-1-small",
+            "model_assets/moment/pretrained/MOMENT-1-small",
         ),
         moment_deployment_dir=_artifact_path(
             "CLOUD_MOMENT_DEPLOYMENT_DIR",
-            "local_experiment/deploy/light_adapt",
+            "model_assets/moment/releases/moment-scl05-final",
         ),
         moment_device=os.getenv("CLOUD_MOMENT_DEVICE", "auto").strip().lower(),
         global_analysis_poll_seconds=float(

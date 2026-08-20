@@ -1,4 +1,4 @@
-from cloud_service.config import load_cloud_settings
+from cloud_service.config import PROJECT_ROOT, load_cloud_settings
 from cloud_service.moment_light_adapt import MODEL_VERSION
 
 
@@ -7,11 +7,18 @@ def test_default_moment_artifacts_and_public_version_use_scl05_final_model(
 ) -> None:
     monkeypatch.delenv("CLOUD_MOMENT_CHECKPOINT_PATH", raising=False)
     monkeypatch.delenv("CLOUD_MOMENT_CONDITION_NORM_PATH", raising=False)
+    monkeypatch.delenv("CLOUD_MOMENT_PRETRAINED_PATH", raising=False)
+    monkeypatch.delenv("CLOUD_MOMENT_DEPLOYMENT_DIR", raising=False)
 
     settings = load_cloud_settings()
 
-    assert "SCL05/fold_3/best_model.pt" in settings.moment_checkpoint_path.as_posix()
-    assert "SCL05/fold_3/condition_norm.json" in settings.moment_condition_norm_path.as_posix()
+    release_dir = PROJECT_ROOT / "model_assets/moment/releases/moment-scl05-final"
+    assert settings.moment_checkpoint_path == release_dir / "best_model.pt"
+    assert settings.moment_condition_norm_path == release_dir / "condition_norm.json"
+    assert settings.moment_deployment_dir == release_dir
+    assert settings.moment_pretrained_path == (
+        PROJECT_ROOT / "model_assets/moment/pretrained/MOMENT-1-small"
+    )
     assert MODEL_VERSION == "moment-scl05-final"
 
 
