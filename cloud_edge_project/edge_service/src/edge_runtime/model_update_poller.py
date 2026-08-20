@@ -73,7 +73,9 @@ class ModelUpdatePoller:
         self._lock = threading.Lock()
         self._round_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._processed: set[str] = set()
+        self._activated: set[str] = set()
+        self._rolled_back: set[str] = set()
+        self._pending_report: set[str] = set()
         self._last_success_at_ns: int | None = None
         self._last_error_code: str | None = None
         self._last_round_duration_ms = 0.0
@@ -85,11 +87,32 @@ class ModelUpdatePoller:
     def _load_state(self) -> None:
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            processed = data.get("processed_update_ids")
-            if isinstance(processed, list):
-                self._processed = {str(item) for item in processed}
         except (OSError, ValueError, json.JSONDecodeError):
-            self._processed = set()
+            self._activated = set()
+            self._rolled_back = set()
+            self._pending_report = set()
+            return
+        activated = data.get("activated_update_ids")
+        if isinstance(activated, list):
+            self._activated = {str(item) for item in activated}
+        else:
+            # 旧格式：processed_update_ids 视为已激活（仍允许后续回滚）。
+            legacy = data.get("processed_update_ids")
+            self._activated = (
+                {str(item) for item in legacy} if isinstance(legacy, list) else set()
+            )
+        rolled_back = data.get("rolled_back_update_ids")
+        self._rolled_back = (
+            {str(item) for item in rolled_back}
+            if isinstance(rolled_back, list)
+            else set()
+        )
+        pending_report = data.get("pending_report_update_ids")
+        self._pending_report = (
+            {str(item) for item in pending_report}
+            if isinstance(pending_report, list)
+            else set()
+        )
 
     def _save_state(self) -> None:
         try:
@@ -97,7 +120,11 @@ class ModelUpdatePoller:
             tmp = self.state_path.with_suffix(".tmp")
             tmp.write_text(
                 json.dumps(
-                    {"processed_update_ids": sorted(self._processed)},
+                    {
+                        "activated_update_ids": sorted(self._activated),
+                        "rolled_back_update_ids": sorted(self._rolled_back),
+                        "pending_report_update_ids": sorted(self._pending_report),
+                    },
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
@@ -141,7 +168,8 @@ class ModelUpdatePoller:
                 "last_summary": dict(self._last_summary) if self._last_summary else None,
                 "rounds_total": self._rounds_total,
                 "errors_total": self._errors_total,
-                "processed_update_ids": sorted(self._processed),
+                "processed_update_ids": sorted(self._activated | self._rolled_back),
+                "pending_report_update_ids": sorted(self._pending_report),
             }
 
     def run_once(self) -> bool:
@@ -175,6 +203,7 @@ class ModelUpdatePoller:
         summary: dict[str, Any] = {
             "pending_pulls": 0,
             "activated": 0,
+            "reported": 0,
             "pull_failed": 0,
             "pending_rollbacks": 0,
             "rolled_back": 0,
@@ -189,37 +218,44 @@ class ModelUpdatePoller:
         for item in pending.get("pending_pulls", []):
             summary["pending_pulls"] += 1
             update_id = item.get("update_id")
-            if not isinstance(update_id, str) or update_id in self._processed:
+            if not isinstance(update_id, str):
                 continue
-            try:
-                pull_and_activate(
-                    update_id=update_id,
-                    download_url=(
-                        f"{self.cloud_base_url}/cloud/model-update/{update_id}/file"
-                    ),
-                    target_version=item["candidate_version"],
-                    model_type=item.get("model_type", "distilled_h5"),
-                    model_root=self.model_root,
-                    expected_sha256=item.get("artifact_sha256"),
-                    http_get=self.http_get,
-                )
-            except (ModelPullError, KeyError, ValueError) as error:
-                summary["pull_failed"] += 1
-                self.logger.warning("模型 %s 拉取激活失败: %s", update_id, error)
-                self._report_distribution(
-                    update_id, "failed", message=str(error)
-                )
+            if update_id in self._activated and update_id not in self._pending_report:
                 continue
+            if update_id not in self._activated:
+                try:
+                    pull_and_activate(
+                        update_id=update_id,
+                        download_url=(
+                            f"{self.cloud_base_url}/cloud/model-update/{update_id}/file"
+                        ),
+                        target_version=item["candidate_version"],
+                        model_type=item.get("model_type", "distilled_h5"),
+                        model_root=self.model_root,
+                        expected_sha256=item.get("artifact_sha256"),
+                        http_get=self.http_get,
+                    )
+                except (ModelPullError, KeyError, ValueError) as error:
+                    summary["pull_failed"] += 1
+                    self.logger.warning("模型 %s 拉取激活失败: %s", update_id, error)
+                    self._report_distribution(
+                        update_id, "failed", message=str(error)
+                    )
+                    continue
+                self._activated.add(update_id)
+                summary["activated"] += 1
             try:
                 self._report_distribution(update_id, "succeeded")
+                self._pending_report.discard(update_id)
+                summary["reported"] += 1
             except Exception as error:
+                self._pending_report.add(update_id)
                 self.logger.warning("模型 %s 分发结果回传失败: %s", update_id, error)
-            self._mark_processed(update_id)
-            summary["activated"] += 1
+            self._save_state()
         for item in pending.get("pending_rollbacks", []):
             summary["pending_rollbacks"] += 1
             update_id = item.get("update_id")
-            if not isinstance(update_id, str) or update_id in self._processed:
+            if not isinstance(update_id, str) or update_id in self._rolled_back:
                 continue
             try:
                 rollback_version(
@@ -234,7 +270,9 @@ class ModelUpdatePoller:
                     summary["rollback_failed"] += 1
                     self.logger.warning("模型 %s 回滚失败: %s", update_id, error)
                 continue
-            self._mark_processed(update_id)
+            self._rolled_back.add(update_id)
+            self._pending_report.discard(update_id)
+            self._save_state()
             summary["rolled_back"] += 1
         return summary
 
@@ -259,11 +297,6 @@ class ModelUpdatePoller:
             f"{self.cloud_base_url}/cloud/model-update/{update_id}/distribution-result"
         )
         return self.http_post(url, body)
-
-    def _mark_processed(self, update_id: str) -> None:
-        with self._lock:
-            self._processed.add(update_id)
-        self._save_state()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
