@@ -6,6 +6,13 @@ import threading
 from typing import Any, Mapping
 
 
+NETWORK_MEASUREMENT_STATUSES = {"OK", "STALE", "DISCONNECTED", "FAILED"}
+# AUD-03/04/11: 采集状态语义与 Edge 契约保持一致；字段可选，缺失时按旧报告处理。
+CPU_MEASUREMENT_STATUSES = {"OK", "DEGRADED", "FAILED"}
+ACCELERATOR_MEASUREMENT_STATUSES = {"OK", "STALE", "FAILED"}
+QUEUE_MEASUREMENT_STATUSES = {"OK", "STALE", "FAILED"}
+
+
 class EdgeStatusValidationError(ValueError):
     pass
 
@@ -79,9 +86,10 @@ def _validate_report(payload: Mapping[str, Any]) -> dict[str, Any]:
             report.get("last_task_activity_ns"), "last_task_activity_ns"
         ),
     }
+    _attach_resource_measurement_status(resources, validated["resources"])
     if report.get("network_to_scheduler") is not None:
         network = _mapping(report.get("network_to_scheduler"), "network_to_scheduler")
-        validated["network_to_scheduler"] = {
+        validated_network = {
             "measured_at_ns": _positive_int(
                 network.get("measured_at_ns"), "measured_at_ns"
             ),
@@ -99,6 +107,25 @@ def _validate_report(payload: Mapping[str, Any]) -> dict[str, Any]:
                 network.get("loss_rate"), "loss_rate", 0.0, 1.0
             ),
         }
+        measurement_status = network.get("measurement_status")
+        if measurement_status is not None:
+            status_text = _non_empty_text(measurement_status, "measurement_status").upper()
+            if status_text not in NETWORK_MEASUREMENT_STATUSES:
+                raise EdgeStatusValidationError(
+                    "measurement_status must be one of OK/STALE/DISCONNECTED/FAILED"
+                )
+            validated_network["measurement_status"] = status_text
+        rtt_p95_is_estimate = network.get("rtt_p95_is_estimate")
+        if rtt_p95_is_estimate is not None:
+            validated_network["rtt_p95_is_estimate"] = _boolean(
+                rtt_p95_is_estimate, "rtt_p95_is_estimate"
+            )
+        last_successful_measurement_ns = network.get("last_successful_measurement_ns")
+        if last_successful_measurement_ns is not None:
+            validated_network["last_successful_measurement_ns"] = _positive_int(
+                last_successful_measurement_ns, "last_successful_measurement_ns"
+            )
+        validated["network_to_scheduler"] = validated_network
     return validated
 
 
@@ -106,6 +133,66 @@ def _mapping(value: Any, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise EdgeStatusValidationError(f"{field} must be an object")
     return value
+
+
+def _optional_measurement_status(
+    resources: Mapping[str, Any],
+    field: str,
+    allowed: set[str],
+) -> str | None:
+    value = resources.get(field)
+    if value is None:
+        return None
+    status = _non_empty_text(value, field).upper()
+    if status not in allowed:
+        raise EdgeStatusValidationError(
+            f"{field} must be one of {'/'.join(sorted(allowed))}"
+        )
+    return status
+
+
+def _attach_resource_measurement_status(
+    resources: Mapping[str, Any],
+    validated_resources: dict[str, Any],
+) -> None:
+    """AUD-03/04/11: carry optional measurement-status fields into the stored report.
+
+    Fields are additive and backward compatible: reports without them keep the
+    legacy projection, and the Cloud must not silently reinterpret
+    cpu=0 / queue=0 as "idle" when the Edge explicitly flags DEGRADED/FAILED.
+    """
+
+    cpu_status = _optional_measurement_status(
+        resources, "cpu_measurement_status", CPU_MEASUREMENT_STATUSES
+    )
+    if cpu_status is not None:
+        validated_resources["cpu_measurement_status"] = cpu_status
+    # EDGE-3: 复用 CPU 的 OK/DEGRADED/FAILED whitelist；字段缺失保持旧报告兼容。
+    memory_status = _optional_measurement_status(
+        resources, "memory_measurement_status", CPU_MEASUREMENT_STATUSES
+    )
+    if memory_status is not None:
+        validated_resources["memory_measurement_status"] = memory_status
+    accelerator_status = _optional_measurement_status(
+        resources, "accelerator_measurement_status", ACCELERATOR_MEASUREMENT_STATUSES
+    )
+    if accelerator_status is not None:
+        validated_resources["accelerator_measurement_status"] = accelerator_status
+    queue_status = _optional_measurement_status(
+        resources, "queue_measurement_status", QUEUE_MEASUREMENT_STATUSES
+    )
+    if queue_status is not None:
+        validated_resources["queue_measurement_status"] = queue_status
+    breakdown = resources.get("queue_breakdown")
+    if breakdown is not None:
+        if not isinstance(breakdown, Mapping):
+            raise EdgeStatusValidationError("queue_breakdown must be an object")
+        validated_breakdown: dict[str, int] = {}
+        for name, value in breakdown.items():
+            validated_breakdown[_non_empty_text(name, "queue_breakdown key")] = (
+                _non_negative_int(value, f"queue_breakdown.{name}")
+            )
+        validated_resources["queue_breakdown"] = validated_breakdown
 
 
 def _non_empty_text(value: Any, field: str) -> str:

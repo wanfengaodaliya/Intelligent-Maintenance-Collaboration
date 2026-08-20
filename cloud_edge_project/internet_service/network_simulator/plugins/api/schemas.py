@@ -14,16 +14,31 @@ class ApiResponseModel(BaseModel):
 
 
 class NetworkParametersResponse(ApiResponseModel):
+    """网络参数。``packet_loss_percent`` 是 Markov Simulator 生成的模拟值；Toxiproxy
+    当前不真正施加（见 ``packet_loss_applied``），不得视为实测丢包率。"""
+
     state: NetworkState
     latency_ms: int | None = Field(default=None, ge=0)
     jitter_ms: int | None = Field(default=None, ge=0)
     bandwidth_kbps: int | None = Field(default=None, ge=0)
-    packet_loss_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
+    packet_loss_percent: float = Field(
+        ge=0,
+        le=100,
+        allow_inf_nan=False,
+        description="Markov 模拟生成的 packet loss（%）；Toxiproxy 未真实施加。"
+        "如需实测风险，请改用 packet_loss_applied 判断。",
+    )
     disconnect_mode: DisconnectMode
-    packet_loss_applied: bool
+    packet_loss_applied: bool = Field(
+        description="Toxiproxy v2.12.0 是否已把 packet loss 施加到数据面。当前恒为 false。"
+    )
 
 
 class LinkResponse(ApiResponseModel):
+    """链路当前状态。``current_state`` 是目标/desired 状态，``applied_parameters``
+    是数据面真正生效状态（NET-2）。消费方如需实际生效状态应优先读取
+    ``applied_parameters`` + ``last_apply_success``。"""
+
     link_id: str
     link_type: LinkType
     sender_id: str | None
@@ -64,10 +79,25 @@ class RuntimeResponse(ApiResponseModel):
     available_link_count: int = Field(ge=0)
 
 
+class SchedulerReporterDetail(ApiResponseModel):
+    """AUD-13: reporter observability fields exposed via /health."""
+
+    status: str
+    last_error: str | None = None
+    last_success_ns: int | None = Field(default=None, ge=0)
+    last_failure_ns: int | None = Field(default=None, ge=0)
+    consecutive_failures: int = Field(default=0, ge=0)
+    last_rejected_count: int | None = Field(default=None, ge=0)
+    # NET-1: 部分成功可观测性。
+    last_outcome: str | None = None
+    partial_failure_count: int | None = Field(default=None, ge=0)
+
+
 class HealthResponse(ApiResponseModel):
     status: str
     toxiproxy_available: bool
     scheduler_reporter_healthy: bool
+    scheduler_reporter: SchedulerReporterDetail | None = None
     link_count: int = Field(ge=0)
     available_link_count: int = Field(ge=0)
     last_tick: int = Field(ge=0)

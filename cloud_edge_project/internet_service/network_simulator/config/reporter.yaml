@@ -1,7 +1,10 @@
 reporter:
   enabled: true
   reporter_id: network-controller-01
-  scheduler_url: "http://host.docker.internal:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt"
+  # Batch endpoint: one POST per report carries ALL links. The Scheduler
+  # validates and writes each link individually and returns per-link
+  # accepted/rejected results (accepted=false means at least one link failed).
+  scheduler_url: "http://host.docker.internal:8003/scheduler/network-reports"
   report_interval_seconds: 1
   connect_timeout_seconds: 1
   read_timeout_seconds: 2

@@ -11,8 +11,12 @@ import time
 from typing import Iterator
 
 from controller.config_loader import ResolvedLinkConfig
-from domain.exceptions import ToxiproxyUnavailableError
-from domain.models import ApplyResult
+from domain.exceptions import (
+    ProxyConflictError,
+    ProxyNotFoundError,
+    ToxiproxyUnavailableError,
+)
+from domain.models import ApplyResult, NetworkParameters
 from plugins.base import BasePlugin, PluginContext
 
 from .client import ToxiproxyClient
@@ -294,14 +298,15 @@ class ToxiproxyPlugin(BasePlugin):
             desired = snapshot.desired_parameters
             if desired is None:
                 raise ValueError(f"link {link_id} has no desired parameters")
-            result = self._applier.apply(
+            previous_applied = (
+                snapshot.applied_parameters
+                if snapshot.last_apply_success
+                else None
+            )
+            result = self._apply_with_self_healing(
                 link,
                 desired,
-                (
-                    snapshot.applied_parameters
-                    if snapshot.last_apply_success
-                    else None
-                ),
+                previous_applied,
                 timestamp_ns,
             )
             self._context.runtime_store.update_apply_result(
@@ -316,6 +321,87 @@ class ToxiproxyPlugin(BasePlugin):
                 with self._lifecycle_lock:
                     self._pending_initial_apply_ids.discard(link_id)
             return result
+
+    def _apply_with_self_healing(
+        self,
+        link: ResolvedLinkConfig,
+        desired: NetworkParameters,
+        previous_applied: NetworkParameters | None,
+        timestamp_ns: int,
+    ) -> ApplyResult:
+        """Apply desired state, reconciling a missing Toxiproxy proxy once.
+
+        Toxiproxy 容器重启后 proxy/toxic 全部从内存丢失，而 Controller 不重启。
+        这里对明确的 proxy-not-found（HTTP 404 / ProxyNotFoundError）做一次自愈：
+        ensure_proxy 重建后再重新 apply 当前 desired state。最多 apply 两次，
+        第二次仍失败立即按失败处理，禁止无限重试。
+
+        仅当第一个 apply 抛出 ProxyNotFoundError 才触发自愈；ProxyConflict /
+        连接不可用等其他异常不会被当作“缺失”误重建。
+        """
+        try:
+            return self._applier.apply(
+                link,
+                desired,
+                previous_applied,
+                timestamp_ns,
+            )
+        except ProxyNotFoundError:
+            pass
+        except Exception as exc:
+            return ApplyResult(
+                link_id=link.link_id,
+                success=False,
+                applied_parameters=None,
+                timestamp_ns=timestamp_ns,
+                error=f"{type(exc).__name__}: Toxiproxy apply failed",
+                packet_loss_applied=False,
+            )
+
+        self._logger.info(
+            "reconciling missing toxiproxy proxy",
+            extra={
+                "link_id": link.link_id,
+                "proxy_name": link.proxy_name,
+            },
+        )
+        try:
+            self._client.ensure_proxy(
+                link.proxy_name,
+                link.listen,
+                link.upstream,
+            )
+        except Exception as exc:
+            # 不吞 ProxyConflict / 连接不可用：不自动删除或覆盖其他 proxy，
+            # 而是记录失败、last_apply_success=false、health 保持异常。
+            return ApplyResult(
+                link_id=link.link_id,
+                success=False,
+                applied_parameters=None,
+                timestamp_ns=timestamp_ns,
+                error=(
+                    f"{type(exc).__name__}: failed to reconcile missing "
+                    f"toxiproxy proxy {link.proxy_name}"
+                ),
+                packet_loss_applied=False,
+            )
+        # 自愈只重试一次；第二次仍失败（含再次 proxy-not-found）立即走失败处理。
+        try:
+            return self._applier.apply(
+                link,
+                desired,
+                previous_applied,
+                timestamp_ns,
+            )
+        except Exception as exc:
+            return ApplyResult(
+                link_id=link.link_id,
+                success=False,
+                applied_parameters=None,
+                timestamp_ns=timestamp_ns,
+                error=f"{type(exc).__name__}: Toxiproxy apply failed after proxy reconcile",
+                packet_loss_applied=False,
+            )
 
     @contextmanager
     def _active_apply(self) -> Iterator[None]:

@@ -92,12 +92,33 @@ class HealthPlugin(BasePlugin):
             "status": status,
             "toxiproxy_available": toxiproxy_available,
             "scheduler_reporter_healthy": reporter_healthy,
+            "scheduler_reporter": self._reporter_detail(),
             "link_count": len(runtime_snapshot.links),
             "available_link_count": sum(
                 link.available for link in runtime_snapshot.links
             ),
             "last_tick": runtime_snapshot.tick,
         }
+
+    def _reporter_detail(self) -> dict[str, object] | None:
+        """AUD-13: expose reporter observability fields for debugging."""
+        if not self._reporter_health or not self._context:
+            return None
+        try:
+            detail = dict(self._reporter_health())
+        except Exception:
+            return None
+        fields = (
+            "status",
+            "last_error",
+            "last_success_ns",
+            "last_failure_ns",
+            "consecutive_failures",
+            "last_rejected_count",
+            "last_outcome",
+            "partial_failure_count",
+        )
+        return {name: detail.get(name) for name in fields}
 
     @staticmethod
     def _provider_is_ok(provider: HealthProvider | None) -> bool:

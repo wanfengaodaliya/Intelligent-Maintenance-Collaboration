@@ -5,8 +5,13 @@ from pathlib import Path
 
 import pytest
 
-# 蒸馏模型 H5 依赖 torch（宿主机 conda `moment` 环境）；无 torch 的环境跳过。
-pytest.importorskip("torch")
+# AUD-12: the H5 diagnostic stack imports torch at module import time.
+# These tests run in the official model environment (Conda "moment",
+# Python 3.11 + torch); the torch-less .venv skips them explicitly.
+pytest.importorskip(
+    "torch",
+    reason="H5 diagnosis tests require the torch runtime (Conda moment env)",
+)
 
 from edge_diagnosis.distilled_h5_model import (
     H5_LABELS,

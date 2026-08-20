@@ -57,4 +57,7 @@ python -m pytest -p no:cacheprovider -W error -q --basetemp $testTemp
 
 更完整的单节点、多节点、接口和网络链路测试步骤见 `cloud_edge_project/docs/Edge_Status_Reporter_完整测试流程.md`。
 
+## 当前限制
+
+- Network Simulator 的批量 Reporter 默认向真实 Scheduler 的 `POST /scheduler/network-reports` 上报链路快照；接入时以 `internet_service/network_simulator/config/reporter.yaml` 解析出的 URL 为准。
 - 项目尚未声明开源许可证；公开发布前请由仓库所有者选择并添加合适的 `LICENSE`。

@@ -140,6 +140,91 @@ def update_network_report(
     return {"accepted": True, "report_sequence": sequence}
 
 
+def update_network_report_batch(request: dict[str, Any]) -> dict[str, Any]:
+    """接收网络模拟器的完整批量报告：逐条校验、逐条归类、逐条记录结果。
+
+    与旧的单链路端点不同，本入口不按 URL 过滤 links：
+    - 整个请求体格式非法时抛 RegistryError（HTTP 400）；
+    - 单条链路非法或写入失败时标记 rejected 并继续处理其余链路；
+    - 非 MQTT 链路（HTTP）属于 Scheduler 链路模型之外的有意跳过，
+      以 skipped 计数显式上报，既不写入也不算失败；
+    - accepted 仅在没有任何 rejected 时为 True，绝不静默吞掉失败。
+    """
+
+    if not isinstance(request, Mapping):
+        raise RegistryError("INVALID_LINK_SNAPSHOT", "invalid network simulator report")
+    sequence = request.get("report_sequence")
+    measured_at_ns = request.get("generated_at_ns")
+    links = request.get("links")
+    if (
+        not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 1
+        or not isinstance(measured_at_ns, int)
+        or isinstance(measured_at_ns, bool)
+        or measured_at_ns < 1
+        or not isinstance(links, list)
+    ):
+        raise RegistryError("INVALID_LINK_SNAPSHOT", "invalid network simulator report")
+
+    results: list[dict[str, Any]] = []
+    accepted_count = 0
+    skipped_count = 0
+    for item in links:
+        link_id = item.get("link_id") if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            results.append({"link_id": link_id, "accepted": False, "reason": "invalid_link"})
+            continue
+        if item.get("protocol") != "mqtt":
+            # Scheduler 的链路快照模型只覆盖 sender→edge 的 MQTT 发布链路；
+            # HTTP 链路跳过是设计边界，显式计数，不算失败。
+            skipped_count += 1
+            continue
+        if (
+            not isinstance(item.get("sender_id"), str)
+            or not isinstance(item.get("edge_id"), str)
+        ):
+            results.append({"link_id": link_id, "accepted": False, "reason": "invalid_link"})
+            continue
+        try:
+            snapshot = _simulator_link_snapshot(item, measured_at_ns)
+        except RegistryError:
+            results.append({"link_id": link_id, "accepted": False, "reason": "invalid_link"})
+            continue
+        try:
+            outcome = node_registry.update_link(snapshot)
+        except RegistryError as error:
+            results.append(
+                {"link_id": link_id, "accepted": False, "reason": error.code.lower()}
+            )
+            continue
+        if outcome.get("accepted") is not True:
+            if outcome.get("reason_code") == "STALE_LINK_SNAPSHOT":
+                # 重复投递或乱序补投：注册表内已有不早于本报告的链路状态，
+                # 视为该链路已确认最新，保证 Reporter 重试幂等。
+                accepted_count += 1
+                continue
+            results.append(
+                {
+                    "link_id": link_id,
+                    "accepted": False,
+                    "reason": str(outcome.get("reason_code", "rejected")).lower(),
+                }
+            )
+            continue
+        accepted_count += 1
+    rejected_count = len(results)
+    return {
+        "accepted": rejected_count == 0,
+        "report_sequence": sequence,
+        "received_count": len(links),
+        "accepted_count": accepted_count,
+        "skipped_count": skipped_count,
+        "rejected_count": rejected_count,
+        "results": results,
+    }
+
+
 def _simulator_link_snapshot(item: dict[str, Any], measured_at_ns: int) -> dict[str, Any]:
     available = item.get("available") is True and item.get("last_apply_success") is True
     latency = _non_negative_network_value(item.get("latency_ms")) if available else 0.0
@@ -154,10 +239,14 @@ def _simulator_link_snapshot(item: dict[str, Any], measured_at_ns: int) -> dict[
         "edge_node_id": item["edge_id"],
         "measured_at_ns": measured_at_ns,
         "rtt_ms_avg": latency,
+        # RTT P95 是估算值（latency + 2*jitter），并非大量真实样本计算出的测量 P95。
         "rtt_ms_p95": latency + 2.0 * jitter,
+        "rtt_p95_is_estimate": True,
         "jitter_ms": jitter,
         "available_throughput_mbps": bandwidth_kbps / 1000.0,
-        "mqtt_publish_success_rate": 1.0 - loss_percent / 100.0 if available else 0.0,
+        # 丢包率来自 Markov 网络模型（Toxiproxy 未实际施加），
+        # 只能按“模拟丢包率”传递，不得伪装成 MQTT 实测发布成功率。
+        "simulated_packet_loss_rate": loss_percent / 100.0 if available else 1.0,
     }
 
 
@@ -249,6 +338,16 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
     def link_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         return endpoint("update_link_snapshot", request)
 
+    @router.post("/network-reports", response_model=None)
+    def network_report_batch_endpoint(
+        request: dict[str, Any],
+    ) -> dict[str, Any] | JSONResponse:
+        try:
+            return update_network_report_batch(request)
+        except Exception as error:
+            status_code, payload = _error_payload(error)
+            return JSONResponse(status_code=status_code, content=payload)
+
     @router.post("/network-reports/{link_id}", response_model=None)
     def network_report_endpoint(
         link_id: str, request: dict[str, Any]
@@ -318,6 +417,7 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             "/scheduler/edge-nodes/status": update_edge_node_status,
             "/scheduler/cloud-nodes/status": update_cloud_node_status,
             "/scheduler/link-snapshots": update_link_snapshot,
+            "/scheduler/network-reports": update_network_report_batch,
             "/scheduler/tasks/result": save_task_result,
             "/scheduler/packet-route": route_packet,
             "/scheduler/cloud-upload-results": save_cloud_upload_result,

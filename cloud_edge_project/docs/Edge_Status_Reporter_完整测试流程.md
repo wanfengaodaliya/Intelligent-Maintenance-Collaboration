@@ -117,6 +117,27 @@ No broken requirements found.
 
 实际版本允许有小幅差异，但命令必须成功执行。
 
+### 3.2.1 测试环境基线（必读）
+
+项目使用两个测试环境，分工如下：
+
+| 环境 | Python | torch | 用途 |
+|---|---|---|---|
+| `.venv`（日常开发环境） | 3.12.x | 无 | 运行除 H5 诊断栈以外的全部模块测试；torch 相关测试自动跳过（`pytest.importorskip("torch")`，显示为 `skipped`） |
+| Conda `moment`（正式模型环境） | 3.11.15 | 2.13.0+cu130 | 运行 H5 蒸馏模型 / torch 相关测试（`edge_service/verification/test_distilled_h5_diagnosis.py`、`tests/test_v01_final_fixes.py`、`tests/test_v01_end_to_end.py`、`tests/test_v01_inference.py` 等） |
+
+说明：
+
+1. 正式开发和测试基线为 **Python 3.11**（Conda `moment` 环境，依赖见 `requirements-moment.txt`）。
+2. 不要在 `.venv`（Python 3.12/3.14）中强行安装当前不适配的 torch 版本；torch 相关测试在该环境下应保持跳过，而不是失败。
+3. H5 / torch 测试在 `moment` 环境下运行前先激活：
+
+```powershell
+conda activate moment
+cd <仓库目录>\cloud_edge_project
+python -m pytest edge_service\verification\test_distilled_h5_diagnosis.py -q
+```
+
 ### 3.3 检查默认端口
 
 ```powershell

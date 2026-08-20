@@ -16,6 +16,14 @@ STATUS_REPORT_TIMEOUT_NS = 6_000_000_000
 LINK_SNAPSHOT_TIMEOUT_NS = 30_000_000_000
 MAX_FUTURE_CLOCK_SKEW_NS = 300_000_000_000
 MEMORY_REFERENCE_MB = 8_192.0
+NETWORK_MEASUREMENT_STATUSES = {"OK", "STALE", "DISCONNECTED", "FAILED"}
+# AUD-03/04/11: 采集状态语义与 Edge 契约保持一致；字段可选，缺失时按旧报告处理。
+CPU_MEASUREMENT_STATUSES = {"OK", "DEGRADED", "FAILED"}
+ACCELERATOR_MEASUREMENT_STATUSES = {"OK", "STALE", "FAILED"}
+QUEUE_MEASUREMENT_STATUSES = {"OK", "STALE", "FAILED"}
+# EDGE-2: 采集状态不可信时该分量取中性值，既不奖励（伪装优秀）也不惩罚（伪装过载）。
+# 与 _network_score(None)=50 的既有惯例一致。
+NEUTRAL_COMPONENT_SCORE = 50.0
 
 
 class RegistryError(ValueError):
@@ -55,7 +63,7 @@ class LinkSnapshot:
     rtt_ms_p95: float
     jitter_ms: float
     available_throughput_mbps: float
-    mqtt_publish_success_rate: float
+    simulated_packet_loss_rate: float
 
 
 def load_edge_node_configs() -> dict[str, EdgeNodeConfig]:
@@ -71,10 +79,16 @@ def load_edge_node_configs() -> dict[str, EdgeNodeConfig]:
                 f"SCHEDULER_EDGE_NODES_JSON is invalid JSON: {exc}",
             ) from exc
     else:
+        # ENV-1: 与 network_simulator/config/entities.yaml 的默认完整拓扑一致，
+        # 默认 3 sender × 2 edge 的 6 条 MQTT 链路都应被 Scheduler 注册。
         payload = {
             "edge_01": {
                 "control_url": "http://127.0.0.1:8001",
                 "target_topic": "edge/edge_01/input",
+            },
+            "edge_02": {
+                "control_url": "http://127.0.0.1:8002",
+                "target_topic": "edge/edge_02/input",
             },
         }
 
@@ -301,9 +315,30 @@ class NodeRegistry:
 
 
 def _compute_base_score(resources: Mapping[str, Any]) -> float:
-    cpu_idle_score = 100.0 - float(resources["cpu_utilization_percent"])
-    memory_score = min(float(resources["memory_available_mb"]) / MEMORY_REFERENCE_MB, 1.0) * 100.0
-    queue_score = max(0.0, 100.0 - float(resources["queue_length"]) * 10.0)
+    """EDGE-2: 不可信采集状态的中性评分。
+
+    - cpu/queue 状态字段可选，缺失时按 old(OK) 行为逐位一致；
+    - DEGRADED/FAILED：分量取中性 50，避免 "cpu=0 + DEGRADED" 被当作空闲高分；
+    - STALE：使用 last-known-good 的真实历史值，正常计算；
+    - FAILED 分量取中性，并由候选构建部的 _measurement_gate 保守排除。
+    """
+    cpu_status = resources.get("cpu_measurement_status", "OK")
+    queue_status = resources.get("queue_measurement_status", "OK")
+    memory_status = resources.get("memory_measurement_status", "OK")
+    if cpu_status in ("DEGRADED", "FAILED"):
+        cpu_idle_score = NEUTRAL_COMPONENT_SCORE
+    else:
+        cpu_idle_score = 100.0 - float(resources["cpu_utilization_percent"])
+    # EDGE-3: 内存采集不可信（如 native fallback 的 0MiB）时取中性值，
+    # 避免 "memory=0 + DEGRADED" 被当作真实低内存惩罚。
+    if memory_status in ("DEGRADED", "FAILED"):
+        memory_score = NEUTRAL_COMPONENT_SCORE
+    else:
+        memory_score = min(float(resources["memory_available_mb"]) / MEMORY_REFERENCE_MB, 1.0) * 100.0
+    if queue_status == "FAILED":
+        queue_score = NEUTRAL_COMPONENT_SCORE
+    else:
+        queue_score = max(0.0, 100.0 - float(resources["queue_length"]) * 10.0)
     return round(cpu_idle_score * 0.40 + memory_score * 0.30 + queue_score * 0.30, 4)
 
 
@@ -324,6 +359,7 @@ def _validate_status_report(payload: Mapping[str, Any]) -> dict[str, Any]:
         "npu_available": _boolean(resources.get("npu_available"), "npu_available"),
         "queue_length": _non_negative_int(resources.get("queue_length"), "queue_length"),
     }
+    _attach_resource_measurement_status(resources, validated_resources)
 
     models = report.get("models")
     if not isinstance(models, list):
@@ -350,6 +386,25 @@ def _validate_status_report(payload: Mapping[str, Any]) -> dict[str, Any]:
             "rtt_ms_p95": _non_negative_float(network.get("rtt_ms_p95"), "rtt_ms_p95"),
             "loss_rate": _bounded_float(network.get("loss_rate"), "loss_rate", 0.0, 1.0),
         }
+        measurement_status = network.get("measurement_status")
+        if measurement_status is not None:
+            status_text = _non_empty_text(measurement_status, "measurement_status").upper()
+            if status_text not in NETWORK_MEASUREMENT_STATUSES:
+                raise RegistryError(
+                    "INVALID_STATUS_REPORT",
+                    "measurement_status must be one of OK/STALE/DISCONNECTED/FAILED",
+                )
+            validated_network["measurement_status"] = status_text
+        rtt_p95_is_estimate = network.get("rtt_p95_is_estimate")
+        if rtt_p95_is_estimate is not None:
+            validated_network["rtt_p95_is_estimate"] = _boolean(
+                rtt_p95_is_estimate, "rtt_p95_is_estimate"
+            )
+        last_successful_measurement_ns = network.get("last_successful_measurement_ns")
+        if last_successful_measurement_ns is not None:
+            validated_network["last_successful_measurement_ns"] = _positive_int(
+                last_successful_measurement_ns, "last_successful_measurement_ns"
+            )
     last_task_activity_ns = _non_negative_int(
         report.get("last_task_activity_ns"), "last_task_activity_ns"
     )
@@ -384,8 +439,8 @@ def _validate_link_snapshot(
             available_throughput_mbps=_non_negative_float(
                 item.get("available_throughput_mbps"), "available_throughput_mbps"
             ),
-            mqtt_publish_success_rate=_bounded_float(
-                item.get("mqtt_publish_success_rate"), "mqtt_publish_success_rate", 0.0, 1.0
+            simulated_packet_loss_rate=_bounded_float(
+                item.get("simulated_packet_loss_rate"), "simulated_packet_loss_rate", 0.0, 1.0
             ),
         )
     except RegistryError as error:
@@ -396,6 +451,67 @@ def _mapping(value: Any, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise RegistryError("INVALID_STATUS_REPORT", f"{field} must be an object")
     return value
+
+
+def _optional_measurement_status(
+    resources: Mapping[str, Any],
+    field: str,
+    allowed: set[str],
+) -> str | None:
+    value = resources.get(field)
+    if value is None:
+        return None
+    status = _non_empty_text(value, field).upper()
+    if status not in allowed:
+        raise RegistryError(
+            "INVALID_STATUS_REPORT",
+            f"{field} must be one of {'/'.join(sorted(allowed))}",
+        )
+    return status
+
+
+def _attach_resource_measurement_status(
+    resources: Mapping[str, Any],
+    validated_resources: dict[str, Any],
+) -> None:
+    """AUD-03/04/11: carry optional measurement-status fields into the stored report.
+
+    Fields are additive and backward compatible: reports without them keep the
+    legacy projection, and the Scheduler must not silently reinterpret
+    cpu=0 / queue=0 as "idle" when the Edge explicitly flags DEGRADED/FAILED.
+    """
+
+    cpu_status = _optional_measurement_status(
+        resources, "cpu_measurement_status", CPU_MEASUREMENT_STATUSES
+    )
+    if cpu_status is not None:
+        validated_resources["cpu_measurement_status"] = cpu_status
+    # EDGE-3: 复用 CPU 的 OK/DEGRADED/FAILED whitelist；字段缺失保持旧报告兼容。
+    memory_status = _optional_measurement_status(
+        resources, "memory_measurement_status", CPU_MEASUREMENT_STATUSES
+    )
+    if memory_status is not None:
+        validated_resources["memory_measurement_status"] = memory_status
+    accelerator_status = _optional_measurement_status(
+        resources, "accelerator_measurement_status", ACCELERATOR_MEASUREMENT_STATUSES
+    )
+    if accelerator_status is not None:
+        validated_resources["accelerator_measurement_status"] = accelerator_status
+    queue_status = _optional_measurement_status(
+        resources, "queue_measurement_status", QUEUE_MEASUREMENT_STATUSES
+    )
+    if queue_status is not None:
+        validated_resources["queue_measurement_status"] = queue_status
+    breakdown = resources.get("queue_breakdown")
+    if breakdown is not None:
+        if not isinstance(breakdown, Mapping):
+            raise RegistryError("INVALID_STATUS_REPORT", "queue_breakdown must be an object")
+        validated_breakdown: dict[str, int] = {}
+        for name, value in breakdown.items():
+            validated_breakdown[_non_empty_text(name, "queue_breakdown key")] = (
+                _non_negative_int(value, f"queue_breakdown.{name}")
+            )
+        validated_resources["queue_breakdown"] = validated_breakdown
 
 
 def _non_empty_text(value: Any, field: str) -> str:

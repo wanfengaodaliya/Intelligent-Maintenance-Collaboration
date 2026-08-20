@@ -7,6 +7,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+import numpy as np
+import pytest
+
 from edge_perception import ModuleResult, PerceptionRegistry
 from scenarios.bearing.edge import build_bearing_perception_config
 
@@ -130,6 +133,12 @@ def test_fir_generator_writes_single_authoritative_asset(tmp_path: Path) -> None
 def test_edge_launcher_imports_application_outside_project_directory(
     tmp_path: Path,
 ) -> None:
+    # AUD-12: the launcher imports the H5 diagnostic model which needs torch.
+    # Skip only in torch-less environments; the Conda "moment" env runs it fully.
+    pytest.importorskip(
+        "torch",
+        reason="edge app import requires the torch runtime (Conda moment env)",
+    )
     environment = dict(os.environ)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["EDGE_STATUS_REPORTER_ENABLED"] = "false"

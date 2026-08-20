@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Callable, Mapping
 
@@ -165,7 +166,13 @@ class ResultUploader:
                     )
             connection.execute("UPDATE v12_result_upload SET status='PENDING' WHERE status='UPLOADING'")
 
+    @contextmanager
     def _connect(self):
+        # AUD-09: commit on success, rollback on error, and always close.
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()

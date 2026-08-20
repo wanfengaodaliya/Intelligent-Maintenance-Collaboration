@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 
 
@@ -25,7 +26,9 @@ class PacketSourceMappingStore:
     def __init__(self, database_path: Path | str):
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.database_path) as connection:
+        # AUD-09: closing() ensures the connection is closed; the inner
+        # `connection` context keeps the commit-on-exit transaction semantics.
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS packet_source_mapping (
                        packet_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,
@@ -54,7 +57,7 @@ class PacketSourceMappingStore:
             source_file, extract_paderborn_bearing_code(source_file),
             start_index, end_index, window_index, time.time_ns(),
         )
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 """INSERT INTO packet_source_mapping VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(packet_id) DO UPDATE SET
@@ -67,7 +70,7 @@ class PacketSourceMappingStore:
             )
 
     def get(self, packet_id: str) -> dict[str, object] | None:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 "SELECT * FROM packet_source_mapping WHERE packet_id=?", (packet_id,)

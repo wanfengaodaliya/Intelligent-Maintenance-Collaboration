@@ -53,6 +53,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # ENV-2: 该服务是“standalone/test 用 Fake Scheduler（stub）”而不是权威真实 Scheduler。
+    # 通过 profile 隔离：默认完整栈启动不含它；显式 `--profile standalone` 才启动。
+    # 真实报告目标由 NETWORK_SCHEDULER_URL / config/reporter.yaml 决定（默认 host.docker.internal:8003）。
+    profiles:
+      - standalone
+    container_name: scheduler-stub
     command: ["python", "-m", "uvicorn", "scheduler_stub.app:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
     ports:
@@ -83,7 +89,7 @@ services:
       NETWORK_CONFIG_DIR: /app/config
       NETWORK_LOG_DIR: /app/logs
       TOXIPROXY_API_BASE_URL: http://toxiproxy:8474
-      NETWORK_SCHEDULER_URL: "http://host.docker.internal:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt"
+      NETWORK_SCHEDULER_URL: "http://host.docker.internal:8003/scheduler/network-reports"
       NETWORK_REPORT_TOKEN: "${NETWORK_REPORT_TOKEN:-}"
       NETWORK_LINK_UPSTREAMS_JSON: "${NETWORK_LINK_UPSTREAMS_JSON:-}"
       TZ: "${TZ:-Asia/Shanghai}"

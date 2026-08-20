@@ -1,8 +1,16 @@
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+# AUD-12: these end-to-end tests import the Edge application, which loads the
+# H5 diagnostic model (torch). Run them in the Conda "moment" environment;
+# torch-less .venv runs skip them explicitly.
+pytest.importorskip(
+    "torch",
+    reason="V0.1 e2e tests import the torch-based Edge app (Conda moment env)",
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
