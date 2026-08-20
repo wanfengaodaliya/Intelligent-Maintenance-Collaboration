@@ -24,6 +24,8 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_001-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_001/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
@@ -34,7 +36,6 @@ services:
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8001:8001"
-      - "8011:8011"
     volumes:
       - edge_001_data:/app/data
     extra_hosts:
@@ -54,6 +55,8 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_002-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_002/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
@@ -62,8 +65,6 @@ services:
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8002:8001"
-      # 8012 保留给宿主机正式模型服务；edge_002 控制端口宿主机映射使用 8013。
-      - "8013:8011"
     volumes:
       - edge_002_data:/app/data
     extra_hosts:

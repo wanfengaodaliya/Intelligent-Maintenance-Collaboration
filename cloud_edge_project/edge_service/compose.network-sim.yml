@@ -47,6 +47,8 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_01-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_01/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       # 出站 HTTP 全部经过 Toxiproxy 链路，指向 links.yaml 中对应代理端口。
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18011
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18021
@@ -64,9 +66,8 @@ services:
       EDGE_NETWORK_LINK_ID: edge_01__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_01__to__scheduler__http
     ports:
-      # 供 Scheduler→Edge / Cloud→Edge 链路的 toxiproxy 上游回调。
+      # 供 Scheduler→Edge 链路的 toxiproxy 上游回调。
       - "8001:8001"
-      - "8011:8011"
     volumes:
       - edge_01_sim_data:/app/data
     restart: unless-stopped
@@ -86,6 +87,8 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_02-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_02/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18053
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
@@ -96,8 +99,6 @@ services:
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
     ports:
       - "8002:8001"
-      # 8012 保留给宿主机正式模型服务；edge_02 控制端口宿主机映射使用 8013。
-      - "8013:8011"
     volumes:
       - edge_02_sim_data:/app/data
     restart: unless-stopped

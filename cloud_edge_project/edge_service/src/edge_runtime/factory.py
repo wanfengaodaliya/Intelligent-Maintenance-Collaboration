@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from common.control_auth import ControlAuthVerifier
 from cloud_review import CloudReviewStore
 from edge_model.pipeline import EdgeModelPipeline
 from edge_task_ingress import EdgeTaskIngress
@@ -74,6 +75,7 @@ def build_edge_runtime(
     cloud_review_store: Optional[CloudReviewStore] = None,
     on_packet_route_error: Optional[Callable[[dict], None]] = None,
     enable_heartbeat: bool = True,
+    control_auth_verifier: ControlAuthVerifier | None = None,
 ) -> EdgeRuntimeAssembly:
     """把现有边缘计算模块装配为可启动的协议运行时。"""
     errors = config.validate()
@@ -297,6 +299,7 @@ def build_edge_runtime(
         )
     control_application = EdgeControlApplication(
         ingress,
+        control_auth_verifier=control_auth_verifier,
         on_device_arbitration_result=(
             None
             if v12_flow is None

@@ -11,6 +11,11 @@ $CloudEdge = Join-Path $ProjectRoot "cloud_edge_project"
 $NetSim = Join-Path $CloudEdge "internet_service\network_simulator"
 $LLM_DIR = "D:\develop\llama.cpp"
 
+if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
+    [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
+    throw "EDGE_CONTROL_SHARED_SECRET must be set to at least 32 bytes before startup"
+}
+
 Write-Host "=== Project Root: $ProjectRoot ==="
 
 # Pre-checks

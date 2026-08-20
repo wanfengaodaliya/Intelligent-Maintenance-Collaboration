@@ -88,6 +88,11 @@ edge_1 → http://127.0.0.1:8001 → edge/edge_1/input
 POST {control_url}/edge/tasks
 ```
 
+Scheduler 与 Edge 必须配置相同的 `EDGE_CONTROL_SHARED_SECRET`（至少 32 字节）。
+控制请求使用 `X-Edge-Timestamp`、128-bit `X-Edge-Nonce` 与
+`X-Edge-Signature` 做 HMAC-SHA256 认证；可选的 `EDGE_CONTROL_KEY_ID`
+默认是 `scheduler-v1`。密钥不得提交到仓库。
+
 边缘节点接口由边缘模块提供，本目录只负责发出请求和校验 ACK。
 该接口必须以 `task_id` 为幂等键；重复收到同一任务时应返回原确认结果，不能重复创建任务上下文。
 

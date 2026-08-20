@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -13,6 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from common.control_auth import (
+    DEFAULT_KEY_ID,
+    encode_control_json,
+    load_control_shared_secret,
+    sign_control_request,
+)
 
 try:
     from .node_registry import EdgeNodeState, LinkSnapshot, NodeRegistry
@@ -89,8 +97,12 @@ class EdgeAssignmentClient:
         self,
         *,
         timeout_seconds: float = EDGE_ACK_TIMEOUT_SECONDS,
+        shared_secret: bytes | str | None = None,
+        key_id: str | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.shared_secret = shared_secret
+        self.key_id = key_id or os.getenv("EDGE_CONTROL_KEY_ID", DEFAULT_KEY_ID)
 
     def request_assignment(
         self,
@@ -116,11 +128,23 @@ class EdgeAssignmentClient:
             },
             "dispatched_at_ns": request["created_timestamp_ns"],
         }
+        body = encode_control_json(payload)
+        secret = (
+            load_control_shared_secret()
+            if self.shared_secret is None
+            else self.shared_secret
+        )
         try:
             http_request = Request(
                 node.config.control_url + "/edge/tasks",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                data=body,
+                headers=sign_control_request(
+                    secret,
+                    method="POST",
+                    path="/edge/tasks",
+                    body=body,
+                    key_id=self.key_id,
+                ),
                 method="POST",
             )
             with urlopen(

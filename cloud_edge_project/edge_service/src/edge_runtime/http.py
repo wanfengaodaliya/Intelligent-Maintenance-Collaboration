@@ -7,8 +7,10 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional
+from urllib.parse import urlsplit
 
-from edge_task_ingress import EdgeTaskIngress
+from common.control_auth import ControlAuthError, ControlAuthVerifier
+from edge_task_ingress import TASK_CONFLICT, EdgeTaskIngress
 
 from .json_utils import json_bytes
 
@@ -89,16 +91,48 @@ class EdgeControlApplication:
         ingress: EdgeTaskIngress,
         *,
         on_device_arbitration_result: Callable[[dict[str, Any]], Any] | None = None,
+        control_auth_verifier: ControlAuthVerifier | None = None,
     ):
         self.ingress = ingress
         self.on_device_arbitration_result = on_device_arbitration_result
+        self.control_auth_verifier = control_auth_verifier
 
-    def handle(self, path: str, payload: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    def handle(
+        self,
+        path: str,
+        payload: Mapping[str, Any] | None,
+        *,
+        method: str = "POST",
+        query_string: str = "",
+        raw_body: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        if self.control_auth_verifier is not None:
+            try:
+                self.control_auth_verifier.verify(
+                    method=method,
+                    path=path,
+                    query_string=query_string,
+                    body=(
+                        json_bytes({} if payload is None else dict(payload))
+                        if raw_body is None
+                        else raw_body
+                    ),
+                    headers={} if headers is None else headers,
+                )
+            except ControlAuthError as exc:
+                return exc.status_code, _error(exc.code, exc.message)
+        if payload is None:
+            return 400, _error("INVALID_REQUEST", "invalid request body")
         if path == "/edge/tasks":
-            if not isinstance(payload.get("dispatch_id"), str) or not payload["dispatch_id"]:
-                return 400, _error("INVALID_REQUEST", "dispatch_id is required")
             ack = self.ingress.register_task(payload)
-            return (200 if ack.ack_status == "ACCEPTED" else 409), ack.as_dict()
+            if ack.ack_status == "ACCEPTED":
+                status = 200
+            elif ack.reason_code == TASK_CONFLICT:
+                status = 409
+            else:
+                status = 400
+            return status, ack.as_dict()
         if path == "/edge/task-revocations":
             dispatch_id = payload.get("dispatch_id")
             reason = payload.get("reason_code")
@@ -109,8 +143,8 @@ class EdgeControlApplication:
                     reason_code=reason,
                     revoked_at_ns=revoked_at_ns,
                 )
-            except (TypeError, ValueError) as exc:
-                return 400, _error("INVALID_REQUEST", str(exc))
+            except (TypeError, ValueError):
+                return 400, _error("INVALID_REQUEST", "invalid revocation request")
             if not found:
                 return 404, _error("DISPATCH_NOT_FOUND", "dispatch_id is unknown")
             return 200, {"dispatch_id": dispatch_id, "revoked": True}
@@ -119,8 +153,11 @@ class EdgeControlApplication:
                 return 404, _error("NOT_FOUND", "device arbitration is not enabled")
             try:
                 result = self.on_device_arbitration_result(dict(payload))
-            except (TypeError, ValueError) as exc:
-                return 400, _error("INVALID_DEVICE_ARBITRATION_RESULT", str(exc))
+            except (TypeError, ValueError):
+                return 400, _error(
+                    "INVALID_DEVICE_ARBITRATION_RESULT",
+                    "invalid device arbitration result",
+                )
             return 200, {
                 "accepted": True,
                 "device_result_id": None if result is None else result.result_id,
@@ -138,12 +175,23 @@ def make_control_server(
         def do_POST(self) -> None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("request body must be a JSON object")
-                status, result = application.handle(self.path.rstrip("/"), payload)
-            except (ValueError, json.JSONDecodeError) as exc:
-                status, result = 400, _error("INVALID_REQUEST", str(exc))
+                raw_body = self.rfile.read(length)
+                target = urlsplit(self.path)
+                try:
+                    decoded = json.loads(raw_body.decode("utf-8"))
+                    payload = decoded if isinstance(decoded, dict) else None
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = None
+                status, result = application.handle(
+                    target.path,
+                    payload,
+                    method="POST",
+                    query_string=target.query,
+                    raw_body=raw_body,
+                    headers=self.headers,
+                )
+            except ValueError:
+                status, result = 400, _error("INVALID_REQUEST", "invalid request body")
             body = json_bytes(result)
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
