@@ -44,8 +44,11 @@ class DiagnosisWindowAssembler:
         self, *, window_ms: int, packet_duration_ms: int = 50,
         step_ms: int | None = None, overlap_enabled: bool = False,
     ) -> None:
-        if window_ms not in {50, 100, 150}:
-            raise ValueError("window_ms must be one of 50, 100, or 150")
+        if window_ms != 50:
+            raise ValueError(
+                "window_ms is locked at 50 (distilled H5 is frozen to 3200-sample / "
+                "50ms input; 100/150ms windows are not supported)"
+            )
         if packet_duration_ms != 50 or window_ms % packet_duration_ms:
             raise ValueError("packet_duration_ms must be 50 and divide window_ms")
         if step_ms is not None and step_ms != window_ms:

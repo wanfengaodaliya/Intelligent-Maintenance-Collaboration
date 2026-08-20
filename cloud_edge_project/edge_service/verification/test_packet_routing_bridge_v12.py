@@ -48,7 +48,7 @@ def test_bridge_sends_deterministic_window_and_round_identity() -> None:
     assert captured["window_start_sequence"] == captured["window_end_sequence"] == 1
 
 
-def test_bridge_transmits_a_multi_packet_window_identity_without_rebuilding_it() -> None:
+def test_bridge_transmits_a_diagnosis_window_identity_without_rebuilding_it() -> None:
     captured: dict = {}
     bridge = PacketRoutingBridge(
         edge_node_id="edge_01", store=_Store(),
@@ -63,18 +63,18 @@ def test_bridge_transmits_a_multi_packet_window_identity_without_rebuilding_it()
             "end_generate_timestamp_ns": sequence * 50_000_000,
             "data": {"vibration": {"sample_rate_hz": 64_000}},
         }
-        for sequence in (1, 2)
+        for sequence in (1,)
     ]
-    assembler = DiagnosisWindowAssembler(window_ms=100)
+    assembler = DiagnosisWindowAssembler(window_ms=50)
     window = next(result for packet in packets for result in assembler.append(packet))
     raw = {
-        **packets[-1], "window_start_ns": 0, "window_end_ns": 100_000_000,
-        "contributing_packet_ids": ["packet_001", "packet_002"],
+        **packets[-1], "window_start_ns": 0, "window_end_ns": 50_000_000,
+        "contributing_packet_ids": ["packet_001"],
     }
     completion = PacketExecutionCompleted(
         request_id="request_01", device_id="machine_01", bearing_id="bearing_02",
-        task_id="task_001", packet_id="packet_002", sender_id="sender_02",
-        sequence_number=2, status="SUCCEEDED", error_code=None,
+        task_id="task_001", packet_id="packet_001", sender_id="sender_02",
+        sequence_number=1, status="SUCCEEDED", error_code=None,
         started_at_ns=1, finished_at_ns=2,
         edge=EdgeResult("normal", 0.95, "low", "edge_model_v1"),
     )
@@ -84,4 +84,4 @@ def test_bridge_transmits_a_multi_packet_window_identity_without_rebuilding_it()
     assert captured["decision_round_id"] == window.decision_round_id
     assert captured["diagnosis_window_id"] == window.diagnosis_window_id
     assert captured["window_start_sequence"] == 1
-    assert captured["window_end_sequence"] == 2
+    assert captured["window_end_sequence"] == 1

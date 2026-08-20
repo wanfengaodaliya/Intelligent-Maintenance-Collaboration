@@ -298,8 +298,11 @@ class EdgeRuntimeConfig:
             errors.append("maintenance.interval_seconds must be within [0.1, 10.0]")
         if not 1.0 <= self.model_update.poll_interval_seconds <= 3600.0:
             errors.append("model_update.poll_interval_seconds must be within [1.0, 3600.0]")
-        if self.v12.diagnosis_window_ms not in {50, 100, 150}:
-            errors.append("v12.diagnosis_window_ms must be one of 50, 100, or 150")
+        if self.v12.diagnosis_window_ms != 50:
+            errors.append(
+                "v12.diagnosis_window_ms is locked at 50 (distilled H5 is frozen to "
+                "3200-sample / 50ms input; 100/150ms inputs would be rejected)"
+            )
         if self.v12.diagnosis_step_ms != self.v12.diagnosis_window_ms:
             errors.append("v12.diagnosis_step_ms must equal diagnosis_window_ms")
         if self.v12.diagnosis_overlap_enabled:

@@ -57,34 +57,31 @@ class _Pipeline:
         self.inputs.append((sender_id, payload))
 
 
-def test_runtime_waits_for_a_complete_window_before_direct_raw_inference() -> None:
+def test_runtime_directs_each_50ms_packet_after_complete_window() -> None:
     pipeline = _Pipeline()
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id="edge_01", ingress=_Ingress(), cache=object(),
         pipeline=pipeline, scheduler=object(),
         diagnosis_window_assembler=DiagnosisWindowAssembler(
-            window_ms=100, step_ms=100, overlap_enabled=False,
+            window_ms=50, step_ms=50, overlap_enabled=False,
         ),
     )
 
     assert coordinator.receive_raw_packet(_packet(1)) is True
-    assert pipeline.inputs == []
-
-    assert coordinator.receive_raw_packet(_packet(2)) is True
     merged = pipeline.inputs[0][1]
-    assert merged["packet_id"] == "packet_002"
+    assert merged["packet_id"] == "packet_001"
     assert merged["window_start_sequence"] == 1
-    assert merged["window_end_sequence"] == 2
-    assert merged["contributing_packet_ids"] == ["packet_001", "packet_002"]
-    assert merged["data"]["vibration"]["sample_count"] == 4
-    assert merged["data"]["vibration"]["values"] == [1.0, 1.5, 2.0, 2.5]
+    assert merged["window_end_sequence"] == 1
+    assert merged["contributing_packet_ids"] == ["packet_001"]
+    assert merged["data"]["vibration"]["sample_count"] == 2
+    assert merged["data"]["vibration"]["values"] == [1.0, 1.5]
     assert len(pipeline.inputs) == 1
 
 
-def test_merged_window_preserves_edge_and_cloud_manifest_identity() -> None:
-    assembler = DiagnosisWindowAssembler(window_ms=150)
+def test_merged_50ms_window_preserves_edge_and_cloud_manifest_identity() -> None:
+    assembler = DiagnosisWindowAssembler(window_ms=50)
     window = next(
-        result for sequence in range(1, 4)
+        result for sequence in range(1, 2)
         for result in assembler.append(_packet(sequence))
     )
 
@@ -93,13 +90,18 @@ def test_merged_window_preserves_edge_and_cloud_manifest_identity() -> None:
     assert merged["diagnosis_window_id"] == window.diagnosis_window_id
     assert merged["decision_round_id"] == window.decision_round_id
     assert merged["window_start_ns"] == 0
-    assert merged["window_end_ns"] == 150_000_000
-    assert merged["data"]["vibration"]["sample_count"] == 6
+    assert merged["window_end_ns"] == 50_000_000
+    assert merged["data"]["vibration"]["sample_count"] == 2
 
 
-@pytest.mark.parametrize("packet_count", [2, 3])
-def test_real_edge_perception_accepts_100_and_150ms_merged_windows(packet_count: int) -> None:
-    fir = Path(__file__).parents[1] / "src" / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
+@pytest.mark.parametrize("window_ms", [100, 150])
+def test_assembler_rejects_non_50ms_diagnosis_windows(window_ms: int) -> None:
+    with pytest.raises(ValueError, match="locked at 50"):
+        DiagnosisWindowAssembler(window_ms=window_ms)
+
+
+def test_real_edge_perception_accepts_50ms_window() -> None:
+    fir = Path(__file__).parents[2] / "scenarios" / "bearing" / "edge" / "assets" / "fir_64k_to_16k_369.txt"
     source = "development_test"
     perception = EdgePerception(
         PerceptionConfig(
@@ -119,6 +121,7 @@ def test_real_edge_perception_accepts_100_and_150ms_merged_windows(packet_count:
         ),
         clock_ns=lambda: 200_000_001,
     )
+    packet_count = 1
     high_count = 3_200 * packet_count
     context_count = 200 * packet_count
     high_t = np.arange(high_count) / 64_000.0
@@ -149,21 +152,18 @@ def test_real_edge_perception_accepts_100_and_150ms_merged_windows(packet_count:
     assert result.payload["sequence_number"] == packet_count
 
 
-def test_runtime_records_150ms_task_tail_without_emitting_a_partial_diagnosis() -> None:
+def test_runtime_never_emits_partial_50ms_windows() -> None:
     ingress = _Ingress()
     pipeline = _Pipeline()
-    errors = []
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id="edge_01", ingress=ingress, cache=object(),
         pipeline=pipeline, scheduler=object(),
-        diagnosis_window_assembler=DiagnosisWindowAssembler(window_ms=150),
-        on_packet_route_error=errors.append,
+        diagnosis_window_assembler=DiagnosisWindowAssembler(window_ms=50),
     )
 
-    for sequence in range(1, 81):
+    for sequence in range(1, 4):
         coordinator.receive_raw_packet(_packet(sequence))
 
-    assert len(pipeline.inputs) == 26
-    assert [item["sequence_number"] for item in ingress.completions] == [79, 80]
-    assert all(item["error_code"] == "INCOMPLETE_DIAGNOSIS_WINDOW" for item in ingress.completions)
-    assert errors[-1]["action"] == "tail_recorded_without_diagnosis"
+    # 50ms 下每一包都自成完整窗口，直接进入推理，绝不产生 incomplete tail。
+    assert len(pipeline.inputs) == 3
+    assert ingress.completions == []

@@ -222,18 +222,18 @@ def test_coordinator_builds_bearing_result_from_the_complete_diagnosis_window() 
             "device_id": "machine_01", "task_id": "task_001", "bearing_id": "bearing_a",
             "sender_id": "sender_a", "packet_id": f"packet_{sequence:03d}",
             "sequence_number": sequence,
-            "start_generate_timestamp_ns": (sequence - 1) * 50_000_000,
-            "end_generate_timestamp_ns": sequence * 50_000_000,
+            "start_generate_timestamp_ns": sequence * 50_000_000,
+            "end_generate_timestamp_ns": (sequence + 1) * 50_000_000,
             "data": {"vibration": {"sample_rate_hz": 64_000}},
         }
-        for sequence in (1, 2)
+        for sequence in (1,)
     ]
-    assembler = DiagnosisWindowAssembler(window_ms=100)
+    assembler = DiagnosisWindowAssembler(window_ms=50)
     window = next(result for packet in packets for result in assembler.append(packet))
     completion = PacketExecutionCompleted(
         request_id="request_01", device_id="machine_01", task_id="task_001",
-        bearing_id="bearing_a", sender_id="sender_a", packet_id="packet_002",
-        sequence_number=2, status="SUCCEEDED", error_code=None, started_at_ns=1,
+        bearing_id="bearing_a", sender_id="sender_a", packet_id="packet_001",
+        sequence_number=1, status="SUCCEEDED", error_code=None, started_at_ns=1,
         finished_at_ns=2, edge=EdgeResult("warning", .8, "medium", "edge_model_v1"),
         data_quality_score=.9,
     )
@@ -246,8 +246,8 @@ def test_coordinator_builds_bearing_result_from_the_complete_diagnosis_window() 
     assert result.diagnosis_window_id == window.diagnosis_window_id
     assert result.decision_round_id == window.decision_round_id
     assert result.window_start_sequence == 1
-    assert result.window_end_sequence == 2
-    assert result.contributing_packet_ids == ("packet_001", "packet_002")
+    assert result.window_end_sequence == 1
+    assert result.contributing_packet_ids == ("packet_001",)
 
 
 def test_cloud_result_corrects_closed_provisional_round_without_reopening_it(tmp_path) -> None:
@@ -496,13 +496,21 @@ def test_runtime_config_rejects_round_timeout_shorter_than_cloud_now_deadline() 
     assert "v12.round_timeout_ms must cover cloud-now timeout plus finalize grace" in errors
 
 
-def test_runtime_config_allows_only_fixed_non_overlapping_diagnosis_windows() -> None:
+def test_runtime_config_allows_only_50ms_non_overlapping_diagnosis_window() -> None:
     errors = EdgeRuntimeConfig(v12=V12RuntimeConfig(
-        diagnosis_window_ms=100, diagnosis_step_ms=50, diagnosis_overlap_enabled=True,
+        diagnosis_window_ms=100, diagnosis_step_ms=100, diagnosis_overlap_enabled=False,
     )).validate()
 
-    assert "v12.diagnosis_step_ms must equal diagnosis_window_ms" in errors
-    assert "v12.diagnosis_overlap_enabled must be false" in errors
+    assert any("diagnosis_window_ms is locked at 50" in error for error in errors)
     assert EdgeRuntimeConfig(v12=V12RuntimeConfig(
         diagnosis_window_ms=150, diagnosis_step_ms=150, diagnosis_overlap_enabled=False,
+    )).validate() != [] and any(
+        "diagnosis_window_ms is locked at 50" in error
+        for error in EdgeRuntimeConfig(v12=V12RuntimeConfig(
+            diagnosis_window_ms=150, diagnosis_step_ms=150, diagnosis_overlap_enabled=False,
+        )).validate()
+    )
+    # 锁死 50ms 配置本身合法。
+    assert EdgeRuntimeConfig(v12=V12RuntimeConfig(
+        diagnosis_window_ms=50, diagnosis_step_ms=50, diagnosis_overlap_enabled=False,
     )).validate() == []
