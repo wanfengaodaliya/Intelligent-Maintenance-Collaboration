@@ -29,8 +29,28 @@ if (-not (Test-Path $p)) { Write-Host "  MOMENT missing, download first"; exit 1
 Write-Host "  MOMENT OK"
 
 Write-Host "[Check] H5 model ..."
-$p = Join-Path $CloudEdge "edge_service\models\distilled_h5\best_model.pt"
-if (-not (Test-Path $p)) { Write-Host "  H5 missing, restore first"; exit 1 }
+$h5Root = Join-Path $CloudEdge "edge_service\models\distilled_h5"
+$activePointer = Join-Path $h5Root "active_version.json"
+if (-not (Test-Path $activePointer)) {
+    Write-Host "  H5 active_version.json missing, restore the model package first"
+    exit 1
+}
+try {
+    $activeVersion = ((Get-Content $activePointer -Raw | ConvertFrom-Json).version).ToString().Trim()
+} catch {
+    Write-Host "  H5 active_version.json is invalid"
+    exit 1
+}
+if ([string]::IsNullOrWhiteSpace($activeVersion) -or $activeVersion -notmatch '^[A-Za-z0-9._-]+$') {
+    Write-Host "  H5 active version is invalid"
+    exit 1
+}
+$h5VersionDir = Join-Path $h5Root $activeVersion
+$p = Join-Path $h5VersionDir "best_model.pt"
+if (-not (Test-Path $p)) {
+    Write-Host "  H5 checkpoint missing for active version: $activeVersion"
+    exit 1
+}
 Write-Host "  H5 OK"
 
 if (-not $SkipLLM) {
