@@ -6,7 +6,7 @@
   必需（网络模拟编排 + 双 Edge）：
     mqtt-broker / toxiproxy / network-controller / edge_01 / edge_02
   可选（宿主机服务，演示完整链路时必需）：
-    model_service / scheduler / cloud
+    scheduler / cloud；仅 official 后端探测 model_service
 
 用法（在 cloud_edge_project 下）：
   python edge_service/scripts/health_check.py              # 摘要输出，失败退出码 1
@@ -39,8 +39,8 @@ def _env(name: str, default: str) -> str:
 
 
 def _probe_targets() -> list[dict]:
-    model_base = _env("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012").rstrip("/")
-    return [
+    backend = _env("EDGE_DIAGNOSTIC_BACKEND", "local_h5").strip()
+    targets = [
         {"name": "mqtt_broker", "kind": "tcp", "host": _env("EDGE_MQTT_HOST", "127.0.0.1"),
          "port": int(_env("EDGE_MQTT_PORT", "1883")), "required": True},
         {"name": "toxiproxy", "kind": "http", "url": _env("TOXIPROXY_API_URL", "http://127.0.0.1:8474/proxies"),
@@ -51,12 +51,21 @@ def _probe_targets() -> list[dict]:
          "required": True},
         {"name": "edge_02", "kind": "edge", "base": _env("EDGE_02_BASE_URL", "http://127.0.0.1:8002"),
          "required": True},
-        {"name": "model_service", "kind": "model", "base": model_base, "required": False},
         {"name": "scheduler", "kind": "http", "url": _env("SCHEDULER_HEALTH_URL", "http://127.0.0.1:8003/health"),
          "required": False},
         {"name": "cloud", "kind": "http", "url": _env("CLOUD_HEALTH_URL", "http://127.0.0.1:8004/health"),
          "required": False},
     ]
+    if backend == "official":
+        targets.append({
+            "name": "model_service",
+            "kind": "model",
+            "base": _env(
+                "EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"
+            ).rstrip("/"),
+            "required": False,
+        })
+    return targets
 
 
 def _fetch_json(url: str) -> tuple[bool, object, str]:
@@ -101,7 +110,7 @@ def _digest(body: object, *keys: str) -> dict:
 
 
 def _probe_edge(base: str) -> dict:
-    """Edge 节点：liveness 必须通过；readiness/model_service 进详情。"""
+    """Edge 节点必须同时通过 liveness 与 readiness。"""
     live_ok, live_body, live_err = _fetch_json(base + "/health/live")
     ready_ok, ready_body, ready_err = _fetch_json(base + "/health/ready")
     _, full_body, _ = _fetch_json(base + "/health")
@@ -111,7 +120,7 @@ def _probe_edge(base: str) -> dict:
         **_digest(full_body, "node_id", "model_backend", "model_version",
                   "model_service", "outbound_routes"),
     }
-    return {"ok": bool(live_ok), "detail": detail,
+    return {"ok": bool(live_ok and ready_ok), "detail": detail,
             "summary": "live=%s ready=%s" % (live_ok, ready_ok)}
 
 
@@ -156,6 +165,7 @@ def run_checks(strict: bool = False) -> dict:
         "schema": "edge-delivery-health-check/v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": _git_commit(),
+        "build_revision": _env("EDGE_BUILD_REVISION", "unknown"),
         "environment": {
             "edge_model_base_url": _env("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012"),
             "edge_model_version_pin": os.environ.get("EDGE_MODEL_VERSION") or "(unpinned)",

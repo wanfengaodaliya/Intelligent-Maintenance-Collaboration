@@ -13,6 +13,7 @@ COPY requirements-moment.txt ./requirements-moment.txt
 # PIP_INDEX_URL / PIP_EXTRA_URL 可在构建时覆盖为镜像源（如国内网络环境）。
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=""
+ARG EDGE_BUILD_REVISION=unknown
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
@@ -35,7 +36,10 @@ ENV EDGE_SERVICE_HOST=0.0.0.0 \
     EDGE_V12_DATABASE_PATH=/app/data/edge_v12.db \
     EDGE_CLOUD_REVIEW_CACHE_DIR=/app/data/edge_cloud_review \
     EDGE_RAW_SAMPLE_DIRECTORY=/app/data/raw_analysis_samples \
-    EDGE_PACKET_ROUTE_ERROR_LOG=/app/data/edge_packet_route_errors.jsonl
+    EDGE_PACKET_ROUTE_ERROR_LOG=/app/data/edge_packet_route_errors.jsonl \
+    EDGE_MODEL_ROOT=/app/data/models \
+    EDGE_MODEL_UPDATE_POLLER_ENABLED=false \
+    EDGE_BUILD_REVISION=${EDGE_BUILD_REVISION}
 
 RUN mkdir -p /app/data
 

@@ -38,7 +38,7 @@ services:
     image: cloud-edge/edge-service:latest
     container_name: edge_sim_01
     extra_hosts:
-      # 阶段 6：正式模型服务运行在宿主机（WSL），容器经 host-gateway 访问。
+      # official 对照后端需要宿主机模型服务时，容器经 host-gateway 访问。
       - "host.docker.internal:host-gateway"
     environment:
       EDGE_NODE_ID: edge_01
@@ -54,6 +54,8 @@ services:
       # 切回模型服务 HTTP 路线（故障演练矩阵）：EDGE_DIAGNOSTIC_BACKEND=official
       # 并保留 EDGE_MODEL_BASE_URL。
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
+      EDGE_MODEL_ROOT: /app/data/models
+      EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       # 阶段 7.2（可选）：pin 模型版本；与模型路线 readiness 上报不一致时
       # 本节点 readiness 不通过，调度方停止派发新任务。
@@ -87,6 +89,8 @@ services:
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18053
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
+      EDGE_MODEL_ROOT: /app/data/models
+      EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       EDGE_NETWORK_LINK_ID: edge_02__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http

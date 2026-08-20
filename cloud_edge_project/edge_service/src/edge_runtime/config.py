@@ -10,6 +10,8 @@ from typing import Mapping
 
 
 _EDGE_NODE_ID = re.compile(r"^edge_\d{2,}$")
+_MODEL_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_DEFAULT_MODEL_ROOT = Path(__file__).resolve().parents[2] / "models"
 
 
 @dataclass(frozen=True)
@@ -76,10 +78,11 @@ class CompletionDispatchConfig:
 
 @dataclass(frozen=True)
 class ModelUpdatePollerConfig:
-    enabled: bool = True
+    enabled: bool = False
     poll_interval_seconds: float = 30.0
-    model_root: Path | None = None
+    model_root: Path = _DEFAULT_MODEL_ROOT
     state_path: Path | None = None
+    pinned_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,20 +219,21 @@ class EdgeRuntimeConfig:
                 queue_size=int(env.get("EDGE_COMPLETION_DISPATCH_QUEUE_SIZE", "256")),
             ),
             model_update=ModelUpdatePollerConfig(
-                enabled=env.get("EDGE_MODEL_UPDATE_POLLER_ENABLED", "true").strip().lower() == "true",
+                enabled=env.get("EDGE_MODEL_UPDATE_POLLER_ENABLED", "false").strip().lower() == "true",
                 poll_interval_seconds=float(
                     env.get("EDGE_MODEL_UPDATE_POLL_INTERVAL_SECONDS", "30.0")
                 ),
                 model_root=(
                     Path(env.get("EDGE_MODEL_ROOT").strip())
                     if env.get("EDGE_MODEL_ROOT")
-                    else None
+                    else _DEFAULT_MODEL_ROOT
                 ),
                 state_path=(
                     Path(env.get("EDGE_MODEL_UPDATE_STATE_PATH").strip())
                     if env.get("EDGE_MODEL_UPDATE_STATE_PATH")
                     else None
                 ),
+                pinned_version=(env.get("EDGE_MODEL_VERSION") or "").strip() or None,
             ),
             raw_sample_capture=RawSampleCaptureConfig(
                 enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
@@ -312,6 +316,20 @@ class EdgeRuntimeConfig:
             errors.append("completion_dispatch.queue_size must be positive")
         if not 1.0 <= self.model_update.poll_interval_seconds <= 3600.0:
             errors.append("model_update.poll_interval_seconds must be within [1.0, 3600.0]")
+        if self.model_update.enabled and self.model_update.pinned_version:
+            errors.append("EDGE_MODEL_PIN_POLLER_CONFLICT")
+        if (
+            self.model_update.pinned_version
+            and not _MODEL_PATH_COMPONENT.fullmatch(
+                self.model_update.pinned_version
+            )
+        ):
+            errors.append("MODEL_VERSION_INVALID")
+        if self.model_update.state_path is not None:
+            root = self.model_update.model_root.resolve()
+            state_path = self.model_update.state_path.resolve()
+            if root != state_path and root not in state_path.parents:
+                errors.append("model_update.state_path must stay inside model_root")
         if self.v12.diagnosis_window_ms != 50:
             errors.append(
                 "v12.diagnosis_window_ms is locked at 50 (distilled H5 is frozen to "

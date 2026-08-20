@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ pytest.importorskip("torch")
 
 from edge_diagnosis.distilled_h5_model import (
     H5_LABELS,
+    RUNTIME_MODEL_VERSION,
     DistilledH5DiagnosticModel,
 )
 from edge_model.config import EdgeModelConfig, ModelClientConfig
@@ -18,6 +20,20 @@ from edge_model.pipeline import EdgeModelPipeline
 from edge_runtime.coordinator import _edge_bearing_result
 from edge_model.contracts import PacketExecutionCompleted
 from model_input_contract import validate_model_input
+
+
+MODEL_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "models"
+    / "distilled_h5"
+    / RUNTIME_MODEL_VERSION
+)
+
+
+def _model() -> DistilledH5DiagnosticModel:
+    return DistilledH5DiagnosticModel(
+        model_dir=MODEL_DIR, model_version=RUNTIME_MODEL_VERSION
+    )
 
 
 def _raw_packet() -> dict:
@@ -85,7 +101,7 @@ def test_h5_runtime_dependencies_are_part_of_the_edge_service_package() -> None:
 
 
 def test_distilled_h5_loads_verified_checkpoint_and_returns_dual_layer_result() -> None:
-    model = DistilledH5DiagnosticModel()
+    model = _model()
 
     vibration, physical_features, condition = model.prepare_inputs(_raw_packet())
     result = model.run(_task(_raw_packet()))
@@ -104,7 +120,7 @@ def test_distilled_h5_loads_verified_checkpoint_and_returns_dual_layer_result() 
 
 
 def test_distilled_h5_builds_a_compatible_evidence_record_from_raw_data() -> None:
-    evidence = DistilledH5DiagnosticModel().build_evidence(_raw_packet())
+    evidence = _model().build_evidence(_raw_packet())
 
     validate_model_input(evidence)
     assert evidence["features"]["operating_context"]["shaft_speed_rpm"]["mean"] == 1350.0
@@ -116,7 +132,7 @@ def test_local_pipeline_runs_distilled_h5_from_a_raw_50ms_packet() -> None:
     pipeline = EdgeModelPipeline(
         EdgeModelConfig(),
         ModelClient(ModelClientConfig()),
-        DistilledH5DiagnosticModel(),
+        _model(),
         on_run_record=lambda _: None,
         on_packet_result=lambda _: None,
         on_packet_completed=completions.append,
@@ -132,7 +148,7 @@ def test_local_pipeline_runs_distilled_h5_from_a_raw_50ms_packet() -> None:
 
 
 def test_v12_bearing_result_preserves_the_authoritative_h5_diagnosis() -> None:
-    edge = DistilledH5DiagnosticModel().run(_task(_raw_packet()))
+    edge = _model().run(_task(_raw_packet()))
     completion = PacketExecutionCompleted(
         request_id="h5-result",
         device_id="machine_01",

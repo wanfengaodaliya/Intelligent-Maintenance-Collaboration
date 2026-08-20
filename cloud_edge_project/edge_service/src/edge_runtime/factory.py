@@ -323,12 +323,14 @@ def build_edge_runtime(
     )
     model_update_poller = None
     if config.model_update.enabled:
-        from edge_model.version_store import DEFAULT_MODEL_ROOT
-
+        model_runtime = pipeline.model_client
+        if not hasattr(model_runtime, "activate_version"):
+            raise ValueError("model update poller requires local_h5 runtime")
         model_update_poller = ModelUpdatePoller(
             cloud_base_url=_cloud_result_base_url(config),
             edge_node_id=config.edge_node_id,
-            model_root=config.model_update.model_root or DEFAULT_MODEL_ROOT,
+            model_root=config.model_update.model_root,
+            model_runtime=model_runtime,
             poll_interval_seconds=config.model_update.poll_interval_seconds,
             state_path=config.model_update.state_path,
         )

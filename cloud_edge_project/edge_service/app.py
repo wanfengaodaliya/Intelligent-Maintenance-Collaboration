@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -39,6 +40,11 @@ from edge_model.local_h5_client import (  # noqa: E402
     LocalH5ModelClient,
 )
 from edge_model.model_client import ModelClient  # noqa: E402
+from edge_model.model_store import (  # noqa: E402
+    ModelStoreBootstrapError,
+    initialize_model_store,
+    validate_model_update_mode,
+)
 from edge_model.perception_evidence import PerceptionEvidenceBuilder  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
 from edge_model.unavailable_runner import DiagnosisUnavailableRunner  # noqa: E402
@@ -72,8 +78,29 @@ if diagnostic_backend not in ("local_h5", "official"):
         "unsupported edge diagnostic backend: %s (allowed: 'local_h5' | 'official')"
         % diagnostic_backend
     )
+pinned_model_version = (os.getenv("EDGE_MODEL_VERSION") or "").strip() or None
+poller_enabled = (
+    os.getenv("EDGE_MODEL_UPDATE_POLLER_ENABLED", "false").strip().lower()
+    == "true"
+)
+build_revision = (os.getenv("EDGE_BUILD_REVISION") or "unknown").strip()
+try:
+    validate_model_update_mode(
+        pinned_version=pinned_model_version,
+        poller_enabled=poller_enabled,
+    )
+except ModelStoreBootstrapError as exc:
+    error_code = str(exc).split(":", 1)[0]
+    sys.stderr.write(
+        json.dumps(
+            {"level": "fatal", "error_code": error_code},
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    raise SystemExit(78) from exc
 # 模型版本以部署时显式声明为准；local_h5 未声明时使用 H5 制品版本。
-runtime_model_version = os.getenv("EDGE_MODEL_VERSION") or (
+runtime_model_version = pinned_model_version or (
     H5_RUNTIME_MODEL_VERSION if diagnostic_backend == "local_h5"
     else "official-model-unpinned"
 )
@@ -131,10 +158,33 @@ def _create_task_ingress() -> EdgeTaskIngress:
 task_ingress = _create_task_ingress()
 
 
+def _load_runtime_config() -> EdgeRuntimeConfig:
+    mqtt_settings = config.get("mqtt", {})
+    os.environ.setdefault("EDGE_NODE_ID", EDGE_NODE_ID)
+    os.environ.setdefault("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1")))
+    os.environ.setdefault("EDGE_MQTT_PORT", str(mqtt_settings.get("port", 1883)))
+    os.environ.setdefault(
+        "EDGE_MQTT_INPUT_TOPIC",
+        str(mqtt_settings.get("input_topic", f"edge/{EDGE_NODE_ID}/input")),
+    )
+    os.environ.setdefault(
+        "EDGE_MQTT_CLIENT_ID",
+        str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
+    )
+    os.environ.setdefault("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:18011")
+    os.environ.setdefault("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
+    os.environ.setdefault(
+        "EDGE_V12_DATABASE_PATH",
+        str(Path(__file__).resolve().parents[1] / "data" / "edge_v12.db"),
+    )
+    return EdgeRuntimeConfig.from_env()
+
+
 def _build_runtime(review_store: CloudReviewStore | None = None):
     if review_store is None:
         review_store = cloud_review_store
 
+    runtime_config = _load_runtime_config()
     model_config = EdgeModelConfig()
     # 阶段 7：推理队列容量/满载策略可配置（方案 6.2 满载策略细化）。
     # 默认容量 64：双 Sender 50ms 节奏 ≈ 40 窗口/秒时提供 >1.5s 突发缓冲；
@@ -151,14 +201,26 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
     # 设置后模型路线（本地 H5 或模型服务）上报版本不一致 → readiness 不通过。
-    pinned_model_version = os.getenv("EDGE_MODEL_VERSION") or None
     if diagnostic_backend == "local_h5":
         # 正式路线：蒸馏模型 H5 三通道并行本地推理，与模型服务路线共用
         # 有界队列/超时预算/熔断/就绪探针；降级语义仍为"诊断不可用"。
         model_config.diagnostic_backend = "local_h5"
-        model_client = LocalH5ModelClient(
-            LocalH5ClientConfig(expected_version=pinned_model_version)
+        selection = initialize_model_store(
+            model_root=runtime_config.model_update.model_root,
+            bundled_model_root=Path(__file__).resolve().parent / "models",
+            baseline_version=H5_RUNTIME_MODEL_VERSION,
+            pinned_version=pinned_model_version,
         )
+        model_client = LocalH5ModelClient(
+            LocalH5ClientConfig(
+                model_root=selection.model_root,
+                initial_version=selection.version,
+                expected_version=pinned_model_version,
+            )
+        )
+        initial_readiness = model_client.readiness()
+        if not initial_readiness.ok:
+            raise RuntimeError(initial_readiness.detail)
         evidence_builder = model_client.build_evidence
     else:
         model_config.diagnostic_backend = "http"
@@ -178,30 +240,6 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         on_packet_result=lambda _: None,
         evidence_builder=evidence_builder,
     )
-    mqtt_settings = config.get("mqtt", {})
-    # 统一配置入口：环境变量优先，local.yaml 只作为本地开发兜底。
-    os.environ.setdefault("EDGE_NODE_ID", EDGE_NODE_ID)
-    os.environ.setdefault("EDGE_MQTT_HOST", str(mqtt_settings.get("host", "127.0.0.1")))
-    os.environ.setdefault("EDGE_MQTT_PORT", str(mqtt_settings.get("port", 1883)))
-    os.environ.setdefault(
-        "EDGE_MQTT_INPUT_TOPIC",
-        str(mqtt_settings.get("input_topic", f"edge/{EDGE_NODE_ID}/input")),
-    )
-    os.environ.setdefault(
-        "EDGE_MQTT_CLIENT_ID",
-        str(mqtt_settings.get("client_id", f"{EDGE_NODE_ID}-runtime")),
-    )
-    # 出站 HTTP 默认经过网络模拟器代理链路（links.yaml: edge_01__to__scheduler__http）。
-    os.environ.setdefault("SCHEDULER_SERVICE_BASE_URL", "http://127.0.0.1:18011")
-    os.environ.setdefault("CLOUD_SERVICE_BASE_URL", "http://127.0.0.1:18021")
-    # V1.2 结果库/Outbox 共用 SQLite 文件：默认锚定 edge_service 根目录，
-    # 避免进程从项目目录外启动时相对路径 data/edge_v12.db 落空。
-    # （窗口传输相关环境变量已随 legacy 聚合移除，不再在此兜底。）
-    os.environ.setdefault(
-        "EDGE_V12_DATABASE_PATH",
-        str(Path(__file__).resolve().parents[1] / "data" / "edge_v12.db"),
-    )
-    runtime_config = EdgeRuntimeConfig.from_env()
     if (
         diagnostic_backend == "local_h5"
         and runtime_config.v12.enabled
@@ -367,8 +405,13 @@ def health() -> dict[str, object]:
         reported_version if isinstance(reported_version, str) and reported_version
         else runtime_model_version
     )
+    model_update_poller = runtime_assembly.service.model_update_poller
+    model_update_health = (
+        model_update_poller.health() if model_update_poller is not None else None
+    )
     return {
         "service": "edge_service",
+        "build_revision": build_revision,
         "node_id": EDGE_NODE_ID,
         "status": "ok" if ready else "starting",
         "ready": ready,
@@ -383,6 +426,18 @@ def health() -> dict[str, object]:
             "local_distilled_h5" if diagnostic_backend == "local_h5"
             else "official_model_service"
         ),
+        "model_update": {
+            "enabled": bool(runtime_assembly.service.config.model_update.enabled),
+            "model_root": str(
+                runtime_assembly.service.config.model_update.model_root
+            ),
+            "poller": model_update_health,
+            "last_error_code": (
+                model_update_health.get("last_error_code")
+                if model_update_health is not None
+                else None
+            ),
+        },
         # 阶段 7.4：模型路线就绪探针快照（含版本 pin 校验结论）。
         # local_h5 路线 base_url 为空（模型在进程内）。
         "model_service": {

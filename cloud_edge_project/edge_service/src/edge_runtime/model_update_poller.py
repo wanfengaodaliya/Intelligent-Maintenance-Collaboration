@@ -2,25 +2,24 @@
 """后台轮询器：自动发现并激活云端已批准的新模型版本。
 
 轮询 ``/cloud/model-update/pending-distribution`` 获取两类待办：
-- ``pending_pulls``：已批准、待分发的新版本 → 调用 ``pull_and_activate``
-  下载、校验并原子激活，随后回传分发结果；
-- ``pending_rollbacks``：云端已请求回滚的版本 → 调用 ``rollback_version``
-  把本地激活指针切回基线。
+- ``pending_pulls``：下载并校验候选，再由本地 H5 运行时执行探针和原子切换；
+- ``pending_rollbacks``：由同一运行时切换入口回到已安装版本。
 
-任一步失败都保留旧版本不变（``pull_and_activate`` 原子性保证），并回传
-失败结果供云端标记分发失败。
+只有运行 handle 与持久化 active 指针都确认目标版本后才回传成功。
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from edge_model.model_pull import ModelPullError, pull_and_activate, rollback_version
+from edge_model.local_h5_client import H5ActivationError
+from edge_model.model_pull import ModelPullError, pull_candidate
 
 
 def _default_http_get(url: str) -> bytes:
@@ -49,6 +48,7 @@ class ModelUpdatePoller:
         cloud_base_url: str,
         edge_node_id: str,
         model_root: Path | str,
+        model_runtime: Any,
         poll_interval_seconds: float = 30.0,
         state_path: Path | str | None = None,
         http_get: Callable[[str], bytes] | None = None,
@@ -62,6 +62,7 @@ class ModelUpdatePoller:
         self.cloud_base_url = cloud_base_url.rstrip("/")
         self.edge_node_id = edge_node_id
         self.model_root = Path(model_root)
+        self.model_runtime = model_runtime
         self.poll_interval_seconds = poll_interval_seconds
         self.state_path = Path(state_path) if state_path else self.model_root / ".model_update_state.json"
         self.http_get = http_get or _default_http_get
@@ -118,19 +119,20 @@ class ModelUpdatePoller:
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(
-                    {
-                        "activated_update_ids": sorted(self._activated),
-                        "rolled_back_update_ids": sorted(self._rolled_back),
-                        "pending_report_update_ids": sorted(self._pending_report),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
+            payload = json.dumps(
+                {
+                    "activated_update_ids": sorted(self._activated),
+                    "rolled_back_update_ids": sorted(self._rolled_back),
+                    "pending_report_update_ids": sorted(self._pending_report),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
             )
-            tmp.replace(self.state_path)
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self.state_path)
         except OSError:
             self.logger.warning("模型更新状态持久化失败: %s", self.state_path)
 
@@ -192,7 +194,7 @@ class ModelUpdatePoller:
             with self._lock:
                 self._rounds_total += 1
                 self._last_success_at_ns = self.clock_ns()
-                self._last_error_code = None
+                self._last_error_code = summary.get("last_error_code")
                 self._last_round_duration_ms = duration_ms
                 self._last_summary = summary
             return True
@@ -215,6 +217,7 @@ class ModelUpdatePoller:
             pending = self._fetch_pending()
         except Exception as error:
             summary["error"] = "PENDING_QUERY_FAILED: %r" % (error,)
+            summary["last_error_code"] = "PENDING_QUERY_FAILED"
             return summary
         for item in pending.get("pending_pulls", []):
             summary["pending_pulls"] += 1
@@ -225,7 +228,7 @@ class ModelUpdatePoller:
                 continue
             if update_id not in self._activated:
                 try:
-                    pull_and_activate(
+                    pull_candidate(
                         update_id=update_id,
                         download_url=(
                             f"{self.cloud_base_url}/cloud/model-update/{update_id}/file"
@@ -236,14 +239,26 @@ class ModelUpdatePoller:
                         expected_sha256=item.get("artifact_sha256"),
                         http_get=self.http_get,
                     )
-                except (ModelPullError, KeyError, ValueError) as error:
+                    activation = self.model_runtime.activate_version(
+                        item["candidate_version"]
+                    )
+                    if (
+                        activation.get("runtime_version") != item["candidate_version"]
+                        or activation.get("active_pointer_version")
+                        != item["candidate_version"]
+                    ):
+                        raise H5ActivationError("MODEL_ACTIVATION_CONFIRMATION_FAILED")
+                except (ModelPullError, H5ActivationError, KeyError, ValueError) as error:
                     summary["pull_failed"] += 1
+                    summary["last_error_code"] = _stable_error_code(error)
                     self.logger.warning("模型 %s 拉取激活失败: %s", update_id, error)
                     self._report_distribution(
                         update_id, "failed", message=str(error)
                     )
                     continue
                 self._activated.add(update_id)
+                self._pending_report.add(update_id)
+                self._save_state()
                 summary["activated"] += 1
             try:
                 self._report_distribution(update_id, "succeeded")
@@ -251,6 +266,7 @@ class ModelUpdatePoller:
                 summary["reported"] += 1
             except Exception as error:
                 self._pending_report.add(update_id)
+                summary["last_error_code"] = "DISTRIBUTION_REPORT_FAILED"
                 self.logger.warning("模型 %s 分发结果回传失败: %s", update_id, error)
             self._save_state()
         for item in pending.get("pending_rollbacks", []):
@@ -259,13 +275,16 @@ class ModelUpdatePoller:
             if not isinstance(update_id, str) or update_id in self._rolled_back:
                 continue
             try:
-                rollback_version(
-                    model_type=item.get("model_type", "distilled_h5"),
-                    target_version=item["rollback_target_version"],
-                    model_root=self.model_root,
-                )
-            except ModelPullError as error:
-                if "ROLLBACK_VERSION_NOT_INSTALLED" in str(error):
+                target_version = item["rollback_target_version"]
+                activation = self.model_runtime.activate_version(target_version)
+                if (
+                    activation.get("runtime_version") != target_version
+                    or activation.get("active_pointer_version") != target_version
+                ):
+                    raise H5ActivationError("MODEL_ROLLBACK_CONFIRMATION_FAILED")
+            except (H5ActivationError, KeyError, ValueError) as error:
+                summary["last_error_code"] = _stable_error_code(error)
+                if "MODEL_MANIFEST_DIR_MISSING" in str(error):
                     summary["rollback_skipped"] += 1
                 else:
                     summary["rollback_failed"] += 1
@@ -278,6 +297,7 @@ class ModelUpdatePoller:
                 )
             except Exception as error:
                 summary["rollback_ack_failed"] += 1
+                summary["last_error_code"] = "ROLLBACK_ACK_FAILED"
                 self.logger.warning("模型 %s 回滚确认回传失败: %s", update_id, error)
                 continue
             self._rolled_back.add(update_id)
@@ -327,3 +347,10 @@ class ModelUpdatePoller:
             self.run_once()
             elapsed = max(self.monotonic() - started, 0.0)
             self._stop.wait(max(self.poll_interval_seconds - elapsed, 0.0))
+
+
+def _stable_error_code(error: Exception) -> str:
+    text = str(error).strip()
+    if text:
+        return text.split(":", 1)[0].split("=", 1)[0].strip()
+    return type(error).__name__

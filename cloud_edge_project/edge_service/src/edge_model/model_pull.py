@@ -1,35 +1,24 @@
 # -*- coding: utf-8 -*-
-"""边缘模型拉取客户端：从云端下载候选模型并原子激活新版本。
-
-流程：下载 bundle（zip 或单文件）→ 暂存目录 → 逐文件 SHA256 校验 →
-checkpoint 校验 → 移入版本目录 → 切换激活指针。任一步失败都保留旧版本
-不变，回滚只需把激活指针切回上一版本。
-"""
+"""从 Cloud 下载并原子安装候选模型；安装阶段不切换活动版本。"""
 from __future__ import annotations
 
-import hashlib
-import json
+import io
 import shutil
+import time
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from .version_store import set_active_version, version_dir
+from .manifest_validation import ManifestValidationError, validate_model_manifest
+from .version_store import VersionStoreError, validate_path_component, version_dir
+
 
 _ZIP_MAGIC = b"PK\x03\x04"
 
 
 class ModelPullError(RuntimeError):
-    """Raised when a model bundle cannot be downloaded, verified or activated."""
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """候选模型无法下载、校验或安装。"""
 
 
 def _default_http_get(url: str) -> bytes:
@@ -37,131 +26,110 @@ def _default_http_get(url: str) -> bytes:
         return response.read()
 
 
-def pull_and_activate(
+def pull_candidate(
     *,
     update_id: str,
     download_url: str,
     target_version: str,
     model_type: str = "distilled_h5",
-    model_root: Path | str | None = None,
+    model_root: Path | str,
     expected_sha256: str | None = None,
     http_get: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
-    """下载候选模型并激活为目标版本。
-
-    ``http_get`` 可注入以在测试中替换真实网络下载。返回激活结果描述。
-    """
+    """下载并安装候选版本目录，不修改 ``active_version.json``。"""
     fetch = http_get or _default_http_get
-    root = Path(model_root) if model_root else None
-    staging = version_dir(model_type, ".staging", base=root) / update_id
+    root = Path(model_root)
+    try:
+        update_id = validate_path_component(update_id, field="MODEL_UPDATE_ID")
+        target_version = validate_path_component(
+            target_version, field="MODEL_VERSION"
+        )
+        model_type = validate_path_component(model_type, field="MODEL_TYPE")
+    except VersionStoreError as exc:
+        raise ModelPullError(str(exc)) from exc
+    staging_root = version_dir(model_type, ".staging", base=root)
+    staging = staging_root / update_id
     target = version_dir(model_type, target_version, base=root)
-    if staging.exists():
-        shutil.rmtree(staging)
+    _remove_staging(staging, staging_root)
     staging.mkdir(parents=True, exist_ok=True)
     try:
         payload = fetch(download_url)
+        if not payload.startswith(_ZIP_MAGIC):
+            raise ModelPullError("MODEL_BUNDLE_ZIP_REQUIRED")
+        _unpack_bundle(payload, staging)
+        manifest = validate_model_manifest(
+            staging,
+            expected_model_type=model_type,
+            expected_version=target_version,
+        )
+        if expected_sha256:
+            primary = manifest["files"].get("best_model.pt")
+            if not isinstance(primary, str) or primary.lower() != expected_sha256.lower():
+                raise ModelPullError("BUNDLE_PRIMARY_SHA256_MISMATCH")
+    except ManifestValidationError as exc:
+        _remove_staging(staging, staging_root)
+        raise ModelPullError(str(exc)) from exc
+    except ModelPullError:
+        _remove_staging(staging, staging_root)
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise ModelPullError("DOWNLOAD_FAILED: %r" % (exc,)) from exc
+        _remove_staging(staging, staging_root)
+        raise ModelPullError("DOWNLOAD_OR_INSTALL_FAILED: %r" % (exc,)) from exc
 
-    if payload.startswith(_ZIP_MAGIC):
-        _unpack_bundle(payload, staging, expected_sha256=expected_sha256)
-    else:
-        _store_single_file(payload, staging, expected_sha256=expected_sha256)
-
-    _validate_checkpoint(staging)
     if target.exists():
-        shutil.rmtree(target)
+        try:
+            validate_model_manifest(
+                target,
+                expected_model_type=model_type,
+                expected_version=target_version,
+            )
+        except ManifestValidationError:
+            quarantine = target.with_name(
+                "%s.corrupt-%d" % (target.name, time.time_ns())
+            )
+            target.replace(quarantine)
+        else:
+            _remove_staging(staging, staging_root)
+            return {
+                "action": "already_installed",
+                "update_id": update_id,
+                "model_type": model_type,
+                "installed_version": target_version,
+            }
     staging.replace(target)
-    set_active_version(model_type, target_version, base=root)
     return {
-        "action": "activated",
+        "action": "installed",
         "update_id": update_id,
         "model_type": model_type,
-        "activated_version": target_version,
+        "installed_version": target_version,
     }
 
 
-def rollback_version(
-    *,
-    model_type: str,
-    target_version: str,
-    model_root: Path | str | None = None,
-) -> dict[str, Any]:
-    """把激活指针回退到已安装的上一版本（物理回退）。
-
-    与云端 ``execute_rollback`` 呼应：云端回退激活版本指针后，边端调用本
-    函数把本地指针切回旧版本，推理路径据此加载旧制品。
-    """
-    root = Path(model_root) if model_root else None
-    target = version_dir(model_type, target_version, base=root)
-    if not (target / "manifest.json").is_file():
-        raise ModelPullError("ROLLBACK_VERSION_NOT_INSTALLED")
-    set_active_version(model_type, target_version, base=root)
-    return {
-        "action": "rolled_back",
-        "model_type": model_type,
-        "rolled_back_version": target_version,
-    }
-
-
-def _unpack_bundle(
-    payload: bytes, staging: Path, *, expected_sha256: str | None
-) -> None:
+def _unpack_bundle(payload: bytes, staging: Path) -> None:
     try:
-        with zipfile.ZipFile(io_bytes(payload)) as archive:
-            archive.extractall(staging)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            for member in archive.infolist():
+                relative = PurePosixPath(member.filename)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ModelPullError(
+                        "BUNDLE_PATH_ESCAPE=%s" % member.filename
+                    )
+                destination = staging.joinpath(*relative.parts)
+                if member.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
     except zipfile.BadZipFile as exc:
         raise ModelPullError("INVALID_BUNDLE_ARCHIVE") from exc
-    manifest_path = staging / "manifest.json"
-    if not manifest_path.is_file():
-        raise ModelPullError("BUNDLE_MANIFEST_MISSING")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise ModelPullError("BUNDLE_MANIFEST_INVALID") from exc
-    files = manifest.get("files")
-    if not isinstance(files, dict) or not files:
-        raise ModelPullError("BUNDLE_MANIFEST_NO_FILES")
-    for rel_path, expected in files.items():
-        resolved = (staging / rel_path).resolve()
-        if staging not in resolved.parents or not resolved.is_file():
-            raise ModelPullError("BUNDLE_FILE_MISSING=%s" % rel_path)
-        if _sha256(resolved) != str(expected).lower():
-            raise ModelPullError("BUNDLE_FILE_SHA256_MISMATCH=%s" % rel_path)
-    if expected_sha256 and manifest.get("version"):
-        # 主制品（best_model.pt）摘要与分发契约对齐（若契约提供）。
-        primary = manifest.get("files", {}).get("best_model.pt")
-        if primary and primary.lower() != expected_sha256.lower():
-            raise ModelPullError("BUNDLE_PRIMARY_SHA256_MISMATCH")
 
 
-def _store_single_file(
-    payload: bytes, staging: Path, *, expected_sha256: str | None
-) -> None:
-    if expected_sha256:
-        actual = hashlib.sha256(payload).hexdigest()
-        if actual != expected_sha256.lower():
-            raise ModelPullError("SINGLE_FILE_SHA256_MISMATCH")
-    (staging / "artifact.bin").write_bytes(payload)
-
-
-def _validate_checkpoint(staging: Path) -> None:
-    """轻量校验：best_model.pt 与 checkpoint_sha256.txt 一致（不加载 torch）。"""
-    checkpoint = staging / "best_model.pt"
-    checksum_file = staging / "checkpoint_sha256.txt"
-    if not checkpoint.is_file():
+def _remove_staging(staging: Path, staging_root: Path) -> None:
+    if not staging.exists():
         return
-    if not checksum_file.is_file():
-        raise ModelPullError("CHECKPOINT_CHECKSUM_MISSING")
-    try:
-        expected = checksum_file.read_text(encoding="utf-8").split()[0].lower()
-    except (OSError, IndexError) as exc:
-        raise ModelPullError("CHECKPOINT_CHECKSUM_INVALID") from exc
-    if len(expected) != 64 or _sha256(checkpoint) != expected:
-        raise ModelPullError("CHECKPOINT_SHA256_MISMATCH")
-
-
-def io_bytes(payload: bytes) -> Any:
-    import io
-
-    return io.BytesIO(payload)
+    resolved = staging.resolve()
+    root = staging_root.resolve()
+    if root not in resolved.parents:
+        raise ModelPullError("MODEL_STAGING_PATH_INVALID")
+    shutil.rmtree(resolved)

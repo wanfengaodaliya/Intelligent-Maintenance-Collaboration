@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -14,40 +13,19 @@ from scipy.signal import resample_poly
 
 from edge_model.code_fallback import CodeFallbackRunner
 from edge_model.contracts import EdgeResult, InferenceCancelled, PacketInferenceTask
-from edge_model.version_store import (
-    resolve_active_version,
-    version_dir,
+from edge_model.manifest_validation import (
+    ManifestValidationError,
+    validate_model_manifest,
 )
 
 
-EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[2]
 from edge_diagnosis.h5_features import _compute_single, normalize_features
 from edge_diagnosis.h5_network import PhysicalFusionModel
 
 
 H5_LABELS = ("healthy", "outer_ring_damage", "inner_ring_damage")
-# 基线默认版本：未配置 EDGE_MODEL_VERSION 且无激活指针时回退到该版本。
+# 当前镜像内置的正式基线版本；实际加载目录由调用方显式传入。
 RUNTIME_MODEL_VERSION = "distilled_h5_kd_fold3_a9f20442"
-DEFAULT_MODEL_DIR = EDGE_SERVICE_ROOT / "models" / "distilled_h5"
-
-
-def _resolve_model_dir() -> Path:
-    version = resolve_active_version(
-        "distilled_h5", default_version=RUNTIME_MODEL_VERSION
-    )
-    return version_dir("distilled_h5", version)
-
-
-def _resolve_model_version(model_dir: Path) -> str:
-    manifest = model_dir / "manifest.json"
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        version = data.get("version")
-        if isinstance(version, str) and version.strip():
-            return version.strip()
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-    return model_dir.name
 
 
 class H5ModelArtifactError(RuntimeError):
@@ -57,25 +35,28 @@ class H5ModelArtifactError(RuntimeError):
 class DistilledH5DiagnosticModel(CodeFallbackRunner):
     """Run the frozen 50 ms H5 model from a validated raw edge packet.
 
-    ``model_dir`` points at a version directory under ``models/distilled_h5/``.
-    When omitted, the active version is resolved from ``EDGE_MODEL_VERSION`` /
-    ``active_version.json`` and defaults to the baseline version.
+    ``model_dir`` and ``model_version`` are selected by the runtime model store.
+    This class never reads environment variables or ``active_version.json``.
     """
 
     def __init__(
         self,
-        model_dir: Path | str | None = None,
+        model_dir: Path | str,
         *,
+        model_version: str,
         device: str = "cpu",
-        model_version: str | None = None,
     ) -> None:
-        self.model_dir = Path(model_dir) if model_dir else _resolve_model_dir()
+        self.model_dir = Path(model_dir)
+        try:
+            manifest = validate_model_manifest(
+                self.model_dir, expected_version=model_version
+            )
+        except ManifestValidationError as exc:
+            raise H5ModelArtifactError(str(exc)) from exc
         self.checkpoint_path = self.model_dir / "best_model.pt"
-        self.checksum_path = self.model_dir / "checkpoint_sha256.txt"
         physical_normalization_path = self.model_dir / "physical_feature_normalization.json"
         condition_normalization_path = self.model_dir / "condition_norm.json"
         self.device = torch.device(device)
-        self._verify_checkpoint()
         self.physical_mean, self.physical_std = _normalization(
             physical_normalization_path, expected_size=19
         )
@@ -103,19 +84,10 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
             raise H5ModelArtifactError("distilled H5 checkpoint cannot be loaded") from exc
         self.model.to(self.device)
         self.model.eval()
-        resolved = model_version or _resolve_model_version(self.model_dir)
-        self.rule_version = resolved
-        self.model_version = resolved
+        self.rule_version = model_version
+        self.model_version = model_version
+        self.feature_pipeline_version = manifest["feature_pipeline_version"]
         self.deployment_status = "production"
-
-    def _verify_checkpoint(self) -> None:
-        try:
-            expected = self.checksum_path.read_text(encoding="utf-8").split()[0].lower()
-            actual = _sha256(self.checkpoint_path)
-        except (OSError, IndexError) as exc:
-            raise H5ModelArtifactError("distilled H5 checkpoint checksum is unavailable") from exc
-        if len(expected) != 64 or actual != expected:
-            raise H5ModelArtifactError("distilled H5 checkpoint checksum mismatch")
 
     def prepare_inputs(
         self, raw_packet: Mapping[str, Any], cancel_event=None
@@ -270,14 +242,6 @@ def _normalization(path: Path | str, *, expected_size: int) -> tuple[np.ndarray,
     if mean.shape != (expected_size,) or std.shape != (expected_size,) or not np.isfinite(mean).all() or np.any(std <= 0):
         raise H5ModelArtifactError("H5 normalization metadata has invalid dimensions")
     return mean, std
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _statistics(values: np.ndarray) -> dict[str, float]:
