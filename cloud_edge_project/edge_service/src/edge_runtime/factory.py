@@ -200,7 +200,7 @@ def build_edge_runtime(
         # coordinator 在 v12_flow 之后才构造，用 holder 承接引用供 on_device_result 使用。
         coordinator_holder: list[EdgeRuntimeCoordinator] = []
 
-        def on_device_result(result):
+        def on_device_result_persist(result, connection):
             # 设备级结果双通道发布（职责不同，缺一不可）：
             #   通道 A（MQTT device_result_topic）：实时广播给在线订阅方
             #     （大屏/前端/其他节点），先落 DeviceResultOutbox，由维护
@@ -208,14 +208,15 @@ def build_edge_runtime(
             #   通道 B（HTTP /cloud/device-decision-results）：权威持久化
             #     上报 cloud_service，先落 ResultUploader 队列，重试耗尽
             #     进死信；云端以 {"status": "accepted"/"duplicate"} 回应。
-            # 两通道均以 result_id 为主键幂等入队：重复入队同载荷跳过，
-            # 上传侧同 result_id 不同载荷标 CONFLICT；云端 duplicate 响应
-            # 表明服务端亦幂等，断线重试不会产生重复记录。
-            device_result_outbox.enqueue(result)
-            try:
-                result_uploader.enqueue_device(result)
-            except Exception:
-                pass
+            # 两通道均以 result_id 为主键幂等入队：重复入队同载荷跳过；
+            # 同 result_id 不同载荷会中止整笔事务，不能留下半套交付记录。
+            # 云端 duplicate 响应表明服务端亦幂等，断线重试不会产生重复记录。
+            if not device_result_outbox.enqueue(result, connection=connection):
+                raise ValueError("device result MQTT outbox payload conflict")
+            if not result_uploader.enqueue_device(result, connection=connection):
+                raise ValueError("device result Cloud outbox payload conflict")
+
+        def on_device_result(result):
             # H3：设备级最终结果触发一次建议（覆盖四种闭合路径），非阻塞入队。
             if coordinator_holder:
                 coordinator_holder[0].submit_device_suggestion(result)
@@ -247,6 +248,7 @@ def build_edge_runtime(
             late_correction_retention_ns=config.v12.late_correction_retention_ms * 1_000_000,
             on_bearing_result=result_uploader.enqueue_bearing,
             on_device_result=on_device_result,
+            on_device_result_persist=on_device_result_persist,
             on_device_conflict=lambda payload: device_arbitration_reporter.report(
                 {**payload, "edge_node_id": config.edge_node_id}
             ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 
 from core.diagnosis_contracts import DeviceDecisionStatus, RoundClosureReason
@@ -21,14 +22,30 @@ class DeviceDecisionRevisionService:
         self._bearings = bearing_repository
 
     def correct_closed_round(
-        self, *, device_id: str, task_id: str, decision_round_id: str, now_ns: int
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        now_ns: int,
+        connection: sqlite3.Connection | None = None,
     ):
-        round_state = self._rounds.get_round(device_id, task_id, decision_round_id)
+        round_state = self._rounds.get_round(
+            device_id,
+            task_id,
+            decision_round_id,
+            connection=connection,
+        )
         if round_state is None or round_state["state"] != "CLOSED":
             return None
         if round_state["closure_reason"] == RoundClosureReason.ROUND_TIMEOUT.value:
             return None
-        bearings = self._bearings.list_current_round(device_id, task_id, decision_round_id)
+        bearings = self._bearings.list_current_round(
+            device_id,
+            task_id,
+            decision_round_id,
+            connection=connection,
+        )
         if {item.bearing_id for item in bearings} != set(round_state["expected_bearing_ids"]):
             return None
         aggregate = aggregate_device_round(
@@ -37,7 +54,12 @@ class DeviceDecisionRevisionService:
             closure_reason=RoundClosureReason(round_state["closure_reason"]),
             closed_at_ns=now_ns,
         )
-        current = self._rounds.get_current_result(device_id, task_id, decision_round_id)
+        current = self._rounds.get_current_result(
+            device_id,
+            task_id,
+            decision_round_id,
+            connection=connection,
+        )
         if (
             current is not None
             and current.status is DeviceDecisionStatus.CORRECTED
@@ -52,7 +74,7 @@ class DeviceDecisionRevisionService:
             affects_realtime_action=False,
             created_at_ns=now_ns,
         )
-        return self._rounds.save_revision(corrected)
+        return self._rounds.save_revision(corrected, connection=connection)
 
 
 def _conclusion_unchanged(current, candidate) -> bool:

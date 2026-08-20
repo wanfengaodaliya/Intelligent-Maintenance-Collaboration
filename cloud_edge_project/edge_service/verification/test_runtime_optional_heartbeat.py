@@ -83,3 +83,41 @@ def test_runtime_starts_and_stops_model_update_poller(monkeypatch) -> None:
 
     service.stop()
     assert poller.started is False
+
+
+def test_runtime_reconciles_device_deliveries_before_accepting_work(monkeypatch) -> None:
+    events: list[str] = []
+
+    class _RecordingLifecycle(_Lifecycle):
+        def start(self) -> None:
+            events.append("cache_started")
+            super().start()
+
+    class _Coordinator:
+        def reconcile_device_result_deliveries(self, *, force: bool) -> int:
+            assert force is True
+            events.append("reconciled")
+            return 0
+
+        def start_background(self) -> None:
+            return None
+
+        def stop_background(self) -> None:
+            return None
+
+    monkeypatch.setattr("edge_runtime.service.make_control_server", lambda *args: _Server())
+    service = EdgeRuntimeService(
+        config=_Config(),
+        cache=_RecordingLifecycle(),
+        pipeline=_Pipeline(),
+        mqtt_ingress=_Lifecycle(),
+        control_application=object(),
+        heartbeat=None,
+        maintenance=None,
+        coordinator=_Coordinator(),
+    )
+
+    service.start()
+    service.stop()
+
+    assert events[:2] == ["reconciled", "cache_started"]

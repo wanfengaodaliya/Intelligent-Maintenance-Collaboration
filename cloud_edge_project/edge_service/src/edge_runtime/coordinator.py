@@ -25,6 +25,9 @@ from .suggestion_worker import SuggestionWorker
 from .v12_flow import V12DecisionFlow
 
 
+_DEVICE_DELIVERY_RECONCILIATION_INTERVAL_NS = 300_000_000_000
+
+
 class JsonPublisher(Protocol):
     def publish(self, payload: Mapping[str, Any], *, timeout_seconds: float = 2.0) -> None: ...
 
@@ -86,6 +89,7 @@ class EdgeRuntimeCoordinator:
         self._clock_ns = clock_ns
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
+        self._last_device_delivery_reconciliation_at_ns: int | None = None
         self._model_versions: set[str] = set()
         self._active_diagnosis_windows: dict[
             tuple[str, str, str, str, str, int], tuple[DiagnosisWindow, dict[str, Any]]
@@ -542,6 +546,7 @@ class EdgeRuntimeCoordinator:
             "cloud_review_retries": 0,
             "outbox_published_cleaned": 0,
             "suggestions_published": 0,
+            "device_delivery_results_checked": 0,
         }
         if self.v12_flow is not None:
             promoted = self.v12_flow.promote_cloud_now_timeouts(
@@ -552,6 +557,9 @@ class EdgeRuntimeCoordinator:
             )
             summary["provisional_promotions"] = len(promoted)
             summary["rounds_finalized"] = len(finalized)
+            summary["device_delivery_results_checked"] = (
+                self.reconcile_device_result_deliveries(now_ns=now)
+            )
         if self.device_result_outbox is not None:
             summary["device_results_published"] = self.device_result_outbox.run_once(now)
             retention_ns = self.outbox_published_retention_ns
@@ -572,6 +580,30 @@ class EdgeRuntimeCoordinator:
             summary["cloud_review_retries"] = self.cloud_review_service.retry_due(now)
         summary["finished_at_ns"] = self._clock_ns()
         return summary
+
+    def reconcile_device_result_deliveries(
+        self,
+        *,
+        now_ns: int | None = None,
+        force: bool = False,
+    ) -> int:
+        """Run startup/full or periodic idempotent delivery reconciliation."""
+        reconcile = getattr(
+            self.v12_flow, "reconcile_device_result_deliveries", None
+        )
+        if not callable(reconcile):
+            return 0
+        now = self._clock_ns() if now_ns is None else now_ns
+        last = self._last_device_delivery_reconciliation_at_ns
+        if (
+            not force
+            and last is not None
+            and now - last < _DEVICE_DELIVERY_RECONCILIATION_INTERVAL_NS
+        ):
+            return 0
+        checked = int(reconcile())
+        self._last_device_delivery_reconciliation_at_ns = now
+        return checked
 
     def _report_pre_model_failure(
         self, packet: Mapping[str, Any], *, error_code: str, started_at_ns: int

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from typing import Any, Callable, Mapping
 
@@ -45,8 +45,17 @@ class ResultUploader:
         value["lifecycle_state"] = result.lifecycle_state.value
         self._enqueue("/cloud/bearing-diagnosis-results", value)
 
-    def enqueue_device(self, result: DeviceDecisionResult) -> None:
-        self._enqueue("/cloud/device-decision-results", result.as_dict())
+    def enqueue_device(
+        self,
+        result: DeviceDecisionResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        return self._enqueue(
+            "/cloud/device-decision-results",
+            result.as_dict(),
+            connection=connection,
+        )
 
     def run_once(self, now_ns: int | None = None) -> int:
         now = time.time_ns() if now_ns is None else now_ns
@@ -130,21 +139,30 @@ class ResultUploader:
                 (result_id, DEAD_LETTER),
             ).rowcount == 1
 
-    def _enqueue(self, path: str, payload: dict) -> None:
+    def _enqueue(
+        self,
+        path: str,
+        payload: dict,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
         if self._payload_enricher is not None:
             payload = dict(self._payload_enricher(payload, path))
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        with self._connect() as connection:
-            existing = connection.execute("SELECT payload_json FROM v12_result_upload WHERE result_id=?", (payload["result_id"],)).fetchone()
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            existing = selected.execute("SELECT payload_json FROM v12_result_upload WHERE result_id=?", (payload["result_id"],)).fetchone()
             if existing is None:
-                connection.execute(
+                selected.execute(
                     """INSERT INTO v12_result_upload(
                     result_id,path,payload_json,status,created_at_ns,attempt_count,next_attempt_at_ns,last_error
                     ) VALUES (?,?,?,?,?,0,NULL,NULL)""",
                     (payload["result_id"], path, encoded, "PENDING", payload["created_at_ns"]),
                 )
+                return True
             elif existing["payload_json"] != encoded:
-                connection.execute("UPDATE v12_result_upload SET status='CONFLICT' WHERE result_id=?", (payload["result_id"],))
+                selected.execute("UPDATE v12_result_upload SET status='CONFLICT' WHERE result_id=?", (payload["result_id"],))
+                return False
+            return True
 
     def _initialize(self) -> None:
         with self._connect() as connection:

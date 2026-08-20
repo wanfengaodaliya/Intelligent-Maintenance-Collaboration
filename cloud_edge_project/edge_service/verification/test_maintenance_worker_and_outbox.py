@@ -199,3 +199,28 @@ def test_pending_aggregation_count_tracks_backlog_and_flush() -> None:
     # 聚合工作流未装配时回补直接出队，计数归零。
     assert coordinator._flush_aggregation() == 1
     assert coordinator.pending_aggregation_count == 0
+
+
+def test_device_delivery_reconciliation_runs_at_most_every_five_minutes() -> None:
+    class _Flow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reconcile_device_result_deliveries(self) -> int:
+            self.calls += 1
+            return 3
+
+    flow = _Flow()
+    coordinator = EdgeRuntimeCoordinator(
+        edge_node_id="edge_01",
+        ingress=object(),
+        cache=object(),
+        pipeline=SimpleNamespace(queue_length=0),
+        scheduler=_RecordingScheduler(),
+        v12_flow=flow,
+    )
+
+    assert coordinator.reconcile_device_result_deliveries(now_ns=0, force=True) == 3
+    assert coordinator.reconcile_device_result_deliveries(now_ns=299_999_999_999) == 0
+    assert coordinator.reconcile_device_result_deliveries(now_ns=300_000_000_000) == 3
+    assert flow.calls == 2
