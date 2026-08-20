@@ -1,0 +1,60 @@
+{
+  "artifact": {
+    "channels": {
+      "bearing_module_temperature_c": {
+        "dtype": "float32",
+        "shape": []
+      },
+      "bearing_radial_load_n": {
+        "dtype": "float32",
+        "sample_rate_hz": 4000,
+        "shape": [
+          200
+        ]
+      },
+      "load_torque_nm": {
+        "dtype": "float32",
+        "sample_rate_hz": 4000,
+        "shape": [
+          200
+        ]
+      },
+      "shaft_speed_rpm": {
+        "dtype": "float32",
+        "sample_rate_hz": 4000,
+        "shape": [
+          200
+        ]
+      },
+      "vibration": {
+        "dtype": "float32",
+        "sample_rate_hz": 64000,
+        "shape": [
+          3200
+        ]
+      }
+    },
+    "file_name": "probe.npz",
+    "sha256": "e26efe34306a9320e19d0e5fcaf9c9f6923a26ef8fadf2cc99c860671c77444e"
+  },
+  "coverage": {
+    "build_evidence": false,
+    "model_run": true,
+    "phase_current_channels_included": false
+  },
+  "feature_pipeline_version": "edge_feature_v1",
+  "model_type": "distilled_h5",
+  "probe_contract_version": "v1",
+  "probe_id": "distilled_h5_real_probe_v1",
+  "schema_version": 1,
+  "source": {
+    "duration_ms": 50,
+    "end_seconds": 1.05,
+    "extractor": "sender_module.sender.mat_reader.MatRecord.windows",
+    "file_name": "N09_M07_F10_K001_1.mat",
+    "sha256": "c55f4c6a5d6d9a83d18d24dce4f164ffc85721e4e358df1c1ac9886583c2269f",
+    "size_bytes": 8741432,
+    "start_seconds": 1.0,
+    "window_index_zero_based": 20
+  }
+}
