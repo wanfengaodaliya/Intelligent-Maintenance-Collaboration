@@ -8,7 +8,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Mapping
 
 from core.diagnosis_contracts import DeviceDecisionResult
@@ -44,19 +44,31 @@ class DeviceResultOutbox:
         self.clock_ns = clock_ns
         self._initialize()
 
-    def enqueue(self, result: DeviceDecisionResult) -> bool:
+    def enqueue(
+        self,
+        result: DeviceDecisionResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
         """Idempotent insert keyed by device_result_id + revision."""
         payload = json.dumps(
             result.as_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
-        with self._connect() as connection:
-            existing = connection.execute(
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            existing = selected.execute(
                 "SELECT payload_json FROM device_result_outbox WHERE result_id=?",
                 (result.result_id,),
             ).fetchone()
             if existing is not None:
                 return existing["payload_json"] == payload
-            connection.execute(
+            delivered = selected.execute(
+                """SELECT payload_json FROM device_result_delivery_history
+                WHERE result_id=?""",
+                (result.result_id,),
+            ).fetchone()
+            if delivered is not None:
+                return delivered["payload_json"] == payload
+            selected.execute(
                 """INSERT INTO device_result_outbox(
                 result_id, device_id, task_id, decision_round_id, revision,
                 payload_json, status, attempt_count, next_attempt_at_ns,
@@ -125,6 +137,14 @@ class DeviceResultOutbox:
         now = self.clock_ns() if now_ns is None else now_ns
         cutoff = now - retention_ns
         with self._connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO device_result_delivery_history(
+                result_id, payload_json, published_at_ns
+                ) SELECT result_id, payload_json, published_at_ns
+                FROM device_result_outbox
+                WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?""",
+                (PUBLISHED, cutoff),
+            )
             cursor = connection.execute(
                 "DELETE FROM device_result_outbox WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?",
                 (PUBLISHED, cutoff),
@@ -186,6 +206,13 @@ class DeviceResultOutbox:
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_device_result_outbox_due
                 ON device_result_outbox(status, next_attempt_at_ns)"""
+            )
+            # 清理已发布 Outbox 时保留轻量交付墓碑，避免周期对账把历史结果
+            # 重新入队；payload_json 仍用于检测同 result_id 的载荷冲突。
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS device_result_delivery_history(
+                result_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL,
+                published_at_ns INTEGER NOT NULL)"""
             )
 
     @contextmanager

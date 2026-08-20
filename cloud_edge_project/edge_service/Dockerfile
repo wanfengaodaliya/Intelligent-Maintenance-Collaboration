@@ -4,7 +4,8 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp
 
 WORKDIR /app
 
@@ -41,9 +42,15 @@ ENV EDGE_SERVICE_HOST=0.0.0.0 \
     EDGE_MODEL_UPDATE_POLLER_ENABLED=false \
     EDGE_BUILD_REVISION=${EDGE_BUILD_REVISION}
 
-RUN mkdir -p /app/data
+RUN groupadd --system --gid 10001 edge \
+    && useradd --system --uid 10001 --gid edge --home-dir /nonexistent \
+        --shell /usr/sbin/nologin edge \
+    && mkdir -p /app/data \
+    && chown -R edge:edge /app/data
 
 EXPOSE 8001 8011
+
+USER 10001:10001
 
 # 阶段 5：容器健康探针使用 liveness（关键线程存活），
 # readiness（/health/ready）用于调度与流量控制，短暂断连不应标记容器 unhealthy。

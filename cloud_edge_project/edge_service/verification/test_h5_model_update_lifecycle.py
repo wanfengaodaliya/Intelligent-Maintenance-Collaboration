@@ -193,6 +193,8 @@ def test_pull_rejects_path_components_before_disk_or_network(tmp_path: Path) -> 
             download_url="http://cloud/bundle",
             target_version="v2",
             model_root=model_root,
+            signing_public_key_path=tmp_path / "unused-public.pem",
+            expected_signing_key_id="test-release-v1",
             http_get=lambda url: fetched.append(url) or b"",
         )
     assert fetched == []
@@ -314,6 +316,9 @@ def test_poller_reports_success_only_after_runtime_double_confirmation(
         edge_node_id="edge_01",
         model_root=tmp_path,
         model_runtime=_Runtime(),
+        signing_public_key_path=tmp_path / "model-signing-public.pem",
+        expected_signing_key_id="test-release-v1",
+        allow_insecure_http=True,
         http_get=lambda _: json.dumps(pending).encode("utf-8"),
         http_post=lambda url, body: posts.append((url, body)) or {"ok": True},
     )
@@ -353,6 +358,9 @@ def test_poller_acknowledges_rollback_after_runtime_double_confirmation(
         edge_node_id="edge_01",
         model_root=tmp_path,
         model_runtime=_Runtime(),
+        signing_public_key_path=tmp_path / "model-signing-public.pem",
+        expected_signing_key_id="test-release-v1",
+        allow_insecure_http=True,
         http_get=lambda _: json.dumps(pending).encode("utf-8"),
         http_post=lambda url, body: posts.append((url, body)) or {"ok": True},
     )
@@ -384,6 +392,9 @@ def test_poller_health_retains_stable_pending_query_error(tmp_path: Path) -> Non
         edge_node_id="edge_01",
         model_root=tmp_path,
         model_runtime=_Runtime(),
+        signing_public_key_path=tmp_path / "model-signing-public.pem",
+        expected_signing_key_id="test-release-v1",
+        allow_insecure_http=True,
         http_get=lambda _: (_ for _ in ()).throw(OSError("offline")),
     )
 

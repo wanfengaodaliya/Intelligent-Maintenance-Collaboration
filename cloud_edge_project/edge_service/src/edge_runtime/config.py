@@ -29,7 +29,7 @@ class MqttConfig:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
-    base_url: str = "http://127.0.0.1:8003"
+    base_url: str = "http://127.0.0.1:18011"
     status_path: str = "/scheduler/edge-nodes/status"
     request_timeout_seconds: float = 2.0
     heartbeat_interval_seconds: float = 1.0
@@ -83,6 +83,10 @@ class ModelUpdatePollerConfig:
     model_root: Path = _DEFAULT_MODEL_ROOT
     state_path: Path | None = None
     pinned_version: str | None = None
+    signing_public_key_path: Path | None = None
+    signing_key_id: str = "release-v1"
+    ca_file: Path | None = None
+    allow_insecure_http: bool = False
 
 
 @dataclass(frozen=True)
@@ -176,7 +180,7 @@ class EdgeRuntimeConfig:
             scheduler=SchedulerConfig(
                 base_url=env.get(
                     "SCHEDULER_SERVICE_BASE_URL",
-                    "http://127.0.0.1:8003",
+                    "http://127.0.0.1:18011",
                 ).rstrip("/"),
             ),
             control=ControlServerConfig(
@@ -234,6 +238,22 @@ class EdgeRuntimeConfig:
                     else None
                 ),
                 pinned_version=(env.get("EDGE_MODEL_VERSION") or "").strip() or None,
+                signing_public_key_path=(
+                    Path(env.get("EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE").strip())
+                    if env.get("EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE")
+                    else None
+                ),
+                signing_key_id=env.get(
+                    "EDGE_MODEL_SIGNING_KEY_ID", "release-v1"
+                ).strip(),
+                ca_file=(
+                    Path(env.get("EDGE_MODEL_UPDATE_CA_FILE").strip())
+                    if env.get("EDGE_MODEL_UPDATE_CA_FILE")
+                    else None
+                ),
+                allow_insecure_http=env.get(
+                    "EDGE_MODEL_UPDATE_ALLOW_INSECURE_HTTP", "false"
+                ).strip().lower() == "true",
             ),
             raw_sample_capture=RawSampleCaptureConfig(
                 enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
@@ -318,6 +338,22 @@ class EdgeRuntimeConfig:
             errors.append("model_update.poll_interval_seconds must be within [1.0, 3600.0]")
         if self.model_update.enabled and self.model_update.pinned_version:
             errors.append("EDGE_MODEL_PIN_POLLER_CONFLICT")
+        if self.model_update.enabled:
+            public_key = self.model_update.signing_public_key_path
+            if public_key is None:
+                errors.append("EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE_REQUIRED")
+            elif not public_key.is_file():
+                errors.append("EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE_MISSING")
+            if not self.model_update.signing_key_id:
+                errors.append("EDGE_MODEL_SIGNING_KEY_ID_REQUIRED")
+            ca_file = self.model_update.ca_file
+            if ca_file is not None and not ca_file.is_file():
+                errors.append("EDGE_MODEL_UPDATE_CA_FILE_MISSING")
+            if not self.model_update.allow_insecure_http and any(
+                not url.startswith("https://")
+                for url in self.cloud_node_urls.values()
+            ):
+                errors.append("EDGE_MODEL_UPDATE_HTTPS_REQUIRED")
         if (
             self.model_update.pinned_version
             and not _MODEL_PATH_COMPONENT.fullmatch(

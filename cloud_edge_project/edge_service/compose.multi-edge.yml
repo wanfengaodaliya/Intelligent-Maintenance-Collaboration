@@ -24,19 +24,29 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_001-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_001/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角，
       # 读取容器自身 quota/limit 而非宿主机 16 核 / 剩余内存。
       # 若节点运行在独立 VM 而非容器，可显式改为 system。
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8001:8001"
-      - "8011:8011"
     volumes:
       - edge_001_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -54,18 +64,27 @@ services:
       EDGE_MQTT_CLIENT_ID: edge_002-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_002/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
+      EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角。
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8002:8001"
-      # 8012 保留给宿主机正式模型服务；edge_002 控制端口宿主机映射使用 8013。
-      - "8013:8011"
     volumes:
       - edge_002_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

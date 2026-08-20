@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Callable, Mapping
 
 import requests
+from common.control_auth import (
+    DEFAULT_KEY_ID,
+    encode_control_json,
+    load_control_shared_secret,
+    sign_control_request,
+)
 
 try:
     from .deferred_device_repository import DeferredDeviceArbitrationRepository
@@ -45,13 +52,35 @@ SummaryDispatchClient = CloudArbitrationDispatchClient
 
 
 class EdgeArbitrationResultClient:
-    def __init__(self, *, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 3.0,
+        shared_secret: bytes | str | None = None,
+        key_id: str | None = None,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.shared_secret = shared_secret
+        self.key_id = key_id or os.getenv("EDGE_CONTROL_KEY_ID", DEFAULT_KEY_ID)
 
     def deliver(self, base_url: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        path = "/edge/device-arbitration-results"
+        body = encode_control_json(payload)
+        secret = (
+            load_control_shared_secret()
+            if self.shared_secret is None
+            else self.shared_secret
+        )
         response = requests.post(
-            base_url.rstrip("/") + "/edge/device-arbitration-results",
-            json=dict(payload),
+            base_url.rstrip("/") + path,
+            data=body,
+            headers=sign_control_request(
+                secret,
+                method="POST",
+                path=path,
+                body=body,
+                key_id=self.key_id,
+            ),
             timeout=self.timeout_seconds,
         )
         response.raise_for_status()

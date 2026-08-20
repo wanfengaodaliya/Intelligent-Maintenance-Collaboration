@@ -59,6 +59,5 @@ python -m pytest -p no:cacheprovider -W error -q --basetemp $testTemp
 
 ## 当前限制
 
-- Sender 当前根据 Scheduler 返回的 MQTT topic 投递，但尚未根据目标 Edge 动态切换不同的 Toxiproxy MQTT 入口。
 - Network Simulator 的批量 Reporter 默认向真实 Scheduler 的 `POST /scheduler/network-reports` 上报链路快照；接入时以 `internet_service/network_simulator/config/reporter.yaml` 解析出的 URL 为准。
 - 项目尚未声明开源许可证；公开发布前请由仓库所有者选择并添加合适的 `LICENSE`。

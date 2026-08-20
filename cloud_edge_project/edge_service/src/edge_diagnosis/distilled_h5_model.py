@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -78,14 +79,14 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
         )
         try:
             checkpoint = torch.load(
-                self.checkpoint_path, map_location="cpu", weights_only=False
+                self.checkpoint_path, map_location="cpu", weights_only=True
             )
             state = checkpoint["model_state_dict"]
             h5_state = {key[3:]: value for key, value in state.items() if key.startswith("h5.")}
             if not h5_state:
                 raise KeyError("model_state_dict has no h5.* weights")
             self.model.load_state_dict(h5_state)
-        except (OSError, KeyError, RuntimeError) as exc:
+        except (OSError, KeyError, RuntimeError, pickle.UnpicklingError) as exc:
             raise H5ModelArtifactError("distilled H5 checkpoint cannot be loaded") from exc
         self.model.to(self.device)
         self.model.eval()

@@ -17,8 +17,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "scheduler": {"host": "127.0.0.1", "port": 8003},
         "cloud": {"host": "127.0.0.1", "port": 8004},
     },
-    # 阶段 6：边缘诊断唯一后端为正式模型服务（旧本地模型后端已删除）。
-    "model": {"edge_backend": "official", "cloud_backend": "mock"},
+    # 当前默认路线：Edge 本地运行蒸馏 H5；Cloud 使用规则后端。
+    # official 仅用于显式对照或故障演练。
+    "model": {"edge_backend": "local_h5", "cloud_backend": "rule"},
     "log": {"path": "logs/task_trace.jsonl"},
     "demo": {
         "network_state": {

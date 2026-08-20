@@ -12,22 +12,36 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ssl
 import threading
 import time
 import urllib.request
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from edge_model.local_h5_client import H5ActivationError
 from edge_model.model_pull import ModelPullError, pull_candidate
 
 
-def _default_http_get(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+def _default_http_get(
+    url: str, *, ssl_context: ssl.SSLContext, allow_insecure_http: bool
+) -> bytes:
+    with urllib.request.urlopen(  # noqa: S310
+        url, timeout=30, context=ssl_context
+    ) as response:
+        _require_secure_response(response.geturl(), allow_insecure_http)
         return response.read()
 
 
-def _default_http_post(url: str, body: dict[str, Any]) -> dict[str, Any]:
+def _default_http_post(
+    url: str,
+    body: dict[str, Any],
+    *,
+    ssl_context: ssl.SSLContext,
+    allow_insecure_http: bool,
+) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -35,8 +49,19 @@ def _default_http_post(url: str, body: dict[str, Any]) -> dict[str, Any]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+    with urllib.request.urlopen(  # noqa: S310
+        request, timeout=30, context=ssl_context
+    ) as response:
+        _require_secure_response(response.geturl(), allow_insecure_http)
         return json.loads(response.read().decode("utf-8"))
+
+
+def _require_secure_response(url: str, allow_insecure_http: bool) -> None:
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("MODEL_UPDATE_URL_SCHEME_INVALID")
+    if scheme != "https" and not allow_insecure_http:
+        raise ValueError("MODEL_UPDATE_HTTPS_REQUIRED")
 
 
 class ModelUpdatePoller:
@@ -49,8 +74,12 @@ class ModelUpdatePoller:
         edge_node_id: str,
         model_root: Path | str,
         model_runtime: Any,
+        signing_public_key_path: Path | str,
+        expected_signing_key_id: str,
         poll_interval_seconds: float = 30.0,
         state_path: Path | str | None = None,
+        ca_file: Path | str | None = None,
+        allow_insecure_http: bool = False,
         http_get: Callable[[str], bytes] | None = None,
         http_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         clock_ns: Callable[[], int] = time.time_ns,
@@ -60,13 +89,27 @@ class ModelUpdatePoller:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
         self.cloud_base_url = cloud_base_url.rstrip("/")
+        _require_secure_response(self.cloud_base_url, allow_insecure_http)
         self.edge_node_id = edge_node_id
         self.model_root = Path(model_root)
         self.model_runtime = model_runtime
+        self.signing_public_key_path = Path(signing_public_key_path)
+        self.expected_signing_key_id = expected_signing_key_id
         self.poll_interval_seconds = poll_interval_seconds
         self.state_path = Path(state_path) if state_path else self.model_root / ".model_update_state.json"
-        self.http_get = http_get or _default_http_get
-        self.http_post = http_post or _default_http_post
+        ssl_context = ssl.create_default_context(
+            cafile=str(ca_file) if ca_file is not None else None
+        )
+        self.http_get = http_get or partial(
+            _default_http_get,
+            ssl_context=ssl_context,
+            allow_insecure_http=allow_insecure_http,
+        )
+        self.http_post = http_post or partial(
+            _default_http_post,
+            ssl_context=ssl_context,
+            allow_insecure_http=allow_insecure_http,
+        )
         self.clock_ns = clock_ns
         self.monotonic = monotonic
         self.logger = logger or logging.getLogger(__name__)
@@ -237,6 +280,8 @@ class ModelUpdatePoller:
                         model_type=item.get("model_type", "distilled_h5"),
                         model_root=self.model_root,
                         expected_sha256=item.get("artifact_sha256"),
+                        signing_public_key_path=self.signing_public_key_path,
+                        expected_signing_key_id=self.expected_signing_key_id,
                         http_get=self.http_get,
                     )
                     activation = self.model_runtime.activate_version(

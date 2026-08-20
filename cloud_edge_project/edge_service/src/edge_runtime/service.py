@@ -50,6 +50,10 @@ class EdgeRuntimeService:
     def start(self) -> None:
         if self._started:
             return
+        # 接入流量前全量补齐历史设备结果的双通道出站记录；失败则启动失败，
+        # 不允许在已知交付缺口下继续接单。
+        if self.coordinator is not None:
+            self.coordinator.reconcile_device_result_deliveries(force=True)
         self.cache.start()
         try:
             self.pipeline.start()

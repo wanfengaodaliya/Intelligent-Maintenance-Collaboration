@@ -178,10 +178,17 @@ class DeviceDecisionRoundRepository:
             connection.execute("BEGIN IMMEDIATE")
             yield connection
 
-    def save_revision(self, draft: DeviceDecisionResult) -> DeviceDecisionResult:
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
+    def save_revision(
+        self,
+        draft: DeviceDecisionResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> DeviceDecisionResult:
+        own_connection = connection is None
+        with (self._connect() if own_connection else nullcontext(connection)) as selected:
+            if own_connection:
+                selected.execute("BEGIN IMMEDIATE")
+            row = selected.execute(
                 """SELECT result_id, revision FROM device_decision_result
                 WHERE device_id=? AND task_id=? AND decision_round_id=? AND is_current=1""",
                 (draft.device_id, draft.task_id, draft.decision_round_id),
@@ -194,18 +201,18 @@ class DeviceDecisionRoundRepository:
                 replaces_result_id=None if row is None else str(row["result_id"]),
             )
             if row is not None:
-                connection.execute(
+                selected.execute(
                     "UPDATE device_decision_result SET is_current=0 WHERE result_id=?",
                     (row["result_id"],),
                 )
-            connection.execute(
+            selected.execute(
                 """INSERT INTO device_decision_result(
                 result_id,device_id,task_id,decision_round_id,revision,is_current,payload_json
                 ) VALUES (?,?,?,?,?,?,?)""",
                 (result.result_id, result.device_id, result.task_id, result.decision_round_id,
                  result.revision, 1, _serialize_result(result)),
             )
-            connection.execute(
+            selected.execute(
                 """UPDATE device_decision_round SET current_device_result_id=?
                 WHERE device_id=? AND task_id=? AND decision_round_id=?""",
                 (
@@ -218,19 +225,29 @@ class DeviceDecisionRoundRepository:
         return result
 
     def get_current_result(
-        self, device_id: str, task_id: str, decision_round_id: str
+        self,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> DeviceDecisionResult | None:
-        with self._connect() as connection:
-            row = connection.execute(
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            row = selected.execute(
                 """SELECT payload_json FROM device_decision_result
                 WHERE device_id=? AND task_id=? AND decision_round_id=? AND is_current=1""",
                 (device_id, task_id, decision_round_id),
             ).fetchone()
         return None if row is None else _deserialize_result(str(row["payload_json"]))
 
-    def get_arbitration_receipt(self, arbitration_id: str) -> dict | None:
-        with self._connect() as connection:
-            row = connection.execute(
+    def get_arbitration_receipt(
+        self,
+        arbitration_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict | None:
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            row = selected.execute(
                 "SELECT * FROM device_arbitration_receipt WHERE arbitration_id=?",
                 (arbitration_id,),
             ).fetchone()
@@ -245,16 +262,30 @@ class DeviceDecisionRoundRepository:
         decision_round_id: str,
         result_id: str,
         processed_at_ns: int,
+        connection: sqlite3.Connection | None = None,
     ) -> bool:
         """幂等记录已处理的云仲裁回调，重复回调不再产生新修订。"""
-        with self._connect() as connection:
-            changed = connection.execute(
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            changed = selected.execute(
                 """INSERT OR IGNORE INTO device_arbitration_receipt(
                 arbitration_id, device_id, task_id, decision_round_id, result_id, processed_at_ns
                 ) VALUES (?,?,?,?,?,?)""",
                 (arbitration_id, device_id, task_id, decision_round_id, result_id, processed_at_ns),
             ).rowcount
         return changed == 1
+
+    def list_device_results(
+        self,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[DeviceDecisionResult, ...]:
+        """Return every persisted device revision for delivery reconciliation."""
+        with (self._connect() if connection is None else nullcontext(connection)) as selected:
+            rows = selected.execute(
+                """SELECT payload_json FROM device_decision_result
+                ORDER BY device_id, task_id, decision_round_id, revision"""
+            ).fetchall()
+        return tuple(_deserialize_result(str(row["payload_json"])) for row in rows)
 
     def count_open_rounds(self) -> int:
         with self._connect() as connection:

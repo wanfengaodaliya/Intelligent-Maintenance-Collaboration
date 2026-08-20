@@ -9,8 +9,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import cloud_service.app as app_module
+from common.model_signing import verify_manifest_signature
 from cloud_service.config import load_cloud_settings
 from cloud_service.storage.database import connect, initialize_database
 
@@ -69,13 +72,33 @@ def client(tmp_path: Path, monkeypatch):
         load_cloud_settings(), backend="mock", database_path=database_path
     )
     monkeypatch.setattr(app_module, "load_cloud_settings", lambda: settings)
+    private_key = Ed25519PrivateKey.generate()
+    private_key_path = tmp_path / "model-signing-private.pem"
+    public_key_path = tmp_path / "model-signing-public.pem"
+    private_key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    public_key_path.write_bytes(
+        private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    monkeypatch.setenv("CLOUD_MODEL_SIGNING_PRIVATE_KEY_FILE", str(private_key_path))
+    monkeypatch.setenv("MODEL_UPDATE_SIGNING_KEY_ID", "test-release-v1")
     from fastapi.testclient import TestClient
 
     with TestClient(app_module.app) as test_client:
         yield test_client
 
 
-def test_download_bundle_artifact_returns_zip_with_manifest(client, tmp_path) -> None:
+def test_download_bundle_artifact_returns_zip_with_manifest(
+    client, tmp_path, monkeypatch
+) -> None:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     (bundle_dir / "best_model.pt").write_bytes(b"checkpoint")
@@ -104,6 +127,16 @@ def test_download_bundle_artifact_returns_zip_with_manifest(client, tmp_path) ->
     assert manifest["version"] == "edge_v2"
     assert manifest["model_type"] == "distilled_h5"
     assert manifest["files"]["best_model.pt"] == hashlib.sha256(b"checkpoint").hexdigest()
+    verify_manifest_signature(
+        manifest,
+        public_key_path=tmp_path / "model-signing-public.pem",
+        expected_key_id="test-release-v1",
+    )
+
+    monkeypatch.delenv("CLOUD_MODEL_SIGNING_PRIVATE_KEY_FILE")
+    unsigned_response = client.get("/cloud/model-update/update_dl_bundle/file")
+    assert unsigned_response.status_code == 503
+    assert unsigned_response.json() == {"error_code": "MODEL_SIGNING_UNAVAILABLE"}
 
 
 def test_download_single_file_artifact_streams_bytes(client, tmp_path) -> None:
