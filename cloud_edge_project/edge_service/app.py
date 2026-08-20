@@ -145,6 +145,10 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     model_config.queue.full_policy = os.getenv(
         "EDGE_MODEL_QUEUE_FULL_POLICY", "reject"
     )
+    # H4：固定推理线程池大小（默认 1 保持现行为；local_h5 可配 2 提升并行）。
+    model_config.inference_workers = int(
+        os.getenv("EDGE_MODEL_INFERENCE_WORKERS", "1")
+    )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
     # 设置后模型路线（本地 H5 或模型服务）上报版本不一致 → readiness 不通过。
     pinned_model_version = os.getenv("EDGE_MODEL_VERSION") or None
@@ -275,14 +279,39 @@ cloud_review_cleanup = CloudReviewCleanupWorker(
 )
 
 def _liveness_snapshot() -> dict[str, object]:
-    """阶段 5：liveness 只看进程内关键线程是否存活。"""
+    """阶段 5：liveness 只看进程内关键线程是否存活。
+
+    H2：把模型 worker、完成分发线程、建议线程纳入判定，避免"推理已静默死亡
+    但 liveness 仍 200"的假活。模型更新轮询器非关键路径，仅观测上报。
+    """
     maintenance = runtime_assembly.maintenance
     mqtt_ingress = runtime_assembly.service.mqtt_ingress
+    coordinator = runtime_assembly.coordinator
     maintenance_alive = True if maintenance is None else maintenance.running
+    # local 后端不启动推理 worker（无队列线程），不纳入判定，避免永久 503。
+    uses_model_worker = coordinator.pipeline.cfg.diagnostic_backend in ("http", "local_h5")
+    model_worker_alive = (
+        bool(coordinator.pipeline.worker.worker_alive) if uses_model_worker else True
+    )
+    dispatcher_alive = bool(coordinator.completion_dispatcher_alive)
+    suggestion_alive = bool(coordinator.suggestion_worker_alive)
+    poller = runtime_assembly.service.model_update_poller
+    poller_alive = True if poller is None else poller.running
+    critical = bool(
+        maintenance_alive
+        and mqtt_ingress.worker_alive
+        and model_worker_alive
+        and dispatcher_alive
+        and suggestion_alive
+    )
     return {
-        "alive": bool(maintenance_alive and mqtt_ingress.worker_alive),
+        "alive": critical,
         "maintenance_worker_alive": maintenance_alive,
         "mqtt_worker_alive": mqtt_ingress.worker_alive,
+        "model_worker_alive": model_worker_alive,
+        "completion_dispatcher_alive": dispatcher_alive,
+        "suggestion_worker_alive": suggestion_alive,
+        "model_update_poller_alive": poller_alive,
     }
 
 
@@ -371,6 +400,16 @@ def health() -> dict[str, object]:
         "mqtt_capacity": runtime_assembly.service.mqtt_ingress.capacity_snapshot(),
         # 阶段 7：模型队列容量与满载指标（等待数/容量/满载累计/历史峰值）。
         "model_queue": runtime_assembly.coordinator.pipeline.queue_snapshot(),
+        # H1/H3：完成分发与建议线程观测（队列深度/溢出/存活）。
+        "completion_dispatch": {
+            "queue_size": runtime_assembly.coordinator.dispatch_queue_size,
+            "overflow_total": runtime_assembly.coordinator.dispatch_overflow_total,
+            "alive": runtime_assembly.coordinator.completion_dispatcher_alive,
+        },
+        "suggestion_worker": {
+            "queue_size": runtime_assembly.coordinator.suggestion_queue_size,
+            "alive": runtime_assembly.coordinator.suggestion_worker_alive,
+        },
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
         "suggestion_outbox": (

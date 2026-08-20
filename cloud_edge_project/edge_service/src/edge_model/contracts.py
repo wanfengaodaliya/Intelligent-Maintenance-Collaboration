@@ -41,6 +41,10 @@ HTTP_ERROR_MODEL_OUTPUT_INVALID = "MODEL_OUTPUT_INVALID"
 HTTP_ERROR_MODEL_INPUT_INVALID = "MODEL_INPUT_INVALID"
 
 
+class InferenceCancelled(Exception):
+    """H4 协作式取消：推理在检查点检测到取消事件后抛出，用于及时释放线程池线程。"""
+
+
 @dataclass(frozen=True)
 class EdgeResult:
     """对外统一结果（扁平 4 字段，接口冻结）。"""

@@ -61,11 +61,15 @@ class EdgeModelConfig:
     breaker: BreakerConfig = field(default_factory=BreakerConfig)
     model_client: ModelClientConfig = field(default_factory=ModelClientConfig)
     fallback: FallbackConfig = field(default_factory=FallbackConfig)
+    # H4：固定推理线程池大小（默认 1 保持现行为，local_h5 可配 2 提升并行）。
+    inference_workers: int = 1
 
     def validate(self) -> List[str]:
         errors: List[str] = []
         if self.diagnostic_backend not in {"local", "http", "local_h5"}:
             errors.append("diagnostic_backend must be local, http or local_h5")
+        if self.inference_workers < 1:
+            errors.append("inference_workers 必须 >= 1")
         if self.queue.max_waiting_requests < 1:
             errors.append("queue.max_waiting_requests 必须 >= 1")
         if self.queue.full_policy not in ("reject", "replace"):
@@ -99,6 +103,7 @@ class EdgeModelConfig:
             "breaker": _asdict(self.breaker),
             "model_client": _asdict(self.model_client),
             "fallback": _asdict(self.fallback),
+            "inference_workers": self.inference_workers,
         }
 
 

@@ -18,11 +18,10 @@ from raw_sample_capture import RawSampleCaptureService
 from raw_sample_capture.uploader import RawAnalysisSampleUploader
 from result_uploader import ResultUploader
 
-from suggestion_llm import SuggestionClient, build_suggestion_messages
-from suggestion_rule import evaluate_suggestion
-
 from .contracts import action_level_for
+from .dispatcher import CompletionDispatcher
 from .http import SchedulerReporter
+from .suggestion_worker import SuggestionWorker
 from .v12_flow import V12DecisionFlow
 
 
@@ -51,10 +50,12 @@ class EdgeRuntimeCoordinator:
         round_timeout_ns: int = 3_500_000_000,
         device_result_outbox: Any = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
-        suggestion_llm_client: Optional[SuggestionClient] = None,
+        suggestion_llm_client: Any = None,
         suggestion_publisher: Optional[JsonPublisher] = None,
         suggestion_outbox: Any = None,
         suggestion_history_window: int = 10,
+        completion_dispatch_enabled: bool = True,
+        completion_dispatch_queue_size: int = 256,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -82,8 +83,6 @@ class EdgeRuntimeCoordinator:
         # 未装配 Outbox 时退回直接 MQTT 发布（向后兼容）。
         self.suggestion_outbox = suggestion_outbox
         self.suggestion_history_window = suggestion_history_window
-        # 设备级历史记录缓存：{device_id: [edge_result_dict, ...]}
-        self._suggestion_history: dict[str, list[dict[str, Any]]] = {}
         self._clock_ns = clock_ns
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
@@ -91,6 +90,21 @@ class EdgeRuntimeCoordinator:
         self._active_diagnosis_windows: dict[
             tuple[str, str, str, str, str, int], tuple[DiagnosisWindow, dict[str, Any]]
         ] = {}
+        # H1：完成事件分发线程——把路由/落盘/上报等控制面 I/O 移出数据面(推理 worker)。
+        self.dispatcher = CompletionDispatcher(
+            self._process_completion,
+            enabled=completion_dispatch_enabled,
+            queue_size=completion_dispatch_queue_size,
+            on_error=self._report_dispatch_error,
+        )
+        # H3：设备级建议线程——设备级最终诊断结果触发一次 LLM，而非逐包。
+        self.suggestion_worker = SuggestionWorker(
+            llm_client=suggestion_llm_client,
+            outbox=suggestion_outbox,
+            publisher=suggestion_publisher,
+            history_window=suggestion_history_window,
+            clock_ns=clock_ns,
+        )
         self.pipeline.on_packet_completed = self.on_packet_completed
 
     def receive_raw_packet(self, raw_packet: dict[str, Any]) -> bool:
@@ -159,6 +173,10 @@ class EdgeRuntimeCoordinator:
             pass
 
     def on_packet_completed(self, completion: PacketExecutionCompleted) -> None:
+        # H1：完成事件入队(O(1))；控制面逻辑由 CompletionDispatcher 线程异步执行。
+        self.dispatcher.submit(completion)
+
+    def _process_completion(self, completion: PacketExecutionCompleted) -> None:
         with self._mutex:
             runtime_window = self._active_diagnosis_windows.pop(
                 _completion_identity(completion), None
@@ -216,7 +234,6 @@ class EdgeRuntimeCoordinator:
                     accepted_at_ns=self._clock_ns(),
                 )
                 self._capture_bearing_result(edge_result, route_decision, device)
-                self._generate_suggestion(completion)
             except Exception as error:
                 self._report_v12_error(completion, error)
 
@@ -388,89 +405,68 @@ class EdgeRuntimeCoordinator:
         except Exception:
             pass
 
-    def _generate_suggestion(self, completion: PacketExecutionCompleted) -> None:
-        """根据包完成结果生成建议并通过 MQTT 发布。
+    def submit_device_suggestion(self, result: Any) -> None:
+        """H3：设备级最终诊断结果非阻塞入队，由建议线程消费生成一条建议。
 
-        流程：规则引擎决定建议类型 → LLM 翻译为自然语言 → MQTT 发布。
-        LLM 不可用时自动降级为 fallback 文本。
+        由 v12_flow 的设备级回调(_emit_device_result)统一触发，覆盖四种闭合路径：
+        边缘自主闭合 / 轮次超时 / 云端复核回填 / 云仲裁修正。v12 关闭时无回调，
+        自然满足"无设备级最终结果不触发 LLM"的硬约束。
         """
-        if completion.edge is None:
-            return
-        if self.suggestion_publisher is None:
-            return
+        if self.suggestion_worker is not None:
+            self.suggestion_worker.submit(result)
 
-        device_id = completion.device_id
-        edge = completion.edge
-
-        # 1. 更新历史记录
-        with self._mutex:
-            if device_id not in self._suggestion_history:
-                self._suggestion_history[device_id] = []
-            history = self._suggestion_history[device_id]
-            history.append({
-                "edge_result": edge.edge_result,
-                "confidence": edge.confidence,
-                "risk_level": edge.edge_risk_level,
-            })
-            # 只保留最近 N 条
-            if len(history) > self.suggestion_history_window:
-                history[:] = history[-self.suggestion_history_window:]
-
-        # 2. 规则引擎决策
-        rule_result = evaluate_suggestion(
-            device_id=device_id,
-            current_label=edge.edge_result,
-            confidence=edge.confidence,
-            risk_level=edge.edge_risk_level,
-            history=list(history),
-        )
-
-        # 3. LLM 翻译为自然语言
-        if self.suggestion_llm_client is not None:
-            messages = build_suggestion_messages(
-                device_id=device_id,
-                label=edge.edge_result,
-                confidence=edge.confidence,
-                risk_level=edge.edge_risk_level,
-                suggestion_type=rule_result.suggestion_type,
-                trend=rule_result.trend,
-            )
-            llm_result = self.suggestion_llm_client.suggest(messages)
-            suggestion_text = llm_result.text
-        else:
-            # 没有 LLM 时，用规则引擎的 reason 字段直接作为建议
-            suggestion_text = f"{rule_result.reason}。"
-            if rule_result.maintenance_window:
-                suggestion_text = (
-                    f"{rule_result.reason}，建议"
-                    f"{'立即' if rule_result.maintenance_window == 'immediate' else rule_result.maintenance_window}检修。"
-                )
-
-        # 4. 发布：优先持久化到 Outbox，由维护轮次负责实际发送；
-        #    未装配 Outbox 时保持直接 MQTT 发布。
-        payload = {
-            "result_id": _suggestion_result_id(completion),
-            "device_id": device_id,
-            "task_id": completion.task_id,
-            "bearing_id": completion.bearing_id,
-            "packet_id": completion.packet_id,
-            "suggestion": suggestion_text,
-            "suggestion_type": rule_result.suggestion_type,
-            "priority": rule_result.priority,
-            "edge_result": edge.edge_result,
-            "confidence": edge.confidence,
-            "risk_level": edge.edge_risk_level,
+    def _report_dispatch_error(self, completion: Any, error: Exception) -> None:
+        """H1/H2：dispatcher 捕获到完成事件处理异常时上报，保留原异常语义。"""
+        record = {
+            "stage": "completion_dispatch",
+            "device_id": getattr(completion, "device_id", None),
+            "task_id": getattr(completion, "task_id", None),
+            "bearing_id": getattr(completion, "bearing_id", None),
+            "sender_id": getattr(completion, "sender_id", None),
+            "packet_id": getattr(completion, "packet_id", None),
+            "sequence_number": getattr(completion, "sequence_number", None),
+            "error_code": getattr(error, "code", type(error).__name__),
+            "message": str(error),
+            "action": "completion_processing_failed",
         }
-        if self.suggestion_outbox is not None:
-            try:
-                self.suggestion_outbox.enqueue(payload)
-            except Exception:
-                pass
-            return
         try:
-            self.suggestion_publisher.publish(payload)
+            self.on_packet_route_error(record)
         except Exception:
             pass
+
+    def start_background(self) -> None:
+        """启动完成分发线程与建议线程（由 service 在数据面启动后调用）。"""
+        if self.dispatcher is not None:
+            self.dispatcher.start()
+        if self.suggestion_worker is not None:
+            self.suggestion_worker.start()
+
+    def stop_background(self) -> None:
+        """停止完成分发线程与建议线程（dispatcher 先排空在途完成事件）。"""
+        if self.dispatcher is not None:
+            self.dispatcher.stop()
+        if self.suggestion_worker is not None:
+            self.suggestion_worker.stop()
+
+    @property
+    def completion_dispatcher_alive(self) -> bool:
+        return self.dispatcher is None or self.dispatcher.alive
+
+    @property
+    def suggestion_worker_alive(self) -> bool:
+        return self.suggestion_worker is None or self.suggestion_worker.alive
+
+    @property
+    def dispatch_overflow_total(self) -> int:
+        return self.dispatcher.overflow_total if self.dispatcher is not None else 0
+
+    @property
+    def dispatch_queue_size(self) -> int:
+        return self.dispatcher.queue_size if self.dispatcher is not None else 0
+
+    @property
+    def suggestion_queue_size(self) -> int:
+        return self.suggestion_worker.queue_size if self.suggestion_worker is not None else 0
 
     def node_status(self) -> dict[str, Any]:
         now = self._clock_ns()
@@ -585,15 +581,6 @@ class EdgeRuntimeCoordinator:
             edge=None,
         )
         self.on_packet_completed(completion)
-
-
-def _suggestion_result_id(value: PacketExecutionCompleted) -> str:
-    """建议发布的幂等键：同一包只发布一条建议。"""
-    return "suggestion_%s_%s_%s" % (
-        value.task_id,
-        value.bearing_id,
-        value.packet_id,
-    )
 
 
 def _edge_bearing_result(

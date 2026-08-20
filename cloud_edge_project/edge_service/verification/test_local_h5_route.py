@@ -156,7 +156,7 @@ def test_local_h5_failure_degrades_to_unavailable_for_cloud_review() -> None:
         def build_evidence(self, raw_packet):  # noqa: ANN001
             return real.build_evidence(raw_packet)
 
-        def run(self, task):  # noqa: ANN001
+        def run(self, task, cancel_event=None):  # noqa: ANN001
             raise RuntimeError("h5 channel exploded")
 
     records: list[RunRecord] = []
@@ -198,8 +198,10 @@ def test_local_h5_and_official_share_queue_semantics() -> None:
         def build_evidence(self, raw_packet):  # noqa: ANN001
             return LocalH5ModelClient().build_evidence(raw_packet)
 
-        def run(self, task):  # noqa: ANN001
+        def run(self, task, cancel_event=None):  # noqa: ANN001
             while gate["running"]:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("gated cancelled")
                 time.sleep(0.01)
             raise RuntimeError("gated")
 

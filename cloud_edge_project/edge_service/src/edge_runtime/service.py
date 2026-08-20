@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 from http.server import ThreadingHTTPServer
-from typing import Optional
+from typing import Any, Optional
 
 from edge_model.pipeline import EdgeModelPipeline
 from edge_validation_cache import EdgeValidationCache
@@ -29,6 +29,7 @@ class EdgeRuntimeService:
         heartbeat: HeartbeatLoop | None,
         maintenance: EdgeMaintenanceWorker | None = None,
         model_update_poller: ModelUpdatePoller | None = None,
+        coordinator: Any = None,
     ):
         errors = config.validate()
         if errors:
@@ -41,6 +42,7 @@ class EdgeRuntimeService:
         self.heartbeat = heartbeat
         self.maintenance = maintenance
         self.model_update_poller = model_update_poller
+        self.coordinator = coordinator
         self._server: Optional[ThreadingHTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._started = False
@@ -51,6 +53,10 @@ class EdgeRuntimeService:
         self.cache.start()
         try:
             self.pipeline.start()
+            # H1/H3：完成分发线程与建议线程在数据面(推理)之后、接入(MQTT)之前启动，
+            # 保证所有完成事件与设备级结果都经后台线程异步处理。
+            if self.coordinator is not None:
+                self.coordinator.start_background()
             self._server = make_control_server(
                 self.config.control.host,
                 self.config.control.port,
@@ -96,6 +102,9 @@ class EdgeRuntimeService:
             thread.join(timeout=2.0)
         self._server = None
         self._server_thread = None
+        # H1：dispatcher 在 pipeline 之前停，先排空在途完成事件，再停数据面。
+        if self.coordinator is not None:
+            self.coordinator.stop_background()
         if self.pipeline.started:
             self.pipeline.stop()
         self.cache.stop()

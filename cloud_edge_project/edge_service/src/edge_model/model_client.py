@@ -127,7 +127,8 @@ class ModelClient:
     # ---- 推理 ----
     def infer(self, model_input: dict, inference_timeout_ms: Optional[int] = None,
               request_id: Optional[str] = None,
-              remaining_timeout_ms: Optional[float] = None) -> ModelInferResult:
+              remaining_timeout_ms: Optional[float] = None,
+              cancel_event=None) -> ModelInferResult:
         t0 = self._clock()
         read_timeout = (inference_timeout_ms or self.cfg.read_timeout_ms) / 1000.0
         payload: Dict[str, Any] = {"input": model_input}
@@ -135,8 +136,17 @@ class ModelClient:
             payload["request_id"] = request_id
         if remaining_timeout_ms is not None:
             payload["remaining_timeout_ms"] = remaining_timeout_ms
+        if cancel_event is not None and cancel_event.is_set():
+            # 协作式取消：排队阶段即被取消的请求直接放弃，不再发起 HTTP。
+            return ModelInferResult(success=False, timed_out=True,
+                                    latency_ms=0.0, error="MODEL_INFERENCE_TIMEOUT")
         try:
             body = self._request_json(self.cfg.infer_path, payload, read_timeout_s=read_timeout)
+            if cancel_event is not None and cancel_event.is_set():
+                # 等待期间被取消：结果不再交付（worker 侧已按超时处理）。
+                return ModelInferResult(success=False, timed_out=True,
+                                        latency_ms=(self._clock() - t0) * 1000.0,
+                                        error="MODEL_INFERENCE_TIMEOUT")
         except TimeoutError:
             # urllib 的读取超时抛裸 TimeoutError（socket.timeout），不经过 URLError。
             return ModelInferResult(success=False, timed_out=True,
