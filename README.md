@@ -1,6 +1,6 @@
 # Intelligent Maintenance Collaboration
 
-面向智能运维场景的云边协同项目，包含 Sender、Edge、Scheduler、Cloud、Log 与 Network Simulator。当前分支集成了 Edge Status Reporter，边缘节点启动后会默认向 Scheduler 和 Cloud 周期上报同一份节点状态快照。
+面向智能运维场景的云边协同项目，包含 Sender、Edge、Scheduler、Cloud 与 Network Simulator。当前分支集成了 Edge Status Reporter，边缘节点启动后会默认向 Scheduler 和 Cloud 周期上报同一份节点状态快照。
 
 ## 项目结构
 
@@ -18,7 +18,6 @@
 | Edge HTTP | `127.0.0.1:8001` |
 | Scheduler HTTP | `127.0.0.1:8003` |
 | Cloud HTTP | `127.0.0.1:8004` |
-| Log HTTP | `127.0.0.1:8006` |
 | MQTT Broker | `127.0.0.1:1883` |
 | Network API | `127.0.0.1:8090` |
 | Toxiproxy API | `127.0.0.1:8474` |
@@ -29,21 +28,12 @@
 
 H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权重和冻结归一化参数已随仓库分发，并镜像到 [Hugging Face](https://huggingface.co/wanfengaodaliya/intelligent-maintenance-distilled-h5)。
 
-项目默认以网络模拟模式运行：出站请求经过 Network Simulator 的代理端口，因此**必须先启动网络模拟器，再启动业务服务**。在仓库根目录执行：
+当前单机完整系统统一使用仓库根目录的 `start_project.ps1` 启动。脚本会检查 Docker、Conda、MOMENT、H5 和可选 LLM 模型，启动网络模拟器及 Edge、Scheduler、Cloud，并执行健康检查：
 
 ```powershell
-conda activate moment
-cd cloud_edge_project
-python -m pip install -r requirements-moment.txt
-
-# 1. 启动网络模拟器（需先启动 Docker Desktop）
-cd internet_service\network_simulator
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-docker compose --env-file .env up -d --build --wait
-cd ..\..
-
-# 2. 按 docs/Edge_Status_Reporter_完整测试流程.md 第 6.4 节设置环境变量后启动业务服务
-python start_all.py
+.\start_project.ps1
+# 如果暂时不启动可选 LLM：
+.\start_project.ps1 -SkipLLM
 ```
 
 启动后可检查：
@@ -52,10 +42,9 @@ python start_all.py
 Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8003/health
 Invoke-RestMethod http://127.0.0.1:8004/health
-Invoke-RestMethod http://127.0.0.1:8006/health
 ```
 
-> `start_all.py` 只启动 Edge、Scheduler、Cloud、Consistency、Log 五个业务服务，不启动网络模拟器，也不设置网络联调所需的环境变量（如 `EDGE_STATUS_SCHEDULER_URL`、`SCHEDULER_EDGE_NODES_JSON` 等）。完整的分窗口启动与联调步骤见 `cloud_edge_project/docs/Edge_Status_Reporter_完整测试流程.md`；网络模拟器细节见 `cloud_edge_project/internet_service/network_simulator/README.md`。
+旧版 `start_all.py`、Consistency 和 Log 服务已从当前启动链路移除，不再作为项目入口或运行依赖。网络模拟器细节见 `cloud_edge_project/internet_service/network_simulator/README.md`。
 
 ## 测试
 

@@ -95,16 +95,16 @@ POST {control_url}/edge/tasks
 
 ## 运行
 
-项目统一启动：
+当前单机完整项目统一从仓库根目录启动：
 
 ```powershell
-python start_all.py
+.\start_project.ps1
 ```
 
-只启动调度器：
+如果暂时跳过可选 LLM：
 
 ```powershell
-python start_all.py --service scheduler_service
+.\start_project.ps1 -SkipLLM
 ```
 
 也可以直接运行：

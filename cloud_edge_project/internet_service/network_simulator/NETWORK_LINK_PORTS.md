@@ -7,7 +7,6 @@
 | Edge Service | 8001 |
 | Scheduler Service | 8003 |
 | Cloud Service | 8004 |
-| Log Service | 8006 |
 | MQTT Broker | 1883 |
 | Network API | 8090 |
 | Toxiproxy API | 8474 |

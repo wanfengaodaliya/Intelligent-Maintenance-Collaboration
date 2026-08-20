@@ -1,5 +1,9 @@
 # Edge Status Reporter 完整测试流程
 
+> **旧版流程说明（不作为当前启动入口）**：本文档保留用于历史 Edge Status Reporter 联调记录，
+> 其中的 `start_all.py`、Log 服务和旧端口说明不适用于当前版本。当前单机启动请以仓库根目录
+> 的 `start_project.ps1` 及《单机完整项目启动手册》为准。
+
 ## 1. 测试目标
 
 本文档用于完整验证 Edge Status Reporter 及其与 Scheduler、Cloud 的联调功能，包括：

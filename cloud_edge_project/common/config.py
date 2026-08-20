@@ -16,8 +16,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "edge": {"host": "127.0.0.1", "port": 8001},
         "scheduler": {"host": "127.0.0.1", "port": 8003},
         "cloud": {"host": "127.0.0.1", "port": 8004},
-        "consistency": {"host": "127.0.0.1", "port": 8005},
-        "log": {"host": "127.0.0.1", "port": 8006},
     },
     # 阶段 6：边缘诊断唯一后端为正式模型服务（旧本地模型后端已删除）。
     "model": {"edge_backend": "official", "cloud_backend": "mock"},

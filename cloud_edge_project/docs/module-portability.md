@@ -1,5 +1,8 @@
 # 网络与边缘感知模块可迁移化说明
 
+> 当前启动和运行以仓库根目录的 `start_project.ps1` 为准。本文早期 V0.1 章节中提到的
+> Consistency、Log 和 `start_all.py` 已从当前代码移除，不再作为迁移或部署依赖。
+
 ## 改造边界
 
 - 边缘运行时只依赖 `PerceptionHandler` 通用协议。
@@ -127,8 +130,6 @@ HTTP `upstream` 填写调度器、云端和边缘节点的实际 IP。
 | Edge 服务 | `8001` |
 | Scheduler 服务 | `8003` |
 | Cloud 服务 | `8004` |
-| Consistency 服务 | `8005` |
-| Log 服务 | `8006` |
 | Edge 控制接口 | `8011` |
 | MQTT Broker | `1883` |
 | Network API | `8090` |
@@ -252,26 +253,10 @@ python -m scheduler.app
 - 默认 Cloud 地址为 `http://127.0.0.1:8004`，MQTT 地址为 `127.0.0.1:1883`。
 - 现有节点控制地址、路由结果、API 和决策结果不变。
 
-## Consistency 和 Log 服务迁移
+## 已移除的 V0.1 服务
 
-### Consistency
-
-```powershell
-set CONSISTENCY_DB_PATH=D:\consistency-data\consistency.db
-python -m consistency_service.app
-```
-
-Consistency 只依赖通用诊断/结果协议，轴承专用一致性解释通过场景适配器提供。
-
-### Log
-
-```powershell
-set LOG_DB_PATH=D:\log-data\logs.db
-set LOG_DIR=D:\log-data\records
-python -m log_service.app
-```
-
-Log 只记录运行、时延、吞吐和任务信息，不输出轴承健康判断。
+早期版本的 Consistency 和 Log 独立服务已移除。当前日志由公共日志组件写入本地日志文件，
+一致性处理不再通过独立的 `consistency_service` 进程启动。
 
 ## 场景注册机制
 
@@ -341,8 +326,6 @@ cloud_edge_project/
   ├── edge_service/     # 边缘推理服务
   ├── scheduler/        # 调度服务
   ├── cloud_service/    # 云端服务
-  ├── consistency_service/  # 一致性服务
-  ├── log_service/      # 日志服务
   ├── internet_service/ # 网络模拟器
   ├── contracts/        # 契约定义和 Fixture
   ├── data/             # SQLite 数据库（如已有数据）

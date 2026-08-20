@@ -10,12 +10,6 @@ services:
   cloud:
     host: "0.0.0.0"
     port: 8004
-  consistency:
-    host: "127.0.0.1"
-    port: 8005
-  log:
-    host: "127.0.0.1"
-    port: 8006
 
 model:
   # 正式边缘诊断路线：蒸馏模型 H5 三通道并行（本地推理）。
