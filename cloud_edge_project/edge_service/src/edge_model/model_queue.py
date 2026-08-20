@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -30,6 +32,8 @@ from .model_client import ModelInferResult
 
 FULL_POLICY_REJECT = "reject"
 FULL_POLICY_REPLACE = "replace"
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -125,15 +129,36 @@ class InferenceWorker:
         self.breaker_state = "closed"
         self._thread = threading.Thread(target=self._loop, daemon=True, name="edge-model-worker")
         self._running = False
+        # H4：固定推理线程池，替代每任务新建线程，从结构上消除超时后的僵尸线程。
+        self._executor: Optional[ThreadPoolExecutor] = None
+        # H2：worker 护栏观测——循环内单任务异常计数与最近错误，线程本身不死。
+        self.loop_error_count = 0
+        self.last_loop_error: Optional[str] = None
 
     def start(self):
         self._running = True
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=self.cfg.inference_workers,
+                thread_name_prefix="edge-infer",
+            )
         self._thread.start()
 
     def stop(self, join_s: float = 5.0):
         self._running = False
         self.queue.stop()
         self._thread.join(timeout=join_s)
+        executor = self._executor
+        self._executor = None
+        if executor is not None:
+            # 协作式取消已通过 cancel_event 通知在途推理；wait=False 立即返回，
+            # 在途任务在下一个检查点自行退出，不阻塞关闭。
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    @property
+    def worker_alive(self) -> bool:
+        """H2：worker 线程是否存活（liveness 判定依据之一）。"""
+        return self._thread is not None and self._thread.is_alive()
 
     def _note_failure(self):
         if not self.cfg.breaker.enabled:
@@ -157,12 +182,17 @@ class InferenceWorker:
         return True
 
     def _loop(self):
+        # H2：单任务异常不得杀死 worker 线程——记日志、计数并继续消费下一个任务。
         while self._running or not self.queue.idle():
             task = self.queue.get(timeout_s=self._poll_s)
             if task is None:
                 continue
             try:
                 self._process(task)
+            except Exception as exc:  # noqa: BLE001
+                self.loop_error_count += 1
+                self.last_loop_error = "%s: %s" % (type(exc).__name__, exc)
+                _logger.exception("edge-model-worker 任务处理异常(线程继续运行): %s", exc)
             finally:
                 self.queue.done()
 
@@ -234,39 +264,82 @@ class InferenceWorker:
 
     def _run_infer(self, task: PacketInferenceTask,
                    model_budget_ms: float) -> ModelInferResult:
-        """在子线程执行 HTTP 推理；超预算后不交付迟到结果。"""
+        """在固定线程池执行推理；超预算后设置取消事件并不交付迟到结果。
+
+        H4：线程数恒定（cfg.inference_workers），超时任务通过 cancel_event 触发
+        协作式取消，从结构上消除"每任务新建线程 + 超时弃置"的僵尸线程堆积。
+        """
 
         budget_s = model_budget_ms / 1000.0
-        holder: dict = {}
         t0 = self._clock()
+        cancel_event = threading.Event()
+        executor = self._executor
+        if executor is None:
+            # 防御分支：线程池未就绪（正常生命周期不可达）时同步执行以交付结果。
+            return _run_infer_direct(self.infer_fn, task, model_budget_ms)
 
-        def _run():
-            try:
-                # local_h5 路线：本地模型需要 raw packet，通过任务级钩子传入。
-                infer_task = getattr(self.infer_fn, "infer_task", None)
-                if callable(infer_task):
-                    holder["result"] = infer_task(task, int(model_budget_ms))
-                else:
-                    holder["result"] = self.infer_fn(
-                        task.perception,
-                        int(model_budget_ms),
-                        request_id=task.request_id,
-                        remaining_timeout_ms=model_budget_ms,
-                    )
-                holder["ok"] = True
-            except Exception as exc:  # noqa: BLE001
-                holder["ok"] = False
-                holder["err"] = exc
-
-        thread = threading.Thread(target=_run, daemon=True, name="infer-http")
-        thread.start()
-        thread.join(budget_s + 0.05)
-        if thread.is_alive():
+        infer_task = getattr(self.infer_fn, "infer_task", None)
+        if callable(infer_task):
+            future = executor.submit(
+                _run_infer_task, infer_task, task, int(model_budget_ms), cancel_event
+            )
+        else:
+            future = executor.submit(
+                _run_infer_call, self.infer_fn, task, int(model_budget_ms), cancel_event
+            )
+        try:
+            return future.result(timeout=budget_s + 0.05)
+        except TimeoutError:
+            # 逻辑超时：通知协作式取消；迟到结果由 request_id 校验在 _process 丢弃。
+            cancel_event.set()
             return ModelInferResult(success=False, timed_out=True,
                                     latency_ms=(self._clock() - t0) * 1000.0,
                                     error="MODEL_INFERENCE_TIMEOUT")
-        if not holder.get("ok"):
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("edge-model-worker 推理执行异常: %s", exc)
             return ModelInferResult(success=False, timed_out=False,
                                     latency_ms=(self._clock() - t0) * 1000.0,
                                     error="MODEL_INFERENCE_FAILED")
-        return holder["result"]
+
+
+def _run_infer_task(infer_task, task, budget_ms: int, cancel_event) -> ModelInferResult:
+    """线程池入口：local_h5 任务级钩子，携带协作式取消事件。"""
+    try:
+        return infer_task(task, budget_ms, cancel_event=cancel_event)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("edge-infer infer_task 执行异常: %s", exc)
+        return ModelInferResult(
+            success=False, timed_out=False, error="MODEL_INFERENCE_FAILED",
+            request_id=getattr(task, "request_id", None),
+        )
+
+
+def _run_infer_call(infer_fn, task, budget_ms: int, cancel_event) -> ModelInferResult:
+    """线程池入口：HTTP 路线，携带协作式取消事件。"""
+    try:
+        return infer_fn(
+            task.perception,
+            budget_ms,
+            request_id=task.request_id,
+            remaining_timeout_ms=budget_ms,
+            cancel_event=cancel_event,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("edge-infer infer 执行异常: %s", exc)
+        return ModelInferResult(
+            success=False, timed_out=False, error="MODEL_INFERENCE_FAILED",
+            request_id=getattr(task, "request_id", None),
+        )
+
+
+def _run_infer_direct(infer_fn, task, budget_ms: float) -> ModelInferResult:
+    """防御性同步执行（线程池未就绪时），不携带取消事件。"""
+    infer_task = getattr(infer_fn, "infer_task", None)
+    if callable(infer_task):
+        return infer_task(task, int(budget_ms))
+    return infer_fn(
+        task.perception,
+        int(budget_ms),
+        request_id=task.request_id,
+        remaining_timeout_ms=budget_ms,
+    )

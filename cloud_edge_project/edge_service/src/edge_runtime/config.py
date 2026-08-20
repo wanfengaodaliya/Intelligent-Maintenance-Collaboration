@@ -68,6 +68,13 @@ class MaintenanceConfig:
 
 
 @dataclass(frozen=True)
+class CompletionDispatchConfig:
+    """H1：完成事件分发线程配置——数据面(推理)与控制面(路由/落盘/上报)隔离。"""
+    enabled: bool = True
+    queue_size: int = 256
+
+
+@dataclass(frozen=True)
 class ModelUpdatePollerConfig:
     enabled: bool = True
     poll_interval_seconds: float = 30.0
@@ -105,6 +112,7 @@ class EdgeRuntimeConfig:
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
+    completion_dispatch: CompletionDispatchConfig = field(default_factory=CompletionDispatchConfig)
     model_update: ModelUpdatePollerConfig = field(default_factory=ModelUpdatePollerConfig)
     suggestion_llm: SuggestionLlmConfig = field(default_factory=SuggestionLlmConfig)
     raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
@@ -203,6 +211,10 @@ class EdgeRuntimeConfig:
                 enabled=env.get("EDGE_MAINTENANCE_ENABLED", "true").strip().lower() == "true",
                 interval_seconds=float(env.get("EDGE_MAINTENANCE_INTERVAL_SECONDS", "0.5")),
             ),
+            completion_dispatch=CompletionDispatchConfig(
+                enabled=env.get("EDGE_COMPLETION_DISPATCH_ENABLED", "true").strip().lower() == "true",
+                queue_size=int(env.get("EDGE_COMPLETION_DISPATCH_QUEUE_SIZE", "256")),
+            ),
             model_update=ModelUpdatePollerConfig(
                 enabled=env.get("EDGE_MODEL_UPDATE_POLLER_ENABLED", "true").strip().lower() == "true",
                 poll_interval_seconds=float(
@@ -296,10 +308,15 @@ class EdgeRuntimeConfig:
             errors.append("v12.outbox_published_retention_hours must not be negative")
         if not 0.1 <= self.maintenance.interval_seconds <= 10.0:
             errors.append("maintenance.interval_seconds must be within [0.1, 10.0]")
+        if self.completion_dispatch.queue_size < 1:
+            errors.append("completion_dispatch.queue_size must be positive")
         if not 1.0 <= self.model_update.poll_interval_seconds <= 3600.0:
             errors.append("model_update.poll_interval_seconds must be within [1.0, 3600.0]")
-        if self.v12.diagnosis_window_ms not in {50, 100, 150}:
-            errors.append("v12.diagnosis_window_ms must be one of 50, 100, or 150")
+        if self.v12.diagnosis_window_ms != 50:
+            errors.append(
+                "v12.diagnosis_window_ms is locked at 50 (distilled H5 is frozen to "
+                "3200-sample / 50ms input; 100/150ms inputs would be rejected)"
+            )
         if self.v12.diagnosis_step_ms != self.v12.diagnosis_window_ms:
             errors.append("v12.diagnosis_step_ms must equal diagnosis_window_ms")
         if self.v12.diagnosis_overlap_enabled:

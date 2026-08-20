@@ -13,7 +13,7 @@ import torch
 from scipy.signal import resample_poly
 
 from edge_model.code_fallback import CodeFallbackRunner
-from edge_model.contracts import EdgeResult, PacketInferenceTask
+from edge_model.contracts import EdgeResult, InferenceCancelled, PacketInferenceTask
 from edge_model.version_store import (
     resolve_active_version,
     version_dir,
@@ -117,15 +117,19 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
         if len(expected) != 64 or actual != expected:
             raise H5ModelArtifactError("distilled H5 checkpoint checksum mismatch")
 
-    def prepare_inputs(self, raw_packet: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def prepare_inputs(
+        self, raw_packet: Mapping[str, Any], cancel_event=None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         data = _mapping(raw_packet, "data")
         vibration_64k = _series(data, "vibration", sample_rate=64_000, sample_count=3_200)
         vibration_16k = resample_poly(vibration_64k, up=1, down=4).astype(np.float32)
         if vibration_16k.shape != (800,):
             raise ValueError("vibration downsampling did not produce 800 samples")
+        _check_cancelled(cancel_event)  # 检查点：物理特征计算前
         physical = normalize_features(
             _compute_single(vibration_64k), self.physical_mean, self.physical_std
         )
+        _check_cancelled(cancel_event)  # 检查点：工况特征计算前
         condition = _condition_vector(data, self.condition_mean, self.condition_std)
         return (
             torch.from_numpy(vibration_16k[None, :]).to(self.device),
@@ -133,10 +137,14 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
             torch.from_numpy(condition[None, :]).to(self.device),
         )
 
-    def run(self, task: PacketInferenceTask) -> EdgeResult:
+    def run(self, task: PacketInferenceTask, cancel_event=None) -> EdgeResult:
         if task.raw_packet is None:
             raise ValueError("distilled H5 requires the validated raw packet")
-        vibration, physical, condition = self.prepare_inputs(task.raw_packet)
+        _check_cancelled(cancel_event)  # 检查点：推理入口
+        vibration, physical, condition = self.prepare_inputs(
+            task.raw_packet, cancel_event=cancel_event
+        )
+        _check_cancelled(cancel_event)  # 检查点：CNN/融合前向计算前
         with torch.no_grad():
             logits, _ = self.model(vibration, physical, condition)
             probabilities = torch.softmax(logits, dim=1).cpu().numpy()[0]
@@ -213,6 +221,11 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
                 },
             },
         }
+
+
+def _check_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise InferenceCancelled("distilled H5 inference cancelled")
 
 
 def _mapping(value: Mapping[str, Any], name: str) -> Mapping[str, Any]:

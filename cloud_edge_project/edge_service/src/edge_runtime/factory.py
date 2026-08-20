@@ -195,6 +195,8 @@ def build_edge_runtime(
             _publish_device_result_with_identity,
             max_attempts=config.v12.device_result_publish_max_attempts,
         )
+        # coordinator 在 v12_flow 之后才构造，用 holder 承接引用供 on_device_result 使用。
+        coordinator_holder: list[EdgeRuntimeCoordinator] = []
 
         def on_device_result(result):
             # 设备级结果双通道发布（职责不同，缺一不可）：
@@ -212,6 +214,9 @@ def build_edge_runtime(
                 result_uploader.enqueue_device(result)
             except Exception:
                 pass
+            # H3：设备级最终结果触发一次建议（覆盖四种闭合路径），非阻塞入队。
+            if coordinator_holder:
+                coordinator_holder[0].submit_device_suggestion(result)
             if raw_sample_capture is not None and result.has_conflict:
                 for bearing in bearing_results.list_current_round(
                     result.device_id, result.task_id, result.decision_round_id
@@ -280,7 +285,10 @@ def build_edge_runtime(
         suggestion_publisher=suggestion_publisher,
         suggestion_outbox=suggestion_outbox,
         suggestion_history_window=config.suggestion_llm.history_window,
+        completion_dispatch_enabled=config.completion_dispatch.enabled,
+        completion_dispatch_queue_size=config.completion_dispatch.queue_size,
     )
+    coordinator_holder.append(coordinator)
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     if config.v12.enabled and config.v12.outbox_published_retention_hours > 0:
         # 阶段 5：注入已发布记录保留期，维护轮次自动执行数据保留策略。
@@ -333,6 +341,7 @@ def build_edge_runtime(
         heartbeat=heartbeat,
         maintenance=maintenance,
         model_update_poller=model_update_poller,
+        coordinator=coordinator,
     )
     return EdgeRuntimeAssembly(
         service=service,

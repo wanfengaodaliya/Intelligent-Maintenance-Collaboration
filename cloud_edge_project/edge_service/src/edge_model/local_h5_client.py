@@ -122,10 +122,11 @@ class LocalH5ModelClient:
 
     # ---- 推理（worker 的 infer_task 钩子） ----
 
-    def infer_task(self, task, inference_timeout_ms: Optional[int] = None) -> ModelInferResult:
+    def infer_task(self, task, inference_timeout_ms: Optional[int] = None,
+                   cancel_event=None) -> ModelInferResult:
         t0 = self._clock()
         try:
-            edge = self._ensure_model().run(task)
+            edge = self._ensure_model().run(task, cancel_event=cancel_event)
         except Exception as exc:  # noqa: BLE001
             return ModelInferResult(
                 success=False, timed_out=False,

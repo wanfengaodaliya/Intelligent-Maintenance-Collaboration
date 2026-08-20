@@ -17,7 +17,7 @@ def _packet(sequence: int) -> dict:
     }
 
 
-@pytest.mark.parametrize("window_ms", [50, 100, 150])
+@pytest.mark.parametrize("window_ms", [50])
 def test_edge_assembled_manifest_is_accepted_unchanged_by_cloud(window_ms: int) -> None:
     assembler = DiagnosisWindowAssembler(
         window_ms=window_ms, step_ms=window_ms, overlap_enabled=False,

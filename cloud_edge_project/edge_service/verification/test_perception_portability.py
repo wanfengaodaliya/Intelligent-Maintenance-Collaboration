@@ -7,14 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-import numpy as np
-
 from edge_perception import ModuleResult, PerceptionRegistry
 from scenarios.bearing.edge import build_bearing_perception_config
 
 
 EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[1]
-LEGACY_PERCEPTION_ROOT = EDGE_SERVICE_ROOT / "src" / "edge_perception"
+SCENARIO_ROOT = EDGE_SERVICE_ROOT.parent / "scenarios" / "bearing" / "edge"
 
 
 class _Handler:
@@ -48,7 +46,7 @@ def test_bearing_config_keeps_current_defaults_and_supports_overrides() -> None:
 
 
 def test_bearing_scenario_has_no_edge_service_imports() -> None:
-    scenario_root = EDGE_SERVICE_ROOT.parent / "scenarios" / "bearing" / "edge"
+    scenario_root = SCENARIO_ROOT
     for filename in ("config.py", "handler.py", "processor.py", "settings.py"):
         source = (scenario_root / filename).read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -72,52 +70,61 @@ def test_bearing_scenario_has_no_edge_service_imports() -> None:
         )
 
 
-def test_scenario_copy_preserves_existing_perception_logic() -> None:
-    scenario_root = EDGE_SERVICE_ROOT.parent / "scenarios" / "bearing" / "edge"
-    legacy_config = (LEGACY_PERCEPTION_ROOT / "config.py").read_text(encoding="utf-8")
-    scenario_config = (scenario_root / "settings.py").read_text(encoding="utf-8")
-    assert scenario_config == legacy_config
+def test_edge_perception_shim_forwards_processor_to_scenario_authority() -> None:
+    from scenarios.bearing.edge.processor import BearingEdgePerception as _Scenario
 
-    legacy_processor = (LEGACY_PERCEPTION_ROOT / "processor.py").read_text(
-        encoding="utf-8"
-    )
-    expected_scenario_processor = (
-        legacy_processor.replace(
-            "from .config import PerceptionConfig, file_sha256",
-            "from .settings import PerceptionConfig, file_sha256",
-        )
-        .replace(
-            "from .contracts import (",
-            "from core.edge_perception_contracts import (",
-        )
-        .replace("class EdgePerception:", "class BearingEdgePerception:")
-    )
-    scenario_processor = (scenario_root / "processor.py").read_text(
-        encoding="utf-8"
-    )
-    assert scenario_processor == expected_scenario_processor
+    import edge_perception.processor as shim_processor
 
-    legacy_fir = np.loadtxt(
-        LEGACY_PERCEPTION_ROOT / "assets" / "fir_64k_to_16k_369.txt"
-    )
-    scenario_fir = np.loadtxt(
-        scenario_root / "assets" / "fir_64k_to_16k_369.txt"
-    )
-    assert np.array_equal(scenario_fir, legacy_fir)
+    assert shim_processor.BearingEdgePerception is _Scenario
+    assert shim_processor.EdgePerception is _Scenario
 
 
-def test_fir_generator_updates_legacy_and_scenario_assets(tmp_path: Path) -> None:
+def test_edge_perception_shim_forwards_config_to_scenario_settings() -> None:
+    from scenarios.bearing.edge.settings import (
+        ConstantDetectionConfig as _Constant,
+        PerceptionConfig as _ScenarioConfig,
+        file_sha256 as _sha,
+    )
+
+    import edge_perception.config as shim_config
+
+    assert shim_config.PerceptionConfig is _ScenarioConfig
+    assert shim_config.ConstantDetectionConfig is _Constant
+    assert shim_config.file_sha256 is _sha
+
+
+def test_edge_perception_shim_forwards_contracts_to_core_authority() -> None:
+    import core.edge_perception_contracts as core_contracts
+
+    import edge_perception.contracts as shim_contracts
+
+    assert shim_contracts.ModuleResult is core_contracts.ModuleResult
+    assert shim_contracts.ModuleStatus is core_contracts.ModuleStatus
+    assert shim_contracts.PerceptionInvocationContext is core_contracts.PerceptionInvocationContext
+    assert shim_contracts.DOWNSAMPLING_FAILED == core_contracts.DOWNSAMPLING_FAILED
+    assert shim_contracts.PERCEPTION_FAILED == core_contracts.PERCEPTION_FAILED
+
+
+def test_fir_asset_lives_only_at_scenario_authority() -> None:
+    shim_assets = EDGE_SERVICE_ROOT / "src" / "edge_perception" / "assets"
+    assert not (shim_assets / "fir_64k_to_16k_369.txt").exists()
+
+    scenario_asset = SCENARIO_ROOT / "assets" / "fir_64k_to_16k_369.txt"
+    assert scenario_asset.is_file()
+
+
+def test_fir_generator_writes_single_authoritative_asset(tmp_path: Path) -> None:
     script_path = EDGE_SERVICE_ROOT / "scripts" / "generate_development_fir.py"
     spec = importlib.util.spec_from_file_location("generate_development_fir", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.OUTPUT = tmp_path / "legacy" / "fir.txt"
-    module.SCENARIO_OUTPUT = tmp_path / "scenario" / "fir.txt"
+    target = tmp_path / "scenario" / "fir.txt"
+    module.OUTPUT = target
 
     module.main()
 
-    assert module.OUTPUT.read_bytes() == module.SCENARIO_OUTPUT.read_bytes()
+    assert target.is_file()
 
 
 def test_edge_launcher_imports_application_outside_project_directory(

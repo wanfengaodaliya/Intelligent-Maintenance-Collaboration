@@ -22,12 +22,12 @@ class SuggestionResult:
 
 
 def _recent_anomaly_rate(history: list[dict], window: int = 10) -> float:
-    """计算最近 N 条记录中异常（warning / fault）的比例。"""
+    """计算最近 N 条设备级结果中异常（warning / fault）的比例。"""
     if not history:
         return 0.0
     recent = history[-window:]
     anomaly_count = sum(
-        1 for h in recent if h.get("edge_result") in ("warning", "fault")
+        1 for h in recent if h.get("final_state") in ("warning", "fault")
     )
     return anomaly_count / len(recent)
 
@@ -53,19 +53,19 @@ def _trend_description(history: list[dict], window: int = 10) -> str:
 
 def evaluate_suggestion(
     device_id: str,
-    current_label: str,      # normal / warning / fault
+    final_state: str,       # normal / warning / fault（设备级最终诊断状态）
     confidence: float,
     risk_level: str,         # low / medium / high
-    history: list[dict],     # 最近 N 包历史结果，每包含 edge_result、confidence、risk_level
+    history: list[dict],     # 最近 N 条设备级结果，每项含 final_state/confidence/risk_level
 ) -> SuggestionResult:
-    """规则引擎主入口：根据当前结果和历史趋势，决定建议类型。
+    """规则引擎主入口：根据设备级最终结果和历史趋势，决定建议类型。
 
     参数：
         device_id: 设备 ID
-        current_label: 当前诊断结果 (normal/warning/fault)
+        final_state: 设备级最终诊断状态 (normal/warning/fault)
         confidence: 当前置信度 (0~1)
         risk_level: 当前风险等级 (low/medium/high)
-        history: 历史结果列表，按时间顺序，每项包含 edge_result/confidence/risk_level
+        history: 设备级历史结果列表，按时间顺序，每项含 final_state/confidence/risk_level
 
     返回：
         SuggestionResult: 结构化建议
@@ -74,7 +74,7 @@ def evaluate_suggestion(
     trend = _trend_description(history)
 
     # 规则 1：故障 + 高置信度或高风险 → 立即停机
-    if current_label == "fault" and (confidence >= 0.8 or risk_level == "high"):
+    if final_state == "fault" and (confidence >= 0.8 or risk_level == "high"):
         return SuggestionResult(
             suggestion_type="URGENT_MAINTENANCE",
             priority="high",
@@ -84,7 +84,7 @@ def evaluate_suggestion(
         )
 
     # 规则 2：故障但置信度较低 → 交叉验证后安排检修
-    if current_label == "fault":
+    if final_state == "fault":
         return SuggestionResult(
             suggestion_type="SCHEDULE_MAINTENANCE",
             priority="high",
@@ -94,17 +94,17 @@ def evaluate_suggestion(
         )
 
     # 规则 3：警告 + 历史异常率高于 50% → 安排检修
-    if current_label == "warning" and anomaly_rate >= 0.5:
+    if final_state == "warning" and anomaly_rate >= 0.5:
         return SuggestionResult(
             suggestion_type="SCHEDULE_MAINTENANCE",
             priority="medium",
-            reason=f"设备 {device_id} 持续异常（近10包异常率 {anomaly_rate:.0%}）",
+            reason=f"设备 {device_id} 持续异常（近期异常率 {anomaly_rate:.0%}）",
             trend=trend,
             maintenance_window="24h",
         )
 
     # 规则 4：警告 + 上升趋势 → 建议关注
-    if current_label == "warning" and "上升" in trend:
+    if final_state == "warning" and "上升" in trend:
         return SuggestionResult(
             suggestion_type="SCHEDULE_MAINTENANCE",
             priority="medium",
@@ -114,7 +114,7 @@ def evaluate_suggestion(
         )
 
     # 规则 5：警告 → 持续观察
-    if current_label == "warning":
+    if final_state == "warning":
         return SuggestionResult(
             suggestion_type="MONITOR",
             priority="low",
@@ -123,7 +123,7 @@ def evaluate_suggestion(
         )
 
     # 规则 6：正常 + 历史异常率 > 0 → 恢复通知
-    if current_label == "normal" and anomaly_rate > 0:
+    if final_state == "normal" and anomaly_rate > 0:
         return SuggestionResult(
             suggestion_type="MONITOR",
             priority="low",

@@ -9,8 +9,8 @@ import numpy as np
 
 
 REPO = Path(__file__).resolve().parents[1]
-OUTPUT = REPO / "src" / "edge_perception" / "assets" / "fir_64k_to_16k_369.txt"
-SCENARIO_OUTPUT = (
+# 唯一权威 FIR 资产，位于场景侧 `scenarios/bearing/edge/assets`。
+OUTPUT = (
     REPO.parent
     / "scenarios"
     / "bearing"
@@ -32,10 +32,9 @@ def main() -> None:
         "development_test asset; fs=64000; cutoff=7500; taps=369; "
         f"kaiser_beta=8.41; numpy={np.__version__}"
     )
-    for output in (OUTPUT, SCENARIO_OUTPUT):
-        output.parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(output, coefficients, fmt="%.18e", header=header)
-        print(f"{output}: {hashlib.sha256(output.read_bytes()).hexdigest()}")
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    np.savetxt(OUTPUT, coefficients, fmt="%.18e", header=header)
+    print(f"{OUTPUT}: {hashlib.sha256(OUTPUT.read_bytes()).hexdigest()}")
 
 
 if __name__ == "__main__":
