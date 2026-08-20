@@ -389,6 +389,12 @@ class EdgeRuntimeCoordinator:
         return self._last_task_activity_ns
 
     @property
+    def pending_aggregation_count(self) -> int:
+        """等待聚合工作流回补的完成包数量（AUD-11 aggregation_waiting 分桶）。"""
+        with self._mutex:
+            return len(self._pending_aggregation)
+
+    @property
     def model_load_status(self) -> str:
         return self._model_load_status()
 
@@ -397,6 +403,10 @@ class EdgeRuntimeCoordinator:
         fallback = getattr(self.pipeline, "fallback", None)
         if fallback is None:
             return "UNLOADED"
+        # 第一优先级：模型自带明确加载状态（如 H5 生产模型的 ready 标记）。
+        # ready 仅在全部部署产物加载成功后为 True，未完成初始化的对象保持 False。
+        if hasattr(fallback, "ready"):
+            return "LOADED" if getattr(fallback, "ready") is True else "ERROR"
         if getattr(fallback, "deployment_status", None) == "built_in_rule":
             return "LOADED"
         if getattr(fallback, "estimator", None) is not None:

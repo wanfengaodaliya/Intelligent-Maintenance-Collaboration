@@ -7,6 +7,8 @@ import math
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -634,13 +636,20 @@ class TaskRepository:
             )
             _ensure_columns(connection)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # AUD-09: `with sqlite3.Connection` only commits; the connection must
+        # also be closed explicitly or GC raises ResourceWarning.
         connection = sqlite3.connect(
             self.database_path,
             timeout=self.sqlite_timeout_seconds,
         )
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
 
 def _validate_result(payload: Mapping[str, Any]) -> dict[str, Any]:

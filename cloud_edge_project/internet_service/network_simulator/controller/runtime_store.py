@@ -1,4 +1,16 @@
-"""Thread-safe single source of truth for current link runtime state."""
+"""Thread-safe single source of truth for current link runtime state.
+
+两阶段状态语义（NET-2）：
+- ``current_state`` / ``desired_parameters``  代表 Markov/Controller 本轮生成的*目标*
+  （desired）状态。它们不保证在读取瞬间 Toxiproxy 已把全部 toxic 施加完成。
+- ``applied_parameters`` / ``last_apply_success``  代表最近一次确认已成功施加到
+  Toxiproxy 的网络参数，即数据面当前真正生效的状态。
+- 消费方如需“当前实际生效”的网络状态，应优先读取
+  ``applied_parameters``（配合 ``last_apply_success``），而不是单独使用 ``current_state``。
+- ``available`` 是调度安全字段：一旦 DISCONNECTED 切换采用立即悲观化
+  （available=false、reliability_score=0）。因此 ``current_state`` 与
+  applied 在 100~205ms 的正常两阶段窗口内短暂不同，属于设计行为，不是一致性 Bug。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +20,7 @@ from threading import RLock
 import time
 from typing import Iterable
 
-from domain.enums import NetworkState
+from domain.enums import DisconnectMode, NetworkState
 from domain.models import (
     SCORE_COMPONENT_NAMES,
     LinkRuntime,
@@ -75,10 +87,26 @@ class RuntimeStore:
             old_state = link.current_state
             link.previous_state = old_state
             link.current_state = state
-            if state is not old_state:
+            if state != old_state:
                 link.state_since_ns = generated_at_ns
             link.desired_parameters = parameters
             self._generation_by_link[link_id] = generation
+            # NET-4：一旦状态公开切换为 DISCONNECTED，就绝不能在对外快照里
+            # 同时仍带 available=true / 旧分数。在同锁内立即悲观化。
+            # 仅当确实是“真实状态切换”且 desired 明确进入断连模式时才触发；
+            # 同态 regeneration（GOOD→GOOD）不会清零 score / available。
+            if (
+                state != old_state
+                and state == NetworkState.DISCONNECTED
+                and parameters.disconnect_mode is not DisconnectMode.NONE
+            ):
+                link.available = False
+                link.link_reliability_score = 0.0
+                # ScoreCalculator 正式合同：DISCONNECTED → 全组件 0。
+                # 故这里同步清零，与同 tick 的 score 插件结果保持一致。
+                link.score_components = {
+                    name: 0.0 for name in SCORE_COMPONENT_NAMES
+                }
             return link.to_snapshot()
 
     def update_generation_failure(

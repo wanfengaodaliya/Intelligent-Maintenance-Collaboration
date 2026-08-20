@@ -37,6 +37,11 @@ class H5ModelArtifactError(RuntimeError):
 class DistilledH5DiagnosticModel(CodeFallbackRunner):
     """Run the frozen 50 ms H5 model from a validated raw edge packet."""
 
+    # 类级默认值：只有全部部署产物（checkpoint 校验、归一化元数据、权重加载）
+    # 都成功完成后，__init__ 末尾才会置为 True。构造失败直接抛
+    # H5ModelArtifactError，未完成初始化的对象（如测试桩）保持 False。
+    ready: bool = False
+
     def __init__(
         self,
         checkpoint_path: Path | str = DEFAULT_CHECKPOINT,
@@ -80,6 +85,8 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
         self.rule_version = RUNTIME_MODEL_VERSION
         self.model_version = RUNTIME_MODEL_VERSION
         self.deployment_status = "production"
+        # 全部部署产物加载成功，模型进入可用状态。
+        self.ready = True
 
     def _verify_checkpoint(self) -> None:
         try:

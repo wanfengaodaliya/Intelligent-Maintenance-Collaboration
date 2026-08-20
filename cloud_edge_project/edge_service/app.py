@@ -195,12 +195,28 @@ runtime_assembly = _build_runtime(cloud_review_store)
 # 阶段 2：把 Reporter 的业务快照接到真实运行时，替换固定值。
 if edge_status_integration.state is not None:
 
+    def _runtime_queue_breakdown() -> dict[str, int]:
+        # EDGE-4：queue_length/queue_breakdown 表达“计算/工作流积压”，不包含
+        # 结果发送积压。按任务生命周期分桶统计，各桶互不重复——
+        # ingress（MQTT 接入等待）→ model_pending（等待推理）
+        # → aggregation_waiting（推理完成、等待聚合回补）
+        # → cloud_review_retry（已入云复核、等待重试）。
+        # 已完成的推理结果等待 HTTP/MQTT 发布属 device_result_outbox（交付积压），
+        # 在 /health 独立暴露，不得计入本计算队列，否则会让 Scheduler 误判
+        # 节点仍有大量推理负载而重复惩罚通信故障。
+        coordinator = runtime_assembly.coordinator
+        return {
+            "ingress": runtime_assembly.service.mqtt_ingress.queue_depth,
+            "model_pending": coordinator.pipeline.queue_length,
+            "aggregation_waiting": coordinator.pending_aggregation_count,
+            "cloud_review_retry": len(
+                cloud_review_store.list_decisions(phase="CLOUD_RETRY_WAIT")
+            ),
+        }
+
     def _runtime_queue_length() -> int:
-        # 队列长度 = MQTT 接入等待数 + 推理流水线等待数，不重复计入正在执行的任务。
-        return (
-            runtime_assembly.service.mqtt_ingress.queue_depth
-            + runtime_assembly.coordinator.pipeline.queue_length
-        )
+        # 总负载 = 各生命周期分桶之和，与 queue_breakdown 保持同一口径。
+        return sum(_runtime_queue_breakdown().values())
 
     def _runtime_models() -> tuple[ModelStatus, ...]:
         coordinator = runtime_assembly.coordinator
@@ -210,6 +226,7 @@ if edge_status_integration.state is not None:
 
     edge_status_integration.state.attach_runtime_providers(
         queue_length_provider=_runtime_queue_length,
+        queue_breakdown_provider=_runtime_queue_breakdown,
         models_provider=_runtime_models,
         activity_ns_provider=lambda: runtime_assembly.coordinator.last_task_activity_ns,
     )
@@ -228,6 +245,14 @@ cloud_review_cleanup = CloudReviewCleanupWorker(
     cloud_review_store,
     interval_seconds=cloud_review_config.cleanup_interval_seconds,
 )
+
+def _status_reporter_healthy(integration: Any) -> bool:
+    """EDGE-1: 状态上报模块整体是否为 OK；DEGRADED/FAILED 或未装配 → false。"""
+    reporter = integration.reporter if integration is not None else None
+    if reporter is None:
+        return False
+    return reporter.health()["status"] == "ok"
+
 
 @app.get("/health")
 def health() -> dict[str, object]:
@@ -269,6 +294,13 @@ def health() -> dict[str, object]:
         ),
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
+        # EDGE-1: 状态上报模块自身交付健康；DEGRADED/FAILED → status_reporter_healthy=false。
+        "status_reporter": (
+            edge_status_integration.reporter.health()
+            if edge_status_integration.reporter is not None
+            else None
+        ),
+        "status_reporter_healthy": _status_reporter_healthy(edge_status_integration),
         "http_timeout_ms": {
             "connect": runtime_assembly.service.config.v12.http_connect_timeout_ms,
             "read": runtime_assembly.service.config.v12.http_read_timeout_ms,

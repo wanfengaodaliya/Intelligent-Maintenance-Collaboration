@@ -1,4 +1,4 @@
-from scheduler.api import update_network_report
+from scheduler.api import _simulator_link_snapshot, update_network_report
 from scheduler.node_registry import EdgeNodeConfig, NodeRegistry
 
 
@@ -52,7 +52,7 @@ def test_simulator_report_updates_selected_formal_link_snapshot(monkeypatch):
     assert snapshot.rtt_ms_avg == 20.0
     assert snapshot.rtt_ms_p95 == 30.0
     assert snapshot.available_throughput_mbps == 12.0
-    assert snapshot.mqtt_publish_success_rate == 0.99
+    assert snapshot.simulated_packet_loss_rate == 0.01
     assert registry.link_snapshot("sender_02", "edge_01", now_ns=1) is None
 
 
@@ -91,4 +91,27 @@ def test_disconnected_simulator_link_becomes_zero_capacity(monkeypatch):
     snapshot = registry.link_snapshot("sender_01", "edge_01", now_ns=1)
     assert snapshot is not None
     assert snapshot.available_throughput_mbps == 0.0
-    assert snapshot.mqtt_publish_success_rate == 0.0
+    assert snapshot.simulated_packet_loss_rate == 1.0
+
+
+def test_simulator_rtt_p95_is_explicitly_marked_as_estimate():
+    """NET-4：RTT P95 基于 latency+2*jitter 估算，必须显式标记 rtt_p95_is_estimate=True，
+    不得冒充基于真实样本的测量 P95。simulated packet loss 也不得变成实测值。"""
+    snapshot = _simulator_link_snapshot(
+        {
+            "sender_id": "sender_01",
+            "edge_id": "edge_01",
+            "available": True,
+            "last_apply_success": True,
+            "latency_ms": 20,
+            "jitter_ms": 5,
+            "bandwidth_kbps": 12_000,
+            "packet_loss_percent": 1.0,
+        },
+        measured_at_ns=100,
+    )
+    assert snapshot["rtt_ms_p95"] == 30.0
+    assert snapshot["rtt_p95_is_estimate"] is True
+    # 模拟丢包率以 simulated_ 前缀传递，不伪装成 MQTT 实测发布成功率。
+    assert snapshot["simulated_packet_loss_rate"] == 0.01
+    assert "mqtt_publish_success_rate" not in snapshot

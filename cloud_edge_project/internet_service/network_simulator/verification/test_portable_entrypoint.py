@@ -83,3 +83,15 @@ def test_compose_images_match_package_version() -> None:
             if service.get("image", "").startswith("network-simulator:")
         }
         assert images == {expected_image}
+
+
+def test_api_app_version_matches_package_version() -> None:
+    """AUD-08: API 版本号必须与 pyproject/Docker 镜像版本一致（3.1.0）。"""
+    from plugins.api.app import create_app
+
+    with (NETWORK_ROOT / "pyproject.toml").open("rb") as handle:
+        version = tomllib.load(handle)["project"]["version"]
+
+    app = create_app(service=object())
+    assert app.version == version
+    assert app.version == "3.1.0"

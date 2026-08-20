@@ -18,6 +18,11 @@ SCORE_COMPONENT_NAMES = (
     "state_prior",
 )
 
+# AUD-10: Toxiproxy 带宽 toxic 以整数 KB/s 生效，最小可表示粒度为
+# 1 KB/s = 8 Kbps。低于该值的正数带宽会被静默抬高为 8 Kbps，
+# 因此配置校验阶段必须直接拒绝，而不是自动修正。
+MIN_APPLICABLE_BANDWIDTH_KBPS = 8
+
 
 @dataclass(frozen=True, slots=True)
 class NetworkParameters:

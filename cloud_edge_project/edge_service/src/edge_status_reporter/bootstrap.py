@@ -96,6 +96,7 @@ def build_edge_status_integration(
         edge_node_id=edge_node_id,
         model_version=config.model_version,
         clock_ns=clock_ns,
+        queue_stale_ttl_seconds=config.queue_stale_ttl_seconds,
     )
     targets = tuple(
         HttpStatusTarget(target, http_post=http_post, logger=selected_logger)

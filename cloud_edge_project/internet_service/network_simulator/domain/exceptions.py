@@ -19,6 +19,14 @@ class ProxyConflictError(NetworkSimulatorError):
     """Raised when an existing proxy differs from the configured endpoint."""
 
 
+class ProxyNotFoundError(NetworkSimulatorError):
+    """Raised when a toxic operation targets a proxy that no longer exists (HTTP 404).
+
+    内部自愈信号：Toxiproxy 重启后 proxy 从内存丢失，需要重新 ensure_proxy。
+    与 ProxyConflictError 不同 —— 这是“缺失”而非“冲突”。
+    """
+
+
 class ToxicOperationError(NetworkSimulatorError):
     """Raised when a toxic cannot be applied or removed."""
 

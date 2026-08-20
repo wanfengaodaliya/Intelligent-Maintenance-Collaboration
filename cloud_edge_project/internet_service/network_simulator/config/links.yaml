@@ -192,5 +192,9 @@ links:
 # Intentionally not configured:
 # - Scheduler-to-Sender: sender processes expose no HTTP server.
 # - Scheduler-to-Cloud: no matching outbound call exists in the current scheduler.
-# - Network-to-Scheduler: the simulator reporter uses /api/v1/network/reports,
-#   which the project scheduler does not expose.
+# - Network-to-Scheduler: the simulator Reporter posts link snapshots to the Scheduler
+#   batch endpoint configured in reporter.yaml:
+#     /scheduler/network-reports
+#   The current project Scheduler exposes this endpoint and consumes sender→edge MQTT
+#   links for network scoring. Other explicitly modeled HTTP links may also be reported
+#   but are skipped as unsupported by the current scheduling link model.

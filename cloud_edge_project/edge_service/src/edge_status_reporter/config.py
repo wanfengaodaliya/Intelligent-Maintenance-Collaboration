@@ -38,6 +38,16 @@ def _positive_float(raw: str, field: str) -> float:
     return value
 
 
+def _non_negative_float(raw: str, field: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{field} 必须是非负数") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{field} 必须是非负数")
+    return value
+
+
 def _positive_int(raw: str, field: str) -> int:
     try:
         value = int(raw)
@@ -101,19 +111,23 @@ class ResourceConfig:
     memory_limit_mb: float | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.mode, str) or self.mode not in {"system", "process"}:
-            raise ValueError("resource.mode 必须是 system 或 process")
+        if not isinstance(self.mode, str) or self.mode not in {"system", "process", "cgroup"}:
+            raise ValueError("resource.mode 必须是 system、process 或 cgroup")
         if self.mode == "process":
             if isinstance(self.logical_cpu_count, bool) or not isinstance(self.logical_cpu_count, int) or self.logical_cpu_count <= 0:
                 raise ValueError("process 模式必须配置正整数 logical_cpu_count")
             if isinstance(self.memory_limit_mb, bool) or not isinstance(self.memory_limit_mb, (int, float)) or not math.isfinite(float(self.memory_limit_mb)) or self.memory_limit_mb <= 0:
                 raise ValueError("process 模式必须配置正数 memory_limit_mb")
+        # cgroup 模式无需额外配额字段：CPU/Memory 限制由 cgroup 文件本身决定。
 
 
 @dataclass(frozen=True)
 class AcceleratorConfig:
     gpu_available_override: bool | None = None
     npu_available_override: bool | None = None
+    # 探测结果缓存时长（秒）；0 表示每次 detect 都重新探测。
+    # 避免“启动时 torch 未就绪 → GPU=False 永久缓存”。
+    probe_ttl_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         for field, value in (
@@ -122,6 +136,13 @@ class AcceleratorConfig:
         ):
             if value is not None and not isinstance(value, bool):
                 raise ValueError(f"{field} 必须是布尔值或 None")
+        if (
+            isinstance(self.probe_ttl_seconds, bool)
+            or not isinstance(self.probe_ttl_seconds, (int, float))
+            or not math.isfinite(float(self.probe_ttl_seconds))
+            or self.probe_ttl_seconds < 0
+        ):
+            raise ValueError("probe_ttl_seconds 必须是非负数")
 
 
 @dataclass(frozen=True)
@@ -148,6 +169,8 @@ class EdgeStatusReporterConfig:
     resource: ResourceConfig
     accelerator: AcceleratorConfig
     network: NetworkConfig
+    # EDGE-2: 队列 STALE 缓存有效期（秒）。持续失败超期后 STALE 降级为 FAILED。
+    queue_stale_ttl_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -255,6 +278,10 @@ class EdgeStatusReporterConfig:
             accelerator=AcceleratorConfig(
                 gpu_available_override=_optional_boolean(env.get("EDGE_STATUS_GPU_AVAILABLE_OVERRIDE"), "EDGE_STATUS_GPU_AVAILABLE_OVERRIDE"),
                 npu_available_override=_optional_boolean(env.get("EDGE_STATUS_NPU_AVAILABLE_OVERRIDE"), "EDGE_STATUS_NPU_AVAILABLE_OVERRIDE"),
+                probe_ttl_seconds=_non_negative_float(
+                    env.get("EDGE_STATUS_ACCELERATOR_PROBE_TTL_SECONDS", "60"),
+                    "EDGE_STATUS_ACCELERATOR_PROBE_TTL_SECONDS",
+                ),
             ),
             network=NetworkConfig(
                 url=env.get(
@@ -266,6 +293,10 @@ class EdgeStatusReporterConfig:
                     "EDGE_NETWORK_STATUS_TIMEOUT_SECONDS",
                 ),
                 stale_after_seconds=float(env.get("EDGE_NETWORK_STATUS_STALE_SECONDS", "3.0")),
+            ),
+            queue_stale_ttl_seconds=_non_negative_float(
+                env.get("EDGE_STATUS_QUEUE_STALE_TTL_SECONDS", "30"),
+                "EDGE_STATUS_QUEUE_STALE_TTL_SECONDS",
             ),
         )
 

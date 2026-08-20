@@ -26,6 +26,10 @@ services:
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
+      # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角，
+      # 读取容器自身 quota/limit 而非宿主机 16 核 / 剩余内存。
+      # 若节点运行在独立 VM 而非容器，可显式改为 system。
+      EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8001:8001"
       - "8011:8011"
@@ -50,6 +54,8 @@ services:
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
       SCHEDULER_SERVICE_BASE_URL: ${SCHEDULER_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
+      # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角。
+      EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8002:8001"
       - "8012:8011"

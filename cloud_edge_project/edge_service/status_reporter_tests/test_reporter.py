@@ -12,6 +12,7 @@ from edge_status_reporter.contracts import (
     ResourceSnapshot,
 )
 from edge_status_reporter.reporter import EdgeStatusReporter
+from edge_status_reporter.transport import SendOutcome
 
 
 class StatusSource:
@@ -52,12 +53,12 @@ class Target:
         self.payloads: list[dict] = []
         self.called = threading.Event()
 
-    def send(self, payload: dict) -> bool:
+    def send(self, payload: dict) -> SendOutcome:
         self.payloads.append(payload)
         self.called.set()
         if self.fail:
             raise RuntimeError("target failed")
-        return True
+        return SendOutcome(success=True, status_code=200, attempts=1)
 
 
 class BlockingTarget(Target):
@@ -65,11 +66,11 @@ class BlockingTarget(Target):
         super().__init__(name)
         self.release = threading.Event()
 
-    def send(self, payload: dict) -> bool:
+    def send(self, payload: dict) -> SendOutcome:
         self.payloads.append(payload)
         self.called.set()
         self.release.wait(5.0)
-        return True
+        return SendOutcome(success=True, status_code=200, attempts=1)
 
 
 class TimedTarget(Target):
@@ -103,6 +104,50 @@ def test_reporter_sends_same_snapshot_and_isolates_target_failure() -> None:
     assert report is not None
     assert scheduler.payloads[0] is cloud.payloads[0]
     assert cloud.payloads[0]["reported_at_ns"] == 123
+
+
+def test_reporter_propagates_queue_status_and_breakdown() -> None:
+    """AUD-04/11：队列采集状态与分桶必须随报告透传，不得在 Reporter 层丢弃。"""
+
+    class BreakdownStatusSource(StatusSource):
+        def snapshot(self) -> BusinessStatusSnapshot:
+            return BusinessStatusSnapshot(
+                edge_node_id="edge_01",
+                queue_length=9,
+                models=(ModelStatus("model-v1", "LOADED"),),
+                last_task_activity_ns=10,
+                queue_measurement_status="OK",
+                queue_breakdown={
+                    "ingress": 2,
+                    "model_pending": 3,
+                    "aggregation_waiting": 1,
+                    "cloud_review_retry": 3,
+                },
+            )
+
+    resources = ResourceCollector()
+    reporter = EdgeStatusReporter(
+        status_source=BreakdownStatusSource(),
+        resource_collector=resources,
+        accelerator_detector=AcceleratorDetector(),
+        network_collector=NetworkCollector(),
+        targets=(Target("cloud"),),
+        interval_seconds=10.0,
+        clock_ns=lambda: 123,
+    )
+
+    report = reporter.report_once()
+
+    assert report is not None
+    payload = report.as_dict()
+    assert payload["resources"]["queue_length"] == 9
+    assert payload["resources"]["queue_measurement_status"] == "OK"
+    assert payload["resources"]["queue_breakdown"] == {
+        "ingress": 2,
+        "model_pending": 3,
+        "aggregation_waiting": 1,
+        "cloud_review_retry": 3,
+    }
 
 
 def test_reporter_thread_starts_immediately_and_stops_idempotently() -> None:

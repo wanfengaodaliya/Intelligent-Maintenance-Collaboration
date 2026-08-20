@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 from domain.enums import DisconnectMode, LinkProtocol
+from domain.exceptions import ProxyNotFoundError
 from domain.models import ApplyResult, NetworkParameters
 
 from .client import ToxiproxyClient
@@ -24,6 +25,10 @@ class StateApplier:
     ) -> ApplyResult:
         try:
             applied = self._apply(link, desired, previous_applied)
+        except ProxyNotFoundError:
+            # proxy 缺失是插件可自愈的信号：不折叠为普通失败，
+            # 上抛让上层 ensure_proxy 后重试一次 apply。
+            raise
         except Exception as exc:
             return ApplyResult(
                 link_id=link.link_id,

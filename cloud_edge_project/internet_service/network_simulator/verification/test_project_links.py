@@ -81,5 +81,7 @@ def test_edge_01_business_traffic_uses_confirmed_proxy_ports():
     assert '18021:18021' in compose
     assert '18831:18831' in compose
     assert 'host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}' in compose
-    assert "/scheduler/network-reports/sender_01__to__edge_01__mqtt" in reporter
+    # AUD-02: the reporter must target the batch endpoint, not a single-link URL.
+    assert "/scheduler/network-reports" in reporter
+    assert "/scheduler/network-reports/sender_01__to__edge_01__mqtt" not in reporter
     assert sender["senders"][0]["mqtt_port"] == 18831

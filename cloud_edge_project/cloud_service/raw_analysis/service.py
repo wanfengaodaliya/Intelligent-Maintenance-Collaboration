@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -120,10 +122,16 @@ class RawAnalysisSampleService:
                 result_json TEXT,limitations_json TEXT NOT NULL,error_code TEXT,created_at_ns INTEGER NOT NULL,updated_at_ns INTEGER NOT NULL)""")
             connection.execute("UPDATE raw_analysis_sample SET status='PENDING' WHERE status='RUNNING'")
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # AUD-09: commit on success, rollback on error, and always close.
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
 
 def build_physical_evidence(metadata: Mapping[str, Any], payload: bytes) -> dict[str, Any]:
