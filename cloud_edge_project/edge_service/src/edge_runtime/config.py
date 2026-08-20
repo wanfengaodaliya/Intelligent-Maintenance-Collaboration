@@ -68,6 +68,14 @@ class MaintenanceConfig:
 
 
 @dataclass(frozen=True)
+class ModelUpdatePollerConfig:
+    enabled: bool = True
+    poll_interval_seconds: float = 30.0
+    model_root: Path | None = None
+    state_path: Path | None = None
+
+
+@dataclass(frozen=True)
 class RawSampleCaptureConfig:
     enabled: bool = True
     directory: Path = Path("data/raw_analysis_samples")
@@ -97,6 +105,7 @@ class EdgeRuntimeConfig:
     control: ControlServerConfig = field(default_factory=ControlServerConfig)
     v12: V12RuntimeConfig = field(default_factory=V12RuntimeConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
+    model_update: ModelUpdatePollerConfig = field(default_factory=ModelUpdatePollerConfig)
     suggestion_llm: SuggestionLlmConfig = field(default_factory=SuggestionLlmConfig)
     raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
@@ -194,6 +203,22 @@ class EdgeRuntimeConfig:
                 enabled=env.get("EDGE_MAINTENANCE_ENABLED", "true").strip().lower() == "true",
                 interval_seconds=float(env.get("EDGE_MAINTENANCE_INTERVAL_SECONDS", "0.5")),
             ),
+            model_update=ModelUpdatePollerConfig(
+                enabled=env.get("EDGE_MODEL_UPDATE_POLLER_ENABLED", "true").strip().lower() == "true",
+                poll_interval_seconds=float(
+                    env.get("EDGE_MODEL_UPDATE_POLL_INTERVAL_SECONDS", "30.0")
+                ),
+                model_root=(
+                    Path(env.get("EDGE_MODEL_ROOT").strip())
+                    if env.get("EDGE_MODEL_ROOT")
+                    else None
+                ),
+                state_path=(
+                    Path(env.get("EDGE_MODEL_UPDATE_STATE_PATH").strip())
+                    if env.get("EDGE_MODEL_UPDATE_STATE_PATH")
+                    else None
+                ),
+            ),
             raw_sample_capture=RawSampleCaptureConfig(
                 enabled=env.get("EDGE_RAW_SAMPLE_CAPTURE_ENABLED", "true").strip().lower() == "true",
                 directory=Path(env.get("EDGE_RAW_SAMPLE_DIRECTORY", "data/raw_analysis_samples")),
@@ -271,6 +296,8 @@ class EdgeRuntimeConfig:
             errors.append("v12.outbox_published_retention_hours must not be negative")
         if not 0.1 <= self.maintenance.interval_seconds <= 10.0:
             errors.append("maintenance.interval_seconds must be within [0.1, 10.0]")
+        if not 1.0 <= self.model_update.poll_interval_seconds <= 3600.0:
+            errors.append("model_update.poll_interval_seconds must be within [1.0, 3600.0]")
         if self.v12.diagnosis_window_ms not in {50, 100, 150}:
             errors.append("v12.diagnosis_window_ms must be one of 50, 100, or 150")
         if self.v12.diagnosis_step_ms != self.v12.diagnosis_window_ms:

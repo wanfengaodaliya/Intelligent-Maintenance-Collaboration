@@ -33,6 +33,13 @@ from cloud_service.model_update.label_confirmation import (
     CloudReferenceProvider,
     LabelConfirmationResolver,
 )
+from cloud_service.model_update.model_types import MODEL_TYPE_SPECS
+from cloud_service.model_update.training import (
+    CloudMomentTrainer,
+    EdgeH5Trainer,
+    OfflineTrainingRunner,
+    RawTrainingSampleLoader,
+)
 from scenarios.bearing.cloud.model_update.config import load_label_mapping
 from scenarios.bearing.cloud.model_update.dataset_label_provider import (
     DatasetLabelProvider,
@@ -540,11 +547,56 @@ def get_latest_global_analysis(
     return {"success": True, "result": result}
 
 
+def _build_offline_trainer(
+    settings: CloudSettings,
+    source_repository: PacketSourceRepository,
+    raw_data_root: Path,
+) -> OfflineTrainingRunner:
+    """Assemble the dual-family offline trainer from the active baselines.
+
+    The edge H5 trainer fine-tunes from the currently active edge version
+    directory; the cloud MOMENT trainer fine-tunes from the deployed LIGHT_ADAPT
+    checkpoint. Raw windows are resolved through the packet source mappings.
+    """
+
+    from cloud_service.model_update.model_types import ActiveModelVersionStore
+
+    loader = RawTrainingSampleLoader(source_repository, raw_data_root)
+    edge_model_root = Path(
+        os.getenv(
+            "EDGE_MODEL_ROOT",
+            str(Path(__file__).resolve().parents[1] / "edge_service" / "models"),
+        )
+    )
+    edge_version = (
+        ActiveModelVersionStore(settings.database_path).get("distilled_h5")
+        or MODEL_TYPE_SPECS["distilled_h5"].default_version
+    )
+    edge_version_dir = edge_model_root / "distilled_h5" / edge_version
+    edge_trainer = EdgeH5Trainer(
+        loader=loader,
+        baseline_checkpoint=edge_version_dir / "best_model.pt",
+        baseline_dir=edge_version_dir,
+    )
+    cloud_trainer = CloudMomentTrainer(
+        loader=loader,
+        baseline_checkpoint=settings.moment_checkpoint_path,
+        pretrained_path=settings.moment_pretrained_path,
+        model_module_path=settings.moment_deployment_dir / "moment_model.py",
+        condition_norm_path=settings.moment_condition_norm_path,
+    )
+    return OfflineTrainingRunner(edge_trainer=edge_trainer, cloud_trainer=cloud_trainer)
+
+
 def _model_update_service() -> ModelUpdateService:
     settings = load_cloud_settings()
     source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
     label_mapping_path = os.getenv("PADERBORN_LABEL_MAPPING_PATH")
     data_root = os.getenv("MODEL_UPDATE_DATA_ROOT")
+    raw_data_root = os.getenv(
+        "PADERBORN_DATA_ROOT",
+        str(Path(__file__).resolve().parents[1] / "data" / "paderborn"),
+    )
     database_path = settings.database_path
     source_repository = PacketSourceRepository(
         Path(source_database) if source_database else database_path
@@ -568,6 +620,9 @@ def _model_update_service() -> ModelUpdateService:
                 HumanReviewProvider(label_repository),
                 CloudReferenceProvider(),
             ]
+        ),
+        trainer=_build_offline_trainer(
+            settings, source_repository, Path(raw_data_root)
         ),
     )
 
@@ -634,6 +689,28 @@ def register_model_training_result(
 def start_model_update_training(update_id: str) -> dict | JSONResponse:
     try:
         return _model_update_service().start_training(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/train", response_model=None)
+def run_model_update_training(update_id: str) -> dict | JSONResponse:
+    """Execute the persisted offline trainer and register its candidate."""
+    try:
+        return _model_update_service().run_training(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.get("/cloud/model-update/pending-distribution", response_model=None)
+def list_pending_model_distribution(
+    edge_node_id: str | None = None,
+) -> dict | JSONResponse:
+    """Edge poll target: approved candidates to pull and rollbacks to execute."""
+    try:
+        return _model_update_service().list_pending_distribution(
+            edge_node_id=edge_node_id
+        )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 

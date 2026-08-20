@@ -14,6 +14,7 @@ from .config import EdgeRuntimeConfig
 from .coordinator import EdgeRuntimeCoordinator
 from .device_result_outbox import DeviceResultOutbox
 from .maintenance import EdgeMaintenanceWorker
+from .model_update_poller import ModelUpdatePoller
 from .suggestion_outbox import SuggestionOutbox
 from .http import (
     EdgeControlApplication,
@@ -324,6 +325,22 @@ def build_edge_runtime(
         if config.maintenance.enabled
         else None
     )
+    model_update_poller = None
+    if config.model_update.enabled:
+        cloud_nodes = sorted(config.cloud_node_urls)
+        cloud_base_url = (
+            config.cloud_node_urls[cloud_nodes[0]] if cloud_nodes else None
+        )
+        if cloud_base_url is not None:
+            from edge_model.version_store import DEFAULT_MODEL_ROOT
+
+            model_update_poller = ModelUpdatePoller(
+                cloud_base_url=cloud_base_url,
+                edge_node_id=config.edge_node_id,
+                model_root=config.model_update.model_root or DEFAULT_MODEL_ROOT,
+                poll_interval_seconds=config.model_update.poll_interval_seconds,
+                state_path=config.model_update.state_path,
+            )
     service = EdgeRuntimeService(
         config=config,
         cache=cache,
@@ -332,6 +349,7 @@ def build_edge_runtime(
         control_application=control_application,
         heartbeat=heartbeat,
         maintenance=maintenance,
+        model_update_poller=model_update_poller,
     )
     return EdgeRuntimeAssembly(
         service=service,

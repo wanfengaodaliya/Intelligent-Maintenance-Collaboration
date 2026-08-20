@@ -62,3 +62,24 @@ def test_runtime_can_disable_legacy_heartbeat(monkeypatch) -> None:
     assert cache.started is False
     assert pipeline.started is False
     assert mqtt.started is False
+
+
+def test_runtime_starts_and_stops_model_update_poller(monkeypatch) -> None:
+    monkeypatch.setattr("edge_runtime.service.make_control_server", lambda *args: _Server())
+    poller = _Lifecycle()
+    service = EdgeRuntimeService(
+        config=_Config(),
+        cache=_Lifecycle(),
+        pipeline=_Pipeline(),
+        mqtt_ingress=_Lifecycle(),
+        control_application=object(),
+        heartbeat=None,
+        maintenance=None,
+        model_update_poller=poller,
+    )
+
+    service.start()
+    assert poller.started is True
+
+    service.stop()
+    assert poller.started is False

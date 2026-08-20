@@ -81,6 +81,27 @@ class ModelUpdateRepository:
                 raise KeyError(update_id)
         return self.get(update_id)
 
+    def list_pending_distribution(self) -> list[dict[str, Any]]:
+        """Tasks awaiting an edge pull (handoff or in-flight distribution)."""
+        with connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM model_update_task "
+                "WHERE status IN ('handoff_to_distribution','distribution_in_progress') "
+                "ORDER BY updated_at_ns"
+            ).fetchall()
+        return [_decode(dict(row)) for row in rows]
+
+    def list_pending_rollback(self) -> list[dict[str, Any]]:
+        """Tasks whose rollback was requested and still needs edge execution."""
+        with connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM model_update_task "
+                "WHERE rollback_requested=1 "
+                "AND status IN ('ineffective','partial_improvement','succeeded','rolled_back') "
+                "ORDER BY updated_at_ns"
+            ).fetchall()
+        return [_decode(dict(row)) for row in rows]
+
 
 def _encode_value(key: str, value: Any) -> Any:
     if key in JSON_FIELDS and value is not None:

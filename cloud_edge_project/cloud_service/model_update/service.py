@@ -42,6 +42,7 @@ from cloud_service.model_update.post_validator import (
 )
 from cloud_service.model_update.repository import ModelUpdateRepository
 from cloud_service.model_update.trainer import build_training_plan
+from cloud_service.model_update.training import OfflineTrainingRunner
 from cloud_service.model_update.validator import validate_candidate
 
 
@@ -61,6 +62,7 @@ class ModelUpdateService:
         config: ModelUpdateConfig = DEFAULT_CONFIG,
         training_data_source: Any | None = None,
         label_provider: LabelConfirmationProvider | None = None,
+        trainer: OfflineTrainingRunner | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.data_root = (
@@ -76,6 +78,7 @@ class ModelUpdateService:
         )
         self.training_data_source = training_data_source
         self.label_provider = label_provider
+        self.trainer = trainer
         self.dataset_builder = DatasetBuilder(config)
         self.candidate_registry = CandidateRegistry(self.data_root)
 
@@ -164,6 +167,56 @@ class ModelUpdateService:
         }:
             raise ModelUpdateError("ARTIFACT_NOT_READY")
         return artifact
+
+    def list_pending_distribution(
+        self, edge_node_id: str | None = None
+    ) -> dict[str, Any]:
+        """Return edge-family updates awaiting pull and requested rollbacks.
+
+        Edge nodes poll this to discover approved candidates to activate and
+        baseline versions to roll back to. ``edge_node_id`` filters by the
+        distribution target's explicit node list when one is present.
+        """
+
+        pulls: list[dict[str, Any]] = []
+        for task in self.repository.list_pending_distribution():
+            distribution = task.get("distribution_result") or {}
+            target = distribution.get("target") or {}
+            if target.get("family") != "edge":
+                continue
+            node_ids = target.get("edge_node_ids") or []
+            if node_ids and edge_node_id not in node_ids:
+                continue
+            artifact = task.get("candidate_artifact") or {}
+            pulls.append(
+                {
+                    "update_id": task["update_id"],
+                    "model_type": task["model_type"],
+                    "baseline_version": task.get("baseline_version"),
+                    "candidate_version": artifact.get("candidate_version"),
+                    "artifact_sha256": artifact.get("artifact_sha256"),
+                    "target": target,
+                }
+            )
+        rollbacks: list[dict[str, Any]] = []
+        for task in self.repository.list_pending_rollback():
+            spec = MODEL_TYPE_SPECS.get(task["model_type"])
+            if spec is None or spec.family != "edge":
+                continue
+            rollbacks.append(
+                {
+                    "update_id": task["update_id"],
+                    "model_type": task["model_type"],
+                    "rollback_target_version": task.get("rollback_target_version"),
+                }
+            )
+        return {
+            "edge_node_id": edge_node_id,
+            "pending_pull_count": len(pulls),
+            "pending_rollback_count": len(rollbacks),
+            "pending_pulls": pulls,
+            "pending_rollbacks": rollbacks,
+        }
 
     def list_pending_human_confirmation(self, update_id: str) -> dict[str, Any]:
         """List samples that still lack an authoritative label.
@@ -288,6 +341,31 @@ class ModelUpdateService:
             status="training",
             updated_at_ns=time.time_ns(),
         )
+
+    def run_training(self, update_id: str) -> dict[str, Any]:
+        """Execute the offline trainer and register its candidate artifact.
+
+        Runs the trainer selected by the persisted plan against the frozen
+        dataset manifest, then hands the produced artifact to
+        ``register_training_result`` so the lifecycle continues to validation.
+        """
+
+        task = self._task(update_id)
+        self._require_state(task, {"training"})
+        if self.trainer is None:
+            raise ModelUpdateError("MODEL_UPDATE_SCENARIO_NOT_CONFIGURED")
+        plan = task.get("trainer_plan")
+        if not isinstance(plan, dict) or not plan.get("output_dir"):
+            raise ModelUpdateError("TRAINER_PLAN_NOT_FOUND")
+        manifest = self._manifest(update_id)
+        try:
+            payload = self.trainer.run(plan, manifest)
+        except (ValueError, OSError) as error:
+            self.repository.update(
+                update_id, status="training_failed", updated_at_ns=time.time_ns()
+            )
+            raise ModelUpdateError(str(error)) from error
+        return self.register_training_result(update_id, payload)
 
     def register_training_result(
         self, update_id: str, payload: dict[str, Any]

@@ -238,6 +238,11 @@ def test_timeout_relationships_are_rejected_at_validation() -> None:
     bad_maintenance = replace(base, maintenance=replace(base.maintenance, interval_seconds=20.0))
     assert any("maintenance" in error for error in bad_maintenance.validate())
 
+    bad_poll_interval = replace(
+        base, model_update=replace(base.model_update, poll_interval_seconds=0.5)
+    )
+    assert any("poll_interval_seconds" in error for error in bad_poll_interval.validate())
+
 
 def _load_validator_module():
     script = Path(__file__).resolve().parents[1] / "scripts" / "validate_multi_edge_config.py"
