@@ -819,6 +819,18 @@ def record_model_update_distribution(
         return _model_update_error_response(error)
 
 
+@app.post("/cloud/model-update/{update_id}/rollback-result", response_model=None)
+def record_model_update_rollback_result(
+    update_id: str, payload: Any = Body(...)
+) -> dict | JSONResponse:
+    try:
+        if not isinstance(payload, dict):
+            raise ModelUpdateError("INVALID_ROLLBACK_RESULT")
+        return _model_update_service().record_rollback_result(update_id, payload)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
 @app.post("/cloud/model-update/{update_id}/post-validate", response_model=None)
 def post_validate_model_update(
     update_id: str, payload: Any = Body(...)

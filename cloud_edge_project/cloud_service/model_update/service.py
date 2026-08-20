@@ -635,6 +635,40 @@ class ModelUpdateService:
             updated_at_ns=time.time_ns(),
         )
 
+    def record_rollback_result(
+        self, update_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Record an edge node's rollback acknowledgement."""
+
+        task = self._task(update_id)
+        if task.get("rollback_requested") is not True:
+            raise ModelUpdateError("ROLLBACK_NOT_REQUESTED")
+        status = payload.get("status")
+        if status not in {"succeeded", "failed"}:
+            raise ModelUpdateError("INVALID_ROLLBACK_RESULT")
+        edge_node_id = payload.get("edge_node_id")
+        if not isinstance(edge_node_id, str) or not edge_node_id.strip():
+            raise ModelUpdateError("ROLLBACK_EDGE_NODE_REQUIRED")
+        target_version = payload.get("rollback_target_version")
+        if target_version != task.get("rollback_target_version"):
+            raise ModelUpdateError("ROLLBACK_TARGET_MISMATCH")
+
+        recorded_at_ns = time.time_ns()
+        result = dict(task.get("rollback_result") or {})
+        result["edge_ack"] = {
+            "status": status,
+            "edge_node_id": edge_node_id.strip(),
+            "rollback_target_version": target_version,
+            "recorded_at_ns": recorded_at_ns,
+        }
+        changes: dict[str, Any] = {
+            "rollback_result_json": result,
+            "updated_at_ns": recorded_at_ns,
+        }
+        if status == "succeeded":
+            changes.update(status="rolled_back", rollback_requested=0)
+        return self.repository.update(update_id, **changes)
+
     def _manifest(self, update_id: str) -> dict[str, Any]:
         manifest = self.dataset_repository.get_by_update(update_id)
         if manifest is None:

@@ -209,6 +209,7 @@ class ModelUpdatePoller:
             "rolled_back": 0,
             "rollback_skipped": 0,
             "rollback_failed": 0,
+            "rollback_ack_failed": 0,
         }
         try:
             pending = self._fetch_pending()
@@ -270,6 +271,15 @@ class ModelUpdatePoller:
                     summary["rollback_failed"] += 1
                     self.logger.warning("模型 %s 回滚失败: %s", update_id, error)
                 continue
+            try:
+                self._report_rollback(
+                    update_id,
+                    rollback_target_version=item["rollback_target_version"],
+                )
+            except Exception as error:
+                summary["rollback_ack_failed"] += 1
+                self.logger.warning("模型 %s 回滚确认回传失败: %s", update_id, error)
+                continue
             self._rolled_back.add(update_id)
             self._pending_report.discard(update_id)
             self._save_state()
@@ -297,6 +307,19 @@ class ModelUpdatePoller:
             f"{self.cloud_base_url}/cloud/model-update/{update_id}/distribution-result"
         )
         return self.http_post(url, body)
+
+    def _report_rollback(
+        self, update_id: str, *, rollback_target_version: str
+    ) -> dict[str, Any]:
+        url = f"{self.cloud_base_url}/cloud/model-update/{update_id}/rollback-result"
+        return self.http_post(
+            url,
+            {
+                "status": "succeeded",
+                "edge_node_id": self.edge_node_id,
+                "rollback_target_version": rollback_target_version,
+            },
+        )
 
     def _loop(self) -> None:
         while not self._stop.is_set():

@@ -223,6 +223,29 @@ def test_pending_distribution_lists_requested_rollback(tmp_path: Path) -> None:
     assert item["rollback_target_version"] == "edge_v1"
 
 
+def test_edge_rollback_ack_clears_pending_rollback(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    update_id = _advance_to_handoff(service, tmp_path)
+    service.repository.update(update_id, status="ineffective")
+    service.request_rollback(update_id, requested_by="operator")
+
+    acknowledged = service.record_rollback_result(
+        update_id,
+        {
+            "status": "succeeded",
+            "edge_node_id": "edge_01",
+            "rollback_target_version": "edge_v1",
+        },
+    )
+
+    assert acknowledged["status"] == "rolled_back"
+    assert acknowledged["rollback_requested"] is False
+    assert acknowledged["rollback_result"]["edge_ack"]["edge_node_id"] == "edge_01"
+    assert service.list_pending_distribution(edge_node_id="edge_01")[
+        "pending_rollback_count"
+    ] == 0
+
+
 def test_pending_distribution_api_endpoint(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "cloud.db"
     initialize_database(database_path)
