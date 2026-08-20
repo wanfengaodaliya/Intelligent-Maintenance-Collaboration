@@ -33,6 +33,10 @@ class V12DecisionFlow:
         late_correction_retention_ns: int | None = None,
         on_bearing_result: Callable[[Any], None] | None = None,
         on_device_result: Callable[[DeviceDecisionResult], None] | None = None,
+        on_device_result_persist: Callable[
+            [DeviceDecisionResult, sqlite3.Connection], None
+        ]
+        | None = None,
         on_device_conflict: Callable[[dict[str, Any]], None] | None = None,
         on_manual_review: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -43,6 +47,9 @@ class V12DecisionFlow:
         self.round_timeout_ns = round_timeout_ns
         self.late_correction_retention_ns = late_correction_retention_ns
         self._on_device_result = on_device_result or (lambda _: None)
+        self._on_device_result_persist = on_device_result_persist or (
+            lambda _result, _connection: None
+        )
         self._on_bearing_result = on_bearing_result or (lambda _: None)
         self._on_device_conflict = on_device_conflict or (lambda _: None)
         self._on_manual_review = on_manual_review or (lambda _: None)
@@ -99,17 +106,18 @@ class V12DecisionFlow:
                 accepted_at_ns,
                 connection=connection,
             )
+            if device is None:
+                device = self._revisions.correct_closed_round(
+                    device_id=cloud_result.device_id,
+                    task_id=cloud_result.task_id,
+                    decision_round_id=cloud_result.decision_round_id,
+                    now_ns=accepted_at_ns,
+                    connection=connection,
+                )
+                if device is not None:
+                    self._persist_device_result(device, connection)
         if device is not None:
             self._emit_device_result(device)
-        else:
-            device = self._revisions.correct_closed_round(
-                device_id=cloud_result.device_id,
-                task_id=cloud_result.task_id,
-                decision_round_id=cloud_result.decision_round_id,
-                now_ns=accepted_at_ns,
-            )
-            if device is not None:
-                self._emit_device_result(device)
         if bearing.lifecycle_state is not BearingLifecycleStatus.LATE_CLOUD_CONFIRMED:
             # 迟到且结论一致的确认不向下游重复通知。
             self._emit_bearing_result(bearing)
@@ -189,7 +197,7 @@ class V12DecisionFlow:
         )
         if not bearings:
             return None
-        return self.device_rounds.close_round_and_save_initial_result(
+        result = self.device_rounds.close_round_and_save_initial_result(
             aggregate_device_round(
                 bearings,
                 expected_bearing_ids=round_state["expected_bearing_ids"],
@@ -199,6 +207,9 @@ class V12DecisionFlow:
             expected_version=round_state["version"],
             connection=connection,
         )
+        if result is not None:
+            self._persist_device_result(result, connection)
+        return result
 
     def _close_if_complete(
         self,
@@ -209,6 +220,18 @@ class V12DecisionFlow:
         *,
         connection: sqlite3.Connection | None = None,
     ) -> DeviceDecisionResult | None:
+        if connection is None:
+            with self.device_rounds.transaction() as selected:
+                result = self._close_if_complete(
+                    device_id,
+                    task_id,
+                    decision_round_id,
+                    now_ns,
+                    connection=selected,
+                )
+            if result is not None:
+                self._emit_device_result(result)
+            return result
         round_state = self.device_rounds.get_round(
             device_id, task_id, decision_round_id, connection=connection
         )
@@ -238,9 +261,23 @@ class V12DecisionFlow:
         )
         if result is None:
             return None
-        if connection is None:
-            self._emit_device_result(result)
+        self._persist_device_result(result, connection)
         return result
+
+    def _persist_device_result(
+        self,
+        result: DeviceDecisionResult,
+        connection: sqlite3.Connection,
+    ) -> None:
+        self._on_device_result_persist(result, connection)
+
+    def reconcile_device_result_deliveries(self) -> int:
+        """Idempotently backfill delivery rows for every persisted revision."""
+        with self.device_rounds.transaction() as connection:
+            results = self.device_rounds.list_device_results(connection=connection)
+            for result in results:
+                self._persist_device_result(result, connection)
+        return len(results)
 
     def _emit_device_result(self, result: DeviceDecisionResult) -> None:
         self._on_device_result(result)
@@ -263,72 +300,90 @@ class V12DecisionFlow:
         decision_round_id = _required_text(payload, "decision_round_id")
         revision = _required_positive_int(payload, "device_result_revision")
         arbitration_id = _required_text(payload, "arbitration_id")
-        receipt = self.device_rounds.get_arbitration_receipt(arbitration_id)
-        if receipt is not None:
-            # 重复回调：直接返回已处理结果，不再修改状态也不再发布。
-            return self.device_rounds.get_current_result(
-                device_id, task_id, decision_round_id
+        with self.device_rounds.transaction() as connection:
+            receipt = self.device_rounds.get_arbitration_receipt(
+                arbitration_id, connection=connection
             )
-        current = self.device_rounds.get_current_result(
-            device_id, task_id, decision_round_id
-        )
-        round_state = self.device_rounds.get_round(device_id, task_id, decision_round_id)
-        if current is None or round_state is None:
-            raise ValueError("cloud arbitration result has no device round")
-        if current.revision != revision:
-            raise ValueError("cloud arbitration result is stale")
-        if round_state["closure_reason"] == RoundClosureReason.ROUND_TIMEOUT.value:
-            return None
-        closed_at_ns = round_state.get("closed_at_ns")
-        if (
-            self.late_correction_retention_ns is not None
-            and isinstance(closed_at_ns, int)
-            and accepted_at_ns - closed_at_ns > self.late_correction_retention_ns
-        ):
-            self._on_manual_review(
-                {
-                    "stage": "late_correction_retention",
-                    "device_id": device_id,
-                    "task_id": task_id,
-                    "decision_round_id": decision_round_id,
-                    "arbitration_id": arbitration_id,
-                    "error_code": "LATE_CORRECTION_BEYOND_RETENTION",
-                    "action": "manual_review_required",
-                }
+            if receipt is not None:
+                # 重复回调：直接返回已处理结果，不再修改状态也不再发布。
+                return self.device_rounds.get_current_result(
+                    device_id,
+                    task_id,
+                    decision_round_id,
+                    connection=connection,
+                )
+            current = self.device_rounds.get_current_result(
+                device_id,
+                task_id,
+                decision_round_id,
+                connection=connection,
             )
-            raise ValueError("cloud arbitration arrived beyond the retention window")
-        action = _required_text(payload, "final_action")
-        action_grade = grade_for_action(action)
-        confidence = _score(payload.get("confidence"), "confidence")
-        status = (
-            DeviceDecisionStatus.CORRECTED
-            if round_state["closure_reason"]
-            == RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL.value
-            else DeviceDecisionStatus.FINAL
-        )
-        revised = replace(
-            current,
-            status=status,
-            final_state=ACTION_TO_STATE[action],
-            final_action_grade=action_grade,
-            final_action=action,
-            confidence=confidence,
-            decision_source="CLOUD_ARBITRATION",
-            degraded=False,
-            affects_realtime_action=status is not DeviceDecisionStatus.CORRECTED,
-            arbitration_id=arbitration_id,
-            created_at_ns=accepted_at_ns,
-            closed_at_ns=accepted_at_ns,
-        )
-        saved = self.device_rounds.save_revision(revised)
-        self.device_rounds.save_arbitration_receipt(
-            arbitration_id=arbitration_id,
-            device_id=device_id,
-            task_id=task_id,
-            decision_round_id=decision_round_id,
-            result_id=saved.result_id,
-            processed_at_ns=accepted_at_ns,
-        )
+            round_state = self.device_rounds.get_round(
+                device_id,
+                task_id,
+                decision_round_id,
+                connection=connection,
+            )
+            if current is None or round_state is None:
+                raise ValueError("cloud arbitration result has no device round")
+            if current.revision != revision:
+                raise ValueError("cloud arbitration result is stale")
+            if round_state["closure_reason"] == RoundClosureReason.ROUND_TIMEOUT.value:
+                return None
+            closed_at_ns = round_state.get("closed_at_ns")
+            if (
+                self.late_correction_retention_ns is not None
+                and isinstance(closed_at_ns, int)
+                and accepted_at_ns - closed_at_ns > self.late_correction_retention_ns
+            ):
+                self._on_manual_review(
+                    {
+                        "stage": "late_correction_retention",
+                        "device_id": device_id,
+                        "task_id": task_id,
+                        "decision_round_id": decision_round_id,
+                        "arbitration_id": arbitration_id,
+                        "error_code": "LATE_CORRECTION_BEYOND_RETENTION",
+                        "action": "manual_review_required",
+                    }
+                )
+                raise ValueError("cloud arbitration arrived beyond the retention window")
+            action = _required_text(payload, "final_action")
+            action_grade = grade_for_action(action)
+            confidence = _score(payload.get("confidence"), "confidence")
+            status = (
+                DeviceDecisionStatus.CORRECTED
+                if round_state["closure_reason"]
+                == RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL.value
+                else DeviceDecisionStatus.FINAL
+            )
+            revised = replace(
+                current,
+                status=status,
+                final_state=ACTION_TO_STATE[action],
+                final_action_grade=action_grade,
+                final_action=action,
+                confidence=confidence,
+                decision_source="CLOUD_ARBITRATION",
+                degraded=False,
+                affects_realtime_action=status is not DeviceDecisionStatus.CORRECTED,
+                arbitration_id=arbitration_id,
+                created_at_ns=accepted_at_ns,
+                closed_at_ns=accepted_at_ns,
+            )
+            saved = self.device_rounds.save_revision(
+                revised, connection=connection
+            )
+            self.device_rounds.save_arbitration_receipt(
+                arbitration_id=arbitration_id,
+                device_id=device_id,
+                task_id=task_id,
+                decision_round_id=decision_round_id,
+                result_id=saved.result_id,
+                processed_at_ns=accepted_at_ns,
+                connection=connection,
+            )
+            self._persist_device_result(saved, connection)
         self._emit_device_result(saved)
         return saved
 

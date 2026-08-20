@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 for _path in (PROJECT_ROOT / "edge_service" / "src",
@@ -47,6 +48,11 @@ for _path in (PROJECT_ROOT / "edge_service" / "src",
 
 import paho.mqtt.client as mqtt  # noqa: E402
 
+from common.control_auth import (  # noqa: E402
+    CONTROL_PATHS,
+    load_control_shared_secret,
+    sign_control_request,
+)
 from _fake_model_service import FakeModelService  # noqa: E402
 from health_check import run_checks  # noqa: E402
 
@@ -83,6 +89,15 @@ def _http(method: str, url: str, payload: dict | None = None,
     request = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         request.add_header("Content-Type", "application/json")
+    target = urlsplit(url)
+    if method == "POST" and data is not None and target.path in CONTROL_PATHS:
+        for name, value in sign_control_request(
+            load_control_shared_secret(),
+            method=method,
+            path=target.path,
+            body=data,
+        ).items():
+            request.add_header(name, value)
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             body = response.read().decode("utf-8", errors="replace")

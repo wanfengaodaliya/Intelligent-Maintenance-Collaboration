@@ -142,6 +142,7 @@ def test_edge_launcher_imports_application_outside_project_directory(
     environment = dict(os.environ)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["EDGE_STATUS_REPORTER_ENABLED"] = "false"
+    environment["EDGE_CONTROL_SHARED_SECRET"] = "test-control-secret-32-bytes-long"
     completed = subprocess.run(
         [
             sys.executable,

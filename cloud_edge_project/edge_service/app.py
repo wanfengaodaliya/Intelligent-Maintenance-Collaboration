@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
@@ -21,11 +23,11 @@ for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
         sys.path.insert(0, str(import_root))
 
 from common.config import load_config
+from common.control_auth import CONTROL_PATHS, ControlAuthVerifier
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
 from edge_task_ingress import (  # noqa: E402
-    TASK_CONFLICT,
     EdgeTaskIngress,
     TaskIngressConfig,
 )
@@ -63,9 +65,13 @@ from cloud_review import (  # noqa: E402
     load_cloud_review_config,
 )
 from edge_status_reporter import ModelStatus, build_edge_status_integration  # noqa: E402
+from edge_runtime.trace_identity import trace_id_for_task  # noqa: E402
+from edge_runtime.body_limit import RequestBodyLimitMiddleware  # noqa: E402
 
 
+LOGGER = logging.getLogger(__name__)
 config = load_config()
+control_auth_verifier = ControlAuthVerifier.from_env()
 # 正式边缘诊断路线（阶段 8 起）：
 #   - local_h5：蒸馏模型 H5 三通道并行（CNN/物理特征/工况）加权融合，本地推理；
 #   - official：宿主机/远端正式模型服务（HTTP /infer），供对照与故障演练矩阵。
@@ -135,6 +141,11 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="edge_service", lifespan=_lifespan)
 edge_status_integration.install(app)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    default_limit_bytes=1024 * 1024,
+    path_limits={path: 64 * 1024 for path in CONTROL_PATHS},
+)
 
 
 def _create_task_ingress() -> EdgeTaskIngress:
@@ -266,6 +277,7 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         cloud_review_store=review_store,
         on_packet_route_error=packet_route_error_recorder,
         enable_heartbeat=False,
+        control_auth_verifier=control_auth_verifier,
     )
 
 
@@ -540,41 +552,51 @@ def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
         return infer_edge(payload)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))
-    except Exception as exc:
+    except Exception:
         packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
-        error = ContractError("MODEL_INFER_FAILED", str(exc), packet_id)
-        return JSONResponse(status_code=500, content=error_response(error))
+        content = _unexpected_api_error(
+            "MODEL_INFER_FAILED",
+            "edge inference failed",
+            payload,
+        )
+        content.update({"success": False, "packet_id": packet_id})
+        return JSONResponse(status_code=500, content=content)
 
 
 @app.post("/edge/tasks", response_model=None)
-def register_edge_task(payload: dict) -> JSONResponse:
-    ack = task_ingress.register_task(payload)
-    if ack.ack_status == "ACCEPTED":
-        status_code = 200
-    elif ack.reason_code == TASK_CONFLICT:
-        status_code = 409
-    else:
-        status_code = 400
-    return JSONResponse(status_code=status_code, content=ack.as_dict())
+async def register_edge_task(request: Request) -> JSONResponse:
+    return await _forward_edge_control(request)
 
 
-def _forward_edge_control(path: str, payload: Any) -> JSONResponse:
+async def _forward_edge_control(request: Request) -> JSONResponse:
     # 统一对外控制入口：任务控制与仲裁回调都收敛到同一应用地址，
     # 处理逻辑复用运行时控制应用，旧控制端口仅保留兼容。
     application = runtime_assembly.service.control_application
-    body = payload if isinstance(payload, dict) else {}
-    status, result = application.handle(path, body)
+    raw_body = await request.body()
+    try:
+        decoded = json.loads(raw_body.decode("utf-8"))
+        payload = decoded if isinstance(decoded, dict) else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    status, result = application.handle(
+        request.url.path,
+        payload,
+        method=request.method,
+        query_string=request.url.query,
+        raw_body=raw_body,
+        headers=request.headers,
+    )
     return JSONResponse(status_code=status, content=result)
 
 
 @app.post("/edge/task-revocations", response_model=None)
-def edge_task_revocation(payload: dict = Body(default=None)) -> JSONResponse:
-    return _forward_edge_control("/edge/task-revocations", payload)
+async def edge_task_revocation(request: Request) -> JSONResponse:
+    return await _forward_edge_control(request)
 
 
 @app.post("/edge/device-arbitration-results", response_model=None)
-def edge_device_arbitration_result(payload: dict = Body(default=None)) -> JSONResponse:
-    return _forward_edge_control("/edge/device-arbitration-results", payload)
+async def edge_device_arbitration_result(request: Request) -> JSONResponse:
+    return await _forward_edge_control(request)
 
 
 
@@ -582,8 +604,14 @@ def edge_device_arbitration_result(payload: dict = Body(default=None)) -> JSONRe
 def submit_edge_packet(payload: dict) -> JSONResponse:
     try:
         accepted = runtime_assembly.coordinator.receive_raw_packet(payload)
-    except Exception as error:
-        return JSONResponse(status_code=503, content={"accepted": False, "error_code": "EDGE_INGRESS_UNAVAILABLE", "message": str(error)})
+    except Exception:
+        content = _unexpected_api_error(
+            "EDGE_INGRESS_UNAVAILABLE",
+            "edge ingress is temporarily unavailable",
+            payload,
+        )
+        content["accepted"] = False
+        return JSONResponse(status_code=503, content=content)
     if not accepted:
         return JSONResponse(status_code=409, content={"accepted": False, "error_code": "EDGE_PACKET_REJECTED", "packet_id": payload.get("packet_id")})
     return JSONResponse(status_code=202, content={"accepted": True, "packet_id": payload.get("packet_id")})
@@ -598,11 +626,36 @@ def submit_cloud_review_task(payload: dict) -> dict | JSONResponse:
             status_code=error.status_code,
             content={"error_code": error.code, "message": error.message},
         )
-    except Exception as error:
+    except Exception:
         return JSONResponse(
             status_code=503,
-            content={
-                "error_code": "EDGE_CLOUD_REVIEW_UNAVAILABLE",
-                "message": str(error),
-            },
+            content=_unexpected_api_error(
+                "EDGE_CLOUD_REVIEW_UNAVAILABLE",
+                "cloud review is temporarily unavailable",
+                payload,
+            ),
         )
+
+
+def _unexpected_api_error(
+    error_code: str,
+    generic_message: str,
+    payload: Any,
+) -> dict[str, str]:
+    error_id = uuid.uuid4().hex
+    task_id = payload.get("task_id") if isinstance(payload, dict) else None
+    packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+    trace_id = trace_id_for_task(task_id) if isinstance(task_id, str) and task_id else None
+    LOGGER.exception(
+        "%s error_id=%s trace_id=%s task_id=%s packet_id=%s",
+        error_code,
+        error_id,
+        trace_id,
+        task_id,
+        packet_id,
+    )
+    return {
+        "error_code": error_code,
+        "error_id": error_id,
+        "message": generic_message,
+    }

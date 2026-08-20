@@ -11,6 +11,7 @@ torch==2.13.0
 transformers==5.15.0
 accelerate==1.14.0
 safetensors==0.8.0
+cryptography==50.0.0
 huggingface-hub==1.27.0
 momentfm @ git+https://github.com/moment-timeseries-foundation-model/moment.git@38f7310ad594100747ca2a8357e9c7ca7d323e0e
 psutil==7.2.2

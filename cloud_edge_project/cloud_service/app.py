@@ -18,6 +18,8 @@ import requests
 from fastapi import Body, FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+from common.model_signing import ModelSigningError, sign_manifest
+
 LOGGER = logging.getLogger(__name__)
 
 from cloud_service.config import CloudSettings, load_cloud_settings
@@ -901,6 +903,19 @@ def download_model_update_artifact(update_id: str) -> Response | JSONResponse:
                 for entry in bundle["entries"]
             },
         }
+        private_key_path = os.getenv("CLOUD_MODEL_SIGNING_PRIVATE_KEY_FILE", "").strip()
+        key_id = os.getenv("MODEL_UPDATE_SIGNING_KEY_ID", "release-v1").strip()
+        try:
+            manifest = sign_manifest(
+                manifest,
+                private_key_path=private_key_path,
+                key_id=key_id,
+            )
+        except ModelSigningError:
+            LOGGER.exception("model bundle signing failed for update_id=%s", update_id)
+            return JSONResponse(
+                {"error_code": "MODEL_SIGNING_UNAVAILABLE"}, status_code=503
+            )
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for entry in bundle["entries"]:
