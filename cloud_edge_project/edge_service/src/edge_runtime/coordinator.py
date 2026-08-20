@@ -26,6 +26,9 @@ from .v12_flow import V12DecisionFlow
 
 
 _DEVICE_DELIVERY_RECONCILIATION_INTERVAL_NS = 300_000_000_000
+# AUD-11：聚合回补的最长等待时长。超龄的完成包在回补时直接出队放弃，
+# 避免 v12 工作流长期不可用时无限重放（重放含 Scheduler 路由 HTTP 调用）。
+_AGGREGATION_BACKFILL_MAX_AGE_NS = 60_000_000_000
 
 
 class JsonPublisher(Protocol):
@@ -93,6 +96,11 @@ class EdgeRuntimeCoordinator:
         self._model_versions: set[str] = set()
         self._active_diagnosis_windows: dict[
             tuple[str, str, str, str, str, int], tuple[DiagnosisWindow, dict[str, Any]]
+        ] = {}
+        # AUD-11：v12 聚合暂不可用（如路由/落库瞬时失败）时登记的完成包，
+        # 由维护轮次回补重放；key 与 _active_diagnosis_windows 同构。
+        self._pending_aggregation: dict[
+            tuple[str, str, str, str, str, int], PacketExecutionCompleted
         ] = {}
         # H1：完成事件分发线程——把路由/落盘/上报等控制面 I/O 移出数据面(推理 worker)。
         self.dispatcher = CompletionDispatcher(
@@ -240,6 +248,9 @@ class EdgeRuntimeCoordinator:
                 self._capture_bearing_result(edge_result, route_decision, device)
             except Exception as error:
                 self._report_v12_error(completion, error)
+                # 聚合暂不可用：登记完成包等待维护轮回补重放（原 action 承诺的
+                # raw_packet_retained_for_replay 由此闭环）。
+                self._park_for_aggregation(completion)
 
     def _route_packet(
         self,
@@ -506,6 +517,55 @@ class EdgeRuntimeCoordinator:
         with self._mutex:
             return len(self._pending_aggregation)
 
+    def _park_for_aggregation(self, completion: PacketExecutionCompleted) -> None:
+        """v12 聚合暂不可用时登记完成包；同 identity 重复登记幂等覆盖。"""
+        with self._mutex:
+            self._pending_aggregation[_completion_identity(completion)] = completion
+
+    def _flush_aggregation(self) -> int:
+        """回补等待聚合的完成包，返回本轮出队数量。
+
+        聚合工作流(v12_flow)未装配时直接出队（无可聚合去向）；
+        装配后逐个重放完成处理，重放仍失败的包会经 park 重新入队，
+        等待下一轮；超过回补最大等待时长的包出队放弃并上报。
+        """
+        with self._mutex:
+            pending = list(self._pending_aggregation.values())
+            self._pending_aggregation.clear()
+        now = self._clock_ns()
+        flushed = 0
+        for completion in pending:
+            flushed += 1
+            age_ns = now - getattr(completion, "finished_at_ns", 0)
+            if self.v12_flow is None or age_ns > _AGGREGATION_BACKFILL_MAX_AGE_NS:
+                if self.v12_flow is not None:
+                    self._report_aggregation_backfill_drop(completion)
+                continue
+            try:
+                self._process_completion(completion)
+            except Exception as error:
+                self._report_dispatch_error(completion, error)
+        return flushed
+
+    def _report_aggregation_backfill_drop(self, completion: Any) -> None:
+        """聚合回补超龄放弃时上报，保持丢弃可观测。"""
+        record = {
+            "stage": "aggregation_backfill",
+            "device_id": getattr(completion, "device_id", None),
+            "task_id": getattr(completion, "task_id", None),
+            "bearing_id": getattr(completion, "bearing_id", None),
+            "sender_id": getattr(completion, "sender_id", None),
+            "packet_id": getattr(completion, "packet_id", None),
+            "sequence_number": getattr(completion, "sequence_number", None),
+            "error_code": "AGGREGATION_BACKFLUSH_EXPIRED",
+            "message": "pending aggregation completion exceeded max backfill age",
+            "action": "backfill_dropped_expired",
+        }
+        try:
+            self.on_packet_route_error(record)
+        except Exception:
+            pass
+
     @property
     def model_load_status(self) -> str:
         return self._model_load_status()
@@ -547,7 +607,11 @@ class EdgeRuntimeCoordinator:
             "outbox_published_cleaned": 0,
             "suggestions_published": 0,
             "device_delivery_results_checked": 0,
+            "aggregation_backfilled": 0,
         }
+        # AUD-11：先回补积压的完成包，再推进超时/发布，让回补结果
+        # 赶在本轮轮次闭合与发布前进入聚合工作流。
+        summary["aggregation_backfilled"] = self._flush_aggregation()
         if self.v12_flow is not None:
             promoted = self.v12_flow.promote_cloud_now_timeouts(
                 now_ns=now, cloud_now_timeout_ns=self.cloud_now_timeout_ns
