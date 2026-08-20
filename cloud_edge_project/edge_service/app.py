@@ -23,7 +23,7 @@ for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
         sys.path.insert(0, str(import_root))
 
 from common.config import load_config
-from common.control_auth import ControlAuthVerifier
+from common.control_auth import CONTROL_PATHS, ControlAuthVerifier
 from common.schemas import ContractError, error_response, is_v01_task_request
 from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
 
@@ -66,6 +66,7 @@ from cloud_review import (  # noqa: E402
 )
 from edge_status_reporter import ModelStatus, build_edge_status_integration  # noqa: E402
 from edge_runtime.trace_identity import trace_id_for_task  # noqa: E402
+from edge_runtime.body_limit import RequestBodyLimitMiddleware  # noqa: E402
 
 
 LOGGER = logging.getLogger(__name__)
@@ -140,6 +141,11 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="edge_service", lifespan=_lifespan)
 edge_status_integration.install(app)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    default_limit_bytes=1024 * 1024,
+    path_limits={path: 64 * 1024 for path in CONTROL_PATHS},
+)
 
 
 def _create_task_ingress() -> EdgeTaskIngress:

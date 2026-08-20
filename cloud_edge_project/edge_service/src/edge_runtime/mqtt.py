@@ -13,6 +13,9 @@ from .config import MqttConfig
 from .json_utils import json_bytes
 
 
+MQTT_MAX_PAYLOAD_BYTES = 512 * 1024
+
+
 class MqttRuntimeError(RuntimeError):
     pass
 
@@ -25,7 +28,10 @@ class MqttIngress:
         *,
         on_error: Optional[Callable[[dict[str, Any]], None]] = None,
         client: Any = None,
+        max_payload_bytes: int = MQTT_MAX_PAYLOAD_BYTES,
     ):
+        if max_payload_bytes <= 0:
+            raise ValueError("max_payload_bytes must be positive")
         self.config = config
         self.on_packet = on_packet
         self.on_error = on_error or (lambda _: None)
@@ -35,6 +41,7 @@ class MqttIngress:
             clean_session=False,
             protocol=mqtt.MQTTv311,
         )
+        self.max_payload_bytes = max_payload_bytes
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.client.on_disconnect = self._on_disconnect
@@ -50,6 +57,7 @@ class MqttIngress:
         self._connected = threading.Event()
         # 阶段 5：满载拒绝计数，配合断连背压构成可观测的过载策略。
         self._rejected_total = 0
+        self._oversized_total = 0
         self._rejected_lock = threading.Lock()
 
     def start(self, *, connect_timeout_seconds: float = 5.0) -> None:
@@ -108,6 +116,15 @@ class MqttIngress:
         self._connected.clear()
 
     def _on_message(self, client: Any, userdata: Any, message: Any) -> None:
+        if len(message.payload) > self.max_payload_bytes:
+            with self._rejected_lock:
+                self._oversized_total += 1
+            self._emit_error(
+                "MQTT_PAYLOAD_TOO_LARGE",
+                "MQTT payload exceeds the configured limit",
+            )
+            self._ack(message)
+            return
         try:
             value = json.loads(message.payload.decode("utf-8"))
             if not isinstance(value, dict):
@@ -174,6 +191,12 @@ class MqttIngress:
             return self._rejected_total
 
     @property
+    def oversized_total(self) -> int:
+        """Payloads rejected before JSON decoding because they exceed the limit."""
+        with self._rejected_lock:
+            return self._oversized_total
+
+    @property
     def oldest_task_age_ms(self) -> float | None:
         """队首任务等待毫秒数；空队列返回 None。"""
         head = getattr(self._queue, "queue", None)
@@ -188,6 +211,8 @@ class MqttIngress:
             "queue_depth": self.queue_depth,
             "queue_capacity": self.config.ingress_queue_capacity,
             "rejected_total": self.rejected_total,
+            "oversized_total": self.oversized_total,
+            "max_payload_bytes": self.max_payload_bytes,
             "oldest_task_age_ms": self.oldest_task_age_ms,
             "connected": self.connected,
             "worker_alive": self.worker_alive,

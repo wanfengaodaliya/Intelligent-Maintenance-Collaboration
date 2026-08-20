@@ -30,6 +30,7 @@ from edge_runtime.mqtt import MqttIngress
 class _FakeMqttClient:
     def __init__(self) -> None:
         self.disconnect_calls = 0
+        self.ack_calls: list[tuple[int, int]] = []
 
     def manual_ack_set(self, value: bool) -> None:
         pass
@@ -40,10 +41,16 @@ class _FakeMqttClient:
     def disconnect(self) -> None:
         self.disconnect_calls += 1
 
+    def ack(self, mid: int, qos: int) -> int:
+        self.ack_calls.append((mid, qos))
+        return 0
+
 
 class _FakeMessage:
-    def __init__(self, payload: dict) -> None:
-        self.payload = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: dict | bytes) -> None:
+        self.payload = (
+            payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+        )
         self.mid = 1
         self.qos = 1
 
@@ -95,6 +102,28 @@ def test_ingress_oldest_task_age_tracks_queue_head() -> None:
     ingress._queue.get_nowait()
     ingress._queue.task_done()
     assert ingress.oldest_task_age_ms is None
+
+
+def test_ingress_rejects_and_acknowledges_oversize_before_json_decode() -> None:
+    client = _FakeMqttClient()
+    errors: list[dict] = []
+    ingress = MqttIngress(
+        MqttConfig(ingress_queue_capacity=2),
+        lambda _: None,
+        on_error=errors.append,
+        client=client,
+        max_payload_bytes=8,
+    )
+
+    ingress._on_message(client, None, _FakeMessage(b"not-json!"))
+
+    assert ingress.queue_depth == 0
+    assert ingress.oversized_total == 1
+    assert client.ack_calls == [(1, 1)]
+    assert errors[0]["error_code"] == "MQTT_PAYLOAD_TOO_LARGE"
+    snapshot = ingress.capacity_snapshot()
+    assert snapshot["oversized_total"] == 1
+    assert snapshot["max_payload_bytes"] == 8
 
 
 # ---------- Outbox 数据保留与积压年龄 ----------
