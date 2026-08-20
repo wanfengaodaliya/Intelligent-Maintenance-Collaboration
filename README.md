@@ -57,8 +57,4 @@ python -m pytest -p no:cacheprovider -W error -q --basetemp $testTemp
 
 更完整的单节点、多节点、接口和网络链路测试步骤见 `cloud_edge_project/docs/Edge_Status_Reporter_完整测试流程.md`。
 
-## 当前限制
-
-- Sender 当前根据 Scheduler 返回的 MQTT topic 投递，但尚未根据目标 Edge 动态切换不同的 Toxiproxy MQTT 入口。
-- Network Reporter 当前使用网络模拟器自带的 Fake Scheduler 合同；接入真实 Scheduler 前需要适配 `/scheduler/link-snapshots`。
 - 项目尚未声明开源许可证；公开发布前请由仓库所有者选择并添加合适的 `LICENSE`。
