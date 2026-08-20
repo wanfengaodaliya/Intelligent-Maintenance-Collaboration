@@ -8,8 +8,10 @@
 
 | 资产 | 体积 | 用途 |
 | --- | --- | --- |
-| `experiments/diagnosis_models/moment/pretrained/MOMENT-1-small/model.safetensors` | 约 145MB | MOMENT-1-small 时间序列基础模型（基于 `google/flan-t5-small`） |
-| `local_experiment/analysis/final_model/moment_final_chance/{SCL05,LIGHT_ADAPT_REPRO}/fold_3/best_model.pt` | 约 145MB × 2 | LIGHT_ADAPT 微调后的最终分类 checkpoint |
+| `model_assets/moment/pretrained/MOMENT-1-small/model.safetensors` | 约 145MB | MOMENT-1-small 时间序列基础模型（基于 `google/flan-t5-small`） |
+| `model_assets/moment/releases/moment-scl05-final/best_model.pt` | 约 145MB | 当前 MOMENT SCL05 微调后的最终分类 checkpoint |
+| `model_assets/moment/releases/moment-scl05-final/condition_norm.json` | 很小 | 当前模型使用的条件归一化参数 |
+| `model_assets/moment/releases/moment-scl05-final/moment_model.py` | 很小 | 当前模型使用的部署代码 |
 
 ## 如何获取
 
@@ -34,7 +36,7 @@ model.init()
 也可使用 Hugging Face CLI 预下载到本仓库约定的目录：
 
 ```bash
-hf download AutonLab/MOMENT-1-small --local-dir experiments/diagnosis_models/moment/pretrained/MOMENT-1-small
+hf download AutonLab/MOMENT-1-small --local-dir model_assets/moment/pretrained/MOMENT-1-small
 ```
 
 ### 2. LIGHT_ADAPT 微调 checkpoint
@@ -47,10 +49,10 @@ hf download AutonLab/MOMENT-1-small --local-dir experiments/diagnosis_models/mom
 
 | 环境变量 | 默认值（相对 `PROJECT_ROOT`） |
 | --- | --- |
-| `CLOUD_MOMENT_PRETRAINED_PATH` | `experiments/diagnosis_models/moment/pretrained/MOMENT-1-small` |
-| `CLOUD_MOMENT_CHECKPOINT_PATH` | `local_experiment/analysis/final_model/moment_final_chance/SCL05/fold_3/best_model.pt` |
-| `CLOUD_MOMENT_CONDITION_NORM_PATH` | `local_experiment/analysis/final_model/moment_final_chance/SCL05/fold_3/condition_norm.json` |
-| `CLOUD_MOMENT_DEPLOYMENT_DIR` | `local_experiment/deploy/light_adapt` |
+| `CLOUD_MOMENT_PRETRAINED_PATH` | `model_assets/moment/pretrained/MOMENT-1-small` |
+| `CLOUD_MOMENT_CHECKPOINT_PATH` | `model_assets/moment/releases/moment-scl05-final/best_model.pt` |
+| `CLOUD_MOMENT_CONDITION_NORM_PATH` | `model_assets/moment/releases/moment-scl05-final/condition_norm.json` |
+| `CLOUD_MOMENT_DEPLOYMENT_DIR` | `model_assets/moment/releases/moment-scl05-final` |
 | `CLOUD_MOMENT_DEVICE` | `auto` |
 
 ## 默认小模型（已废弃，仅存档说明）

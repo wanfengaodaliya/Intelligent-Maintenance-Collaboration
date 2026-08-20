@@ -159,10 +159,10 @@ Reporter 本地默认代理端口：
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `CLOUD_REVIEW_DB_PATH` | `data/cloud_review.db` | 云端评审数据库路径 |
-| `CLOUD_MOMENT_CHECKPOINT_PATH` | `local_experiment/analysis/.../best_model.pt` | MOMENT 模型检查点 |
-| `CLOUD_MOMENT_CONDITION_NORM_PATH` | `local_experiment/analysis/.../condition_norm.json` | 条件归一化参数 |
-| `CLOUD_MOMENT_PRETRAINED_PATH` | `experiments/diagnosis_models/moment/pretrained/MOMENT-1-small` | 预训练模型路径 |
-| `CLOUD_MOMENT_DEPLOYMENT_DIR` | `local_experiment/deploy/light_adapt` | 部署目录 |
+| `CLOUD_MOMENT_CHECKPOINT_PATH` | `model_assets/moment/releases/moment-scl05-final/best_model.pt` | MOMENT 模型检查点 |
+| `CLOUD_MOMENT_CONDITION_NORM_PATH` | `model_assets/moment/releases/moment-scl05-final/condition_norm.json` | 条件归一化参数 |
+| `CLOUD_MOMENT_PRETRAINED_PATH` | `model_assets/moment/pretrained/MOMENT-1-small` | 预训练模型路径 |
+| `CLOUD_MOMENT_DEPLOYMENT_DIR` | `model_assets/moment/releases/moment-scl05-final` | 部署目录 |
 | `CLOUD_MOMENT_DEVICE` | `auto` | 推理设备 |
 | `CLOUD_BACKEND` | `mock` | Cloud 推理后端 |
 | `VLLM_URL` | `http://127.0.0.1:6006/v1/chat/completions` | vLLM 服务地址 |
