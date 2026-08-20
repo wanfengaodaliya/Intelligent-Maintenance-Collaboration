@@ -15,8 +15,11 @@ COPY requirements-moment.txt ./requirements-moment.txt
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=""
 ARG EDGE_BUILD_REVISION=unknown
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git \
+    && git config --system http.version HTTP/1.1 \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
         $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
