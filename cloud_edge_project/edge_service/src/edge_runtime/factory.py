@@ -53,23 +53,16 @@ class EdgeRuntimeAssembly:
     maintenance: EdgeMaintenanceWorker | None = None
 
 
-class TracedDeviceResultPublisher:
-    """Publish device results with the unified trace identity fields."""
+def _cloud_result_base_url(config: EdgeRuntimeConfig) -> str:
+    """Resolve the cloud_service base URL for edge outbound HTTP calls.
 
-    def __init__(self, inner, *, edge_node_id: str, route_id: str) -> None:
-        self._inner = inner
-        self._edge_node_id = edge_node_id
-        self._route_id = route_id
+    Pick the first node of cloud_node_urls (shared by V1.2 result uploads,
+    raw-sample uploads and the model-update poller). from_env() guarantees a
+    non-empty mapping by falling back to CLOUD_SERVICE_BASE_URL; URLs are
+    validated to be HTTP(S) by EdgeRuntimeConfig.validate().
+    """
+    return config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]
 
-    def publish(self, payload, **kwargs):
-        return self._inner.publish(
-            with_trace_identity(
-                payload,
-                edge_node_id=self._edge_node_id,
-                route_id=self._route_id,
-            ),
-            **kwargs,
-        )
 
 
 def build_edge_runtime(
@@ -174,19 +167,14 @@ def build_edge_runtime(
                 max_upload_attempts=raw_config.max_upload_attempts,
             ),
         )
-        cloud_nodes = sorted(config.cloud_node_urls)
-        cloud_base_url = (
-            config.cloud_node_urls[cloud_nodes[0]] if cloud_nodes else None
+        raw_sample_uploader = RawAnalysisSampleUploader(
+            raw_sample_capture.repository,
+            HttpRawSampleTransport(
+                _cloud_result_base_url(config),
+                timeout_seconds=config.scheduler.request_timeout_seconds,
+            ).upload,
+            batch_size=raw_config.upload_batch_size,
         )
-        if cloud_base_url is not None:
-            raw_sample_uploader = RawAnalysisSampleUploader(
-                raw_sample_capture.repository,
-                HttpRawSampleTransport(
-                    cloud_base_url,
-                    timeout_seconds=config.scheduler.request_timeout_seconds,
-                ).upload,
-                batch_size=raw_config.upload_batch_size,
-            )
     if config.v12.enabled:
         bearing_results = BearingResultRepository(config.v12.database_path)
         # V1.2 轴承/设备结果的目标端点是 cloud_service 的 /cloud/* 路由，
@@ -327,20 +315,15 @@ def build_edge_runtime(
     )
     model_update_poller = None
     if config.model_update.enabled:
-        cloud_nodes = sorted(config.cloud_node_urls)
-        cloud_base_url = (
-            config.cloud_node_urls[cloud_nodes[0]] if cloud_nodes else None
-        )
-        if cloud_base_url is not None:
-            from edge_model.version_store import DEFAULT_MODEL_ROOT
+        from edge_model.version_store import DEFAULT_MODEL_ROOT
 
-            model_update_poller = ModelUpdatePoller(
-                cloud_base_url=cloud_base_url,
-                edge_node_id=config.edge_node_id,
-                model_root=config.model_update.model_root or DEFAULT_MODEL_ROOT,
-                poll_interval_seconds=config.model_update.poll_interval_seconds,
-                state_path=config.model_update.state_path,
-            )
+        model_update_poller = ModelUpdatePoller(
+            cloud_base_url=_cloud_result_base_url(config),
+            edge_node_id=config.edge_node_id,
+            model_root=config.model_update.model_root or DEFAULT_MODEL_ROOT,
+            poll_interval_seconds=config.model_update.poll_interval_seconds,
+            state_path=config.model_update.state_path,
+        )
     service = EdgeRuntimeService(
         config=config,
         cache=cache,
@@ -359,14 +342,3 @@ def build_edge_runtime(
         suggestion_outbox=suggestion_outbox,
         maintenance=maintenance,
     )
-
-
-def _cloud_result_base_url(config: EdgeRuntimeConfig) -> str:
-    """Resolve the cloud_service base URL for V1.2 result uploads.
-
-    Pick the first node of cloud_node_urls (same pick as the raw-sample
-    uploader). from_env() guarantees a non-empty mapping by falling back
-    to CLOUD_SERVICE_BASE_URL; URLs are validated to be HTTP(S) by
-    EdgeRuntimeConfig.validate().
-    """
-    return config.cloud_node_urls[sorted(config.cloud_node_urls)[0]]

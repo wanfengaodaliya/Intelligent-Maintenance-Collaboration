@@ -4,7 +4,6 @@ import json
 import sqlite3
 
 from core.diagnosis_contracts import BearingDecisionResult, BearingLifecycleStatus
-from edge_runtime.factory import TracedDeviceResultPublisher
 from edge_runtime.trace_identity import (
     build_trace_identity,
     trace_id_for_task,
@@ -57,17 +56,26 @@ def test_with_trace_identity_keeps_explicit_trace_id() -> None:
     assert enriched["trace_id"] == "trace-upstream"
 
 
-def test_traced_device_result_publisher_publishes_with_identity() -> None:
+def test_device_result_publish_path_injects_identity_before_publish() -> None:
+    """设备结果发布前统一注入 trace 身份（生产路径等价于 factory 的
+
+    ``_publish_device_result_with_identity`` 闭包：先 with_trace_identity 再
+    发布，route_id 使用设备结果主题）。
+    """
     published: list[dict] = []
 
     class Inner:
         def publish(self, payload, **kwargs):
             published.append(dict(payload))
 
-    publisher = TracedDeviceResultPublisher(
-        Inner(), edge_node_id="edge_01", route_id="summary/device-results"
+    inner = Inner()
+    inner.publish(
+        with_trace_identity(
+            {"task_id": "task_004", "decision_round_id": "round_04"},
+            edge_node_id="edge_01",
+            route_id="summary/device-results",
+        )
     )
-    publisher.publish({"task_id": "task_004", "decision_round_id": "round_04"})
     payload = published[0]
     assert payload["trace_id"] == "trace-task_004"
     assert payload["edge_node_id"] == "edge_01"

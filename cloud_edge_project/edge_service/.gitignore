@@ -5,11 +5,15 @@ var/
 __pycache__/
 *.py[cod]
 .venv*/
+
+# 本地文档一律不上交（历史例外已随旧文档清理移除）
 docs/*
-!docs/随机森林诊断模型.md
-!docs/Edge_Status_Reporter_执行开发文档_V6.md
 
 .claude/
 
 # 本地测试脚本（不上交远程仓库）
 verification/test_suggestion_llm.py
+
+# 测试临时产物（pytest basetemp 与交付报告快照）
+.pytest_tmp_conda/
+verification/delivery_report*.json
