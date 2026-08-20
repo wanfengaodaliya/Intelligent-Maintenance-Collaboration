@@ -29,7 +29,7 @@ class MqttConfig:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
-    base_url: str = "http://127.0.0.1:8003"
+    base_url: str = "http://127.0.0.1:18011"
     status_path: str = "/scheduler/edge-nodes/status"
     request_timeout_seconds: float = 2.0
     heartbeat_interval_seconds: float = 1.0
@@ -180,7 +180,7 @@ class EdgeRuntimeConfig:
             scheduler=SchedulerConfig(
                 base_url=env.get(
                     "SCHEDULER_SERVICE_BASE_URL",
-                    "http://127.0.0.1:8003",
+                    "http://127.0.0.1:18011",
                 ).rstrip("/"),
             ),
             control=ControlServerConfig(
