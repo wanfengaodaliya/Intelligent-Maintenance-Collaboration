@@ -58,6 +58,8 @@ services:
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       # 阶段 7.2（可选）：pin 模型版本；与模型路线 readiness 上报不一致时
       # 本节点 readiness 不通过，调度方停止派发新任务。
@@ -70,6 +72,13 @@ services:
       - "8001:8001"
     volumes:
       - edge_01_sim_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   edge_02:
@@ -94,6 +103,8 @@ services:
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       EDGE_NETWORK_LINK_ID: edge_02__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
@@ -101,6 +112,13 @@ services:
       - "8002:8001"
     volumes:
       - edge_02_sim_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
 volumes:

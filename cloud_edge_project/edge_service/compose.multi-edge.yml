@@ -30,6 +30,8 @@ services:
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角，
       # 读取容器自身 quota/limit 而非宿主机 16 核 / 剩余内存。
       # 若节点运行在独立 VM 而非容器，可显式改为 system。
@@ -38,6 +40,13 @@ services:
       - "8001:8001"
     volumes:
       - edge_001_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -61,12 +70,21 @@ services:
       CLOUD_SERVICE_BASE_URL: ${CLOUD_SERVICE_BASE_URL:-http://host.docker.internal:18021}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角。
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       - "8002:8001"
     volumes:
       - edge_002_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

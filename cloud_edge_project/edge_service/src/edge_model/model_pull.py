@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import time
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
+from common.model_signing import ModelSigningError, verify_manifest_signature
 from .manifest_validation import ManifestValidationError, validate_model_manifest
 from .version_store import VersionStoreError, validate_path_component, version_dir
 
@@ -34,6 +37,8 @@ def pull_candidate(
     model_type: str = "distilled_h5",
     model_root: Path | str,
     expected_sha256: str | None = None,
+    signing_public_key_path: Path | str,
+    expected_signing_key_id: str,
     http_get: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
     """下载并安装候选版本目录，不修改 ``active_version.json``。"""
@@ -47,6 +52,8 @@ def pull_candidate(
         model_type = validate_path_component(model_type, field="MODEL_TYPE")
     except VersionStoreError as exc:
         raise ModelPullError(str(exc)) from exc
+    if http_get is None and urlsplit(download_url).scheme != "https":
+        raise ModelPullError("MODEL_DOWNLOAD_HTTPS_REQUIRED")
     staging_root = version_dir(model_type, ".staging", base=root)
     staging = staging_root / update_id
     target = version_dir(model_type, target_version, base=root)
@@ -57,6 +64,19 @@ def pull_candidate(
         if not payload.startswith(_ZIP_MAGIC):
             raise ModelPullError("MODEL_BUNDLE_ZIP_REQUIRED")
         _unpack_bundle(payload, staging)
+        try:
+            signed_manifest = json.loads(
+                (staging / "manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ModelPullError("MODEL_MANIFEST_INVALID") from exc
+        if not isinstance(signed_manifest, dict):
+            raise ModelPullError("MODEL_MANIFEST_NOT_OBJECT")
+        verify_manifest_signature(
+            signed_manifest,
+            public_key_path=signing_public_key_path,
+            expected_key_id=expected_signing_key_id,
+        )
         manifest = validate_model_manifest(
             staging,
             expected_model_type=model_type,
@@ -66,7 +86,7 @@ def pull_candidate(
             primary = manifest["files"].get("best_model.pt")
             if not isinstance(primary, str) or primary.lower() != expected_sha256.lower():
                 raise ModelPullError("BUNDLE_PRIMARY_SHA256_MISMATCH")
-    except ManifestValidationError as exc:
+    except (ManifestValidationError, ModelSigningError) as exc:
         _remove_staging(staging, staging_root)
         raise ModelPullError(str(exc)) from exc
     except ModelPullError:

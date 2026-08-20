@@ -336,8 +336,12 @@ def build_edge_runtime(
             edge_node_id=config.edge_node_id,
             model_root=config.model_update.model_root,
             model_runtime=model_runtime,
+            signing_public_key_path=config.model_update.signing_public_key_path,
+            expected_signing_key_id=config.model_update.signing_key_id,
             poll_interval_seconds=config.model_update.poll_interval_seconds,
             state_path=config.model_update.state_path,
+            ca_file=config.model_update.ca_file,
+            allow_insecure_http=config.model_update.allow_insecure_http,
         )
     service = EdgeRuntimeService(
         config=config,
