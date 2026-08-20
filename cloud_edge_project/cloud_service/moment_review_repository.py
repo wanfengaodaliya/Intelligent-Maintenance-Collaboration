@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from cloud_service.storage.database import connect
+from cloud_service.storage.database import connect, initialize_database
 
 
 class MomentReviewRepository:
@@ -11,6 +11,7 @@ class MomentReviewRepository:
 
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
+        initialize_database(self.database_path)
 
     def save(self, result: dict[str, Any]) -> None:
         with connect(self.database_path) as connection:

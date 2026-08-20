@@ -67,6 +67,23 @@ class ModelUpdateRepository:
             ).fetchone()
         return _decode(dict(row)) if row else None
 
+    def find_runtime_candidate(
+        self, model_type: str, candidate_version: str
+    ) -> dict[str, Any] | None:
+        """Return a successfully deployed candidate that may be restored at startup."""
+
+        with connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM model_update_task "
+                "WHERE model_type=? AND candidate_version=? "
+                "AND status IN ("
+                "'distribution_succeeded','verifying','ineffective',"
+                "'partial_improvement','succeeded'"
+                ") ORDER BY updated_at_ns DESC LIMIT 1",
+                (model_type, candidate_version),
+            ).fetchone()
+        return _decode(dict(row)) if row else None
+
     def update(self, update_id: str, **changes: Any) -> dict[str, Any]:
         if not changes:
             return self.get(update_id)

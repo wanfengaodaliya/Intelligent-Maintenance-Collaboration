@@ -58,7 +58,12 @@ from cloud_service.device_arbitration.v12_contract import (
 )
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.errors import CloudServiceError
-from cloud_service.service import get_moment_runner, preload_moment_runner
+from cloud_service.service import (
+    activate_moment_candidate,
+    activate_moment_version,
+    get_moment_runner,
+    preload_moment_runner,
+)
 from cloud_service.vllm_backend import infer_v01_vllm
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
@@ -197,6 +202,7 @@ async def _run_periodic_global_analysis() -> None:
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
+    await asyncio.to_thread(initialize_database, settings.database_path)
     if settings.backend == "moment_light_adapt":
         await asyncio.to_thread(preload_moment_runner, settings)
     worker_task = asyncio.create_task(_run_background_workers())
@@ -744,7 +750,13 @@ def reject_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSO
 @app.post("/cloud/model-update/{update_id}/handoff-distribution", response_model=None)
 def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
     try:
-        return _model_update_service().handoff_distribution(update_id)
+        settings = load_cloud_settings()
+        return _model_update_service().handoff_distribution(
+            update_id,
+            local_cloud_activator=lambda artifact, version: activate_moment_candidate(
+                settings, artifact, version
+            ),
+        )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 
@@ -839,8 +851,13 @@ def execute_model_update_rollback(
 ) -> dict | JSONResponse:
     try:
         executed_by = payload.get("executed_by") if isinstance(payload, dict) else None
+        settings = load_cloud_settings()
         return _model_update_service().execute_rollback(
-            update_id, executed_by=executed_by
+            update_id,
+            executed_by=executed_by,
+            local_cloud_activator=lambda version: activate_moment_version(
+                settings, version
+            ),
         )
     except ModelUpdateError as error:
         return _model_update_error_response(error)

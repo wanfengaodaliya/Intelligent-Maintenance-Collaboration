@@ -183,6 +183,7 @@ def test_full_manual_lifecycle_hands_off_contract_without_downloading(tmp_path: 
         created["update_id"], _validation_results(manifest)
     )
     approved = service.approve(created["update_id"], confirmed_by="operator")
+    assert service._active_versions().get("distilled_h5") is None
     handed_off = service.handoff_distribution(created["update_id"])
 
     assert prepared["status"] == "waiting_training"
@@ -200,6 +201,7 @@ def test_full_manual_lifecycle_hands_off_contract_without_downloading(tmp_path: 
     distributed = service.record_distribution_result(
         created["update_id"], {"status": "succeeded", "deployment_id": "deploy_001"}
     )
+    assert service._active_versions().get("distilled_h5") == "edge_v2"
     _save_analysis(
         service.database_path,
         _analysis(
@@ -468,6 +470,148 @@ def test_execute_rollback_requires_request_first(tmp_path: Path):
 
     with pytest.raises(ModelUpdateError, match="ROLLBACK_NOT_REQUESTED"):
         service.execute_rollback(created["update_id"], executed_by="operator")
+
+
+def _save_approved_cloud_update(service: ModelUpdateService, tmp_path: Path) -> str:
+    artifact_dir = tmp_path / "moment_candidate"
+    artifact_dir.mkdir()
+    checkpoint = artifact_dir / "best_model.pt"
+    checkpoint.write_bytes(b"candidate checkpoint")
+    (artifact_dir / "condition_norm.json").write_text(
+        '{"mean":[0.0],"std":[1.0]}', encoding="utf-8"
+    )
+    update_id = "update_cloud_001"
+    candidate_version = "moment_candidate_v2"
+    artifact_sha256 = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    approved_model = {
+        "update_id": update_id,
+        "baseline_version": "moment-scl05-final",
+        "candidate_version": candidate_version,
+        "artifact_path": str(artifact_dir),
+        "artifact_sha256": artifact_sha256,
+        "model_type": "moment_light_adapt",
+        "feature_pipeline_version": "edge_feature_v1",
+        "input_feature_schema": {"vibration.values": "array"},
+        "training_dataset_id": "dataset_001",
+        "approved_by": "operator",
+        "approved_at_ns": 1,
+    }
+    service.repository.create(
+        {
+            "update_id": update_id,
+            "analysis_id": "analysis_cloud_001",
+            "problem_id": "problem_cloud_001",
+            "scenario_type": "bearing",
+            "subject_id": "device_01",
+            "problem_type": "condition_weakness",
+            "model_type": "moment_light_adapt",
+            "problem_context_json": {},
+            "evidence_snapshot_json": {},
+            "baseline_version": "moment-scl05-final",
+            "candidate_version": candidate_version,
+            "training_dataset_id": "dataset_001",
+            "candidate_artifact_json": {
+                "candidate_version": candidate_version,
+                "artifact_path": str(artifact_dir),
+                "artifact_sha256": artifact_sha256,
+                "model_type": "moment_light_adapt",
+            },
+            "confirmation_result_json": approved_model,
+            "status": "approved",
+            "created_at_ns": 1,
+            "updated_at_ns": 1,
+        }
+    )
+    return update_id
+
+
+def test_cloud_handoff_activates_runtime_before_committing_version(tmp_path: Path):
+    service = ModelUpdateService(tmp_path / "cloud.db", data_root=tmp_path)
+    update_id = _save_approved_cloud_update(service, tmp_path)
+    activated: list[str] = []
+
+    task = service.handoff_distribution(
+        update_id,
+        local_cloud_activator=lambda artifact, version: activated.append(version),
+    )
+
+    assert activated == ["moment_candidate_v2"]
+    assert task["status"] == "distribution_succeeded"
+    assert service._active_versions().get("moment_light_adapt") == "moment_candidate_v2"
+
+
+def test_cloud_handoff_keeps_old_version_when_runtime_activation_fails(tmp_path: Path):
+    service = ModelUpdateService(tmp_path / "cloud.db", data_root=tmp_path)
+    update_id = _save_approved_cloud_update(service, tmp_path)
+    service._active_versions().set("moment_light_adapt", "moment-scl05-final")
+
+    def fail_activation(_artifact, _version):
+        raise RuntimeError("candidate cannot be loaded")
+
+    with pytest.raises(ModelUpdateError, match="LOCAL_CLOUD_ACTIVATION_FAILED"):
+        service.handoff_distribution(
+            update_id, local_cloud_activator=fail_activation
+        )
+
+    assert service.get(update_id)["status"] == "distribution_failed"
+    assert service._active_versions().get("moment_light_adapt") == "moment-scl05-final"
+
+
+def test_cloud_distribution_result_cannot_bypass_local_activation(tmp_path: Path):
+    service = ModelUpdateService(tmp_path / "cloud.db", data_root=tmp_path)
+    update_id = _save_approved_cloud_update(service, tmp_path)
+    service.handoff_distribution(update_id)
+
+    with pytest.raises(
+        ModelUpdateError, match="CLOUD_DISTRIBUTION_REQUIRES_LOCAL_ACTIVATION"
+    ):
+        service.record_distribution_result(update_id, {"status": "succeeded"})
+
+    assert service._active_versions().get("moment_light_adapt") is None
+
+
+def test_cloud_rollback_activates_baseline_before_committing_pointer(tmp_path: Path):
+    service = ModelUpdateService(tmp_path / "cloud.db", data_root=tmp_path)
+    update_id = _save_approved_cloud_update(service, tmp_path)
+    service.repository.update(update_id, status="ineffective")
+    service.request_rollback(update_id, requested_by="operator")
+    service._active_versions().set("moment_light_adapt", "moment_candidate_v2")
+    observed: list[tuple[str, str | None]] = []
+
+    task = service.execute_rollback(
+        update_id,
+        executed_by="operator",
+        local_cloud_activator=lambda version: observed.append(
+            (version, service._active_versions().get("moment_light_adapt"))
+        ),
+    )
+
+    assert observed == [("moment-scl05-final", "moment_candidate_v2")]
+    assert task["status"] == "rolled_back"
+    assert service._active_versions().get("moment_light_adapt") == "moment-scl05-final"
+
+
+def test_cloud_rollback_activation_failure_keeps_candidate_active(tmp_path: Path):
+    service = ModelUpdateService(tmp_path / "cloud.db", data_root=tmp_path)
+    update_id = _save_approved_cloud_update(service, tmp_path)
+    service.repository.update(update_id, status="ineffective")
+    service.request_rollback(update_id, requested_by="operator")
+    service._active_versions().set("moment_light_adapt", "moment_candidate_v2")
+
+    def fail_activation(_version: str) -> None:
+        raise RuntimeError("baseline cannot be loaded")
+
+    with pytest.raises(
+        ModelUpdateError, match="LOCAL_CLOUD_ROLLBACK_ACTIVATION_FAILED"
+    ):
+        service.execute_rollback(
+            update_id,
+            executed_by="operator",
+            local_cloud_activator=fail_activation,
+        )
+
+    assert service.get(update_id)["status"] == "ineffective"
+    assert service._active_versions().get("moment_light_adapt") == "moment_candidate_v2"
 
 
 def test_approval_is_forbidden_before_validation_passes(tmp_path: Path):

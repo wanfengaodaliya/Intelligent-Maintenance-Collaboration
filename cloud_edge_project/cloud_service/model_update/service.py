@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from cloud_service.model_update.approval import ApprovalError, approve_candidate
@@ -418,8 +418,6 @@ class ModelUpdateService:
             approved_model = approve_candidate(task, confirmed_by or "")
         except ApprovalError as error:
             raise ModelUpdateError(str(error)) from error
-        model_type = approved_model["model_type"]
-        self._active_versions().set(model_type, approved_model["candidate_version"])
         return self.repository.update(
             update_id,
             confirmation_result_json=approved_model,
@@ -444,7 +442,12 @@ class ModelUpdateService:
             updated_at_ns=time.time_ns(),
         )
 
-    def handoff_distribution(self, update_id: str) -> dict[str, Any]:
+    def handoff_distribution(
+        self,
+        update_id: str,
+        *,
+        local_cloud_activator: Callable[[dict[str, Any], str], Any] | None = None,
+    ) -> dict[str, Any]:
         task = self._task(update_id)
         self._require_state(task, DISTRIBUTION_HANDOFF_STATES)
         try:
@@ -454,20 +457,47 @@ class ModelUpdateService:
             )
         except ValueError as error:
             raise ModelUpdateError(str(error)) from error
-        return self.repository.update(
+        handed_off = self.repository.update(
             update_id,
             distribution_result_json=request,
             status="handoff_to_distribution",
             updated_at_ns=time.time_ns(),
         )
+        if request["target"].get("family") != "cloud" or local_cloud_activator is None:
+            return handed_off
+        try:
+            local_cloud_activator(
+                handed_off["candidate_artifact"], handed_off["candidate_version"]
+            )
+        except Exception as error:
+            self.record_distribution_result(
+                update_id,
+                {"status": "failed", "message": str(error), "deploy_to": "local_cloud"},
+                local_cloud_activation_result=True,
+            )
+            raise ModelUpdateError("LOCAL_CLOUD_ACTIVATION_FAILED") from error
+        return self.record_distribution_result(
+            update_id,
+            {"status": "succeeded", "deploy_to": "local_cloud"},
+            local_cloud_activation_result=True,
+        )
 
     def record_distribution_result(
-        self, update_id: str, payload: dict[str, Any]
+        self,
+        update_id: str,
+        payload: dict[str, Any],
+        *,
+        local_cloud_activation_result: bool = False,
     ) -> dict[str, Any]:
         task = self._task(update_id)
         self._require_state(
             task, {"handoff_to_distribution", "distribution_in_progress"}
         )
+        if (
+            MODEL_TYPE_SPECS[task["model_type"]].family == "cloud"
+            and not local_cloud_activation_result
+        ):
+            raise ModelUpdateError("CLOUD_DISTRIBUTION_REQUIRES_LOCAL_ACTIVATION")
         external_status = payload.get("status") if isinstance(payload, dict) else None
         status_map = {
             "in_progress": "distribution_in_progress",
@@ -479,12 +509,17 @@ class ModelUpdateService:
         recorded_at_ns = time.time_ns()
         stored_result = dict(payload)
         stored_result["recorded_at_ns"] = recorded_at_ns
-        return self.repository.update(
+        recorded = self.repository.update(
             update_id,
             distribution_result_json=stored_result,
             status=status_map[external_status],
             updated_at_ns=recorded_at_ns,
         )
+        if external_status == "succeeded":
+            self._active_versions().set(
+                task["model_type"], task["candidate_version"]
+            )
+        return recorded
 
     def post_validate(self, update_id: str, analysis_id: str) -> dict[str, Any]:
         task = self._task(update_id)
@@ -553,7 +588,11 @@ class ModelUpdateService:
         )
 
     def execute_rollback(
-        self, update_id: str, *, executed_by: str
+        self,
+        update_id: str,
+        *,
+        executed_by: str,
+        local_cloud_activator: Callable[[str], Any] | None = None,
     ) -> dict[str, Any]:
         """Actually revert the active model version to the baseline.
 
@@ -572,6 +611,15 @@ class ModelUpdateService:
         if not isinstance(executed_by, str) or not executed_by.strip():
             raise ModelUpdateError("ROLLBACK_EXECUTOR_REQUIRED")
         model_type = task["model_type"]
+        if MODEL_TYPE_SPECS[model_type].family == "cloud":
+            if local_cloud_activator is None:
+                raise ModelUpdateError("CLOUD_ROLLBACK_REQUIRES_LOCAL_ACTIVATION")
+            try:
+                local_cloud_activator(target)
+            except Exception as error:
+                raise ModelUpdateError(
+                    "LOCAL_CLOUD_ROLLBACK_ACTIVATION_FAILED"
+                ) from error
         self._active_versions().set(model_type, target)
         result = {
             "action": "rolled_back",

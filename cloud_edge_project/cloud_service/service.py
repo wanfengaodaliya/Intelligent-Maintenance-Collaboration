@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import hashlib
 import time
 from math import isfinite
-from typing import Any
+from pathlib import Path
+import threading
+from typing import Any, Callable
 
 from core.bearing_actions import grade_for_action
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.errors import CloudServiceError
 from cloud_service.moment_light_adapt import (
+    MODEL_VERSION,
     MomentLightAdaptRunner,
     MomentReviewPolicy,
 )
+from cloud_service.model_update.model_types import ActiveModelVersionStore
+from cloud_service.model_update.repository import ModelUpdateRepository
 from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.packet_diagnosis import (
     DiagnosisModel,
@@ -27,22 +34,160 @@ from cloud_service.vllm_backend import infer_vllm
 
 _moment_runner: MomentLightAdaptRunner | None = None
 _moment_runner_settings: CloudSettings | None = None
+_moment_runner_lock = threading.Lock()
 
 
-def get_moment_runner(settings: CloudSettings) -> MomentLightAdaptRunner:
+def get_moment_runner(
+    settings: CloudSettings,
+    *,
+    runner_factory: Callable[..., MomentLightAdaptRunner] = MomentLightAdaptRunner,
+) -> MomentLightAdaptRunner:
     """Return the process-wide runner for the current MOMENT configuration."""
 
     global _moment_runner, _moment_runner_settings
-    if _moment_runner is None or _moment_runner_settings != settings:
-        _moment_runner = MomentLightAdaptRunner(settings)
-        _moment_runner_settings = settings
-    return _moment_runner
+    with _moment_runner_lock:
+        if _moment_runner is None or _moment_runner_settings != settings:
+            runtime_settings, model_version = _active_moment_runtime(settings)
+            _moment_runner = runner_factory(
+                runtime_settings, model_version=model_version
+            )
+            _moment_runner_settings = settings
+        return _moment_runner
 
 
-def preload_moment_runner(settings: CloudSettings) -> MomentLightAdaptRunner:
+def activate_moment_candidate(
+    settings: CloudSettings,
+    artifact: dict[str, Any],
+    candidate_version: str,
+    *,
+    runner_factory: Callable[..., MomentLightAdaptRunner] = MomentLightAdaptRunner,
+) -> MomentLightAdaptRunner:
+    """Load a candidate completely, then atomically replace the active runner."""
+
+    runtime_settings = _candidate_runtime_settings(settings, artifact)
+    return _load_and_swap_moment_runner(
+        settings,
+        runtime_settings,
+        candidate_version,
+        runner_factory=runner_factory,
+    )
+
+
+def activate_moment_version(
+    settings: CloudSettings,
+    model_version: str,
+    *,
+    runner_factory: Callable[..., MomentLightAdaptRunner] = MomentLightAdaptRunner,
+) -> MomentLightAdaptRunner:
+    """Load a baseline or deployed candidate version, then replace the runner."""
+
+    if model_version == MODEL_VERSION:
+        runtime_settings = settings
+    else:
+        task = ModelUpdateRepository(settings.database_path).find_runtime_candidate(
+            "moment_light_adapt", model_version
+        )
+        artifact = task.get("candidate_artifact") if task else None
+        if not isinstance(artifact, dict):
+            raise ValueError("MOMENT_RUNTIME_VERSION_NOT_FOUND")
+        runtime_settings = _candidate_runtime_settings(settings, artifact)
+    return _load_and_swap_moment_runner(
+        settings,
+        runtime_settings,
+        model_version,
+        runner_factory=runner_factory,
+    )
+
+
+def _load_and_swap_moment_runner(
+    base_settings: CloudSettings,
+    runtime_settings: CloudSettings,
+    model_version: str,
+    *,
+    runner_factory: Callable[..., MomentLightAdaptRunner],
+) -> MomentLightAdaptRunner:
+    candidate = runner_factory(runtime_settings, model_version=model_version)
+    candidate.load()
+    global _moment_runner, _moment_runner_settings
+    with _moment_runner_lock:
+        _moment_runner = candidate
+        _moment_runner_settings = base_settings
+    return candidate
+
+
+def _active_moment_runtime(
+    settings: CloudSettings,
+) -> tuple[CloudSettings, str]:
+    active_version = ActiveModelVersionStore(settings.database_path).get(
+        "moment_light_adapt"
+    )
+    if not active_version:
+        return settings, MODEL_VERSION
+    task = ModelUpdateRepository(settings.database_path).find_runtime_candidate(
+        "moment_light_adapt", active_version
+    )
+    artifact = task.get("candidate_artifact") if task else None
+    if not isinstance(artifact, dict):
+        return settings, MODEL_VERSION
+    return _candidate_runtime_settings(settings, artifact), active_version
+
+
+def _candidate_runtime_settings(
+    settings: CloudSettings, artifact: dict[str, Any]
+) -> CloudSettings:
+    artifact_path = Path(str(artifact.get("artifact_path", ""))).resolve()
+    checkpoint_path = artifact_path / "best_model.pt"
+    condition_norm_path = artifact_path / "condition_norm.json"
+    if not checkpoint_path.is_file() or not condition_norm_path.is_file():
+        raise ValueError("MOMENT_CANDIDATE_BUNDLE_INCOMPLETE")
+    bundle = artifact.get("artifact_bundle")
+    if isinstance(bundle, dict):
+        entries = bundle.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError("MOMENT_CANDIDATE_BUNDLE_INCOMPLETE")
+        expected_hashes = {
+            entry.get("rel_path"): entry.get("sha256")
+            for entry in entries
+            if isinstance(entry, dict)
+        }
+        for rel_path, path in (
+            ("best_model.pt", checkpoint_path),
+            ("condition_norm.json", condition_norm_path),
+        ):
+            expected_sha256 = expected_hashes.get(rel_path)
+            if not isinstance(expected_sha256, str):
+                raise ValueError("MOMENT_CANDIDATE_BUNDLE_INCOMPLETE")
+            if expected_sha256.lower() != _sha256(path):
+                raise ValueError("MOMENT_CANDIDATE_CHECKSUM_MISMATCH")
+    else:
+        expected_sha256 = artifact.get("artifact_sha256")
+        if not isinstance(expected_sha256, str):
+            raise ValueError("MOMENT_CANDIDATE_BUNDLE_INCOMPLETE")
+        if expected_sha256.lower() != _sha256(checkpoint_path):
+            raise ValueError("MOMENT_CANDIDATE_CHECKSUM_MISMATCH")
+    return replace(
+        settings,
+        moment_checkpoint_path=checkpoint_path,
+        moment_condition_norm_path=condition_norm_path,
+    )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def preload_moment_runner(
+    settings: CloudSettings,
+    *,
+    runner_factory: Callable[..., MomentLightAdaptRunner] = MomentLightAdaptRunner,
+) -> MomentLightAdaptRunner:
     """Load the cached runner during service startup."""
 
-    runner = get_moment_runner(settings)
+    runner = get_moment_runner(settings, runner_factory=runner_factory)
     runner.load()
     return runner
 

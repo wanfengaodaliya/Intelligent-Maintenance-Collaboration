@@ -71,8 +71,14 @@ def deployment_workspace_root(pretrained_path: Path) -> Path:
 class MomentLightAdaptRunner:
     """Load the final MOMENT model once and infer from a raw 50 ms vibration window."""
 
-    def __init__(self, settings: CloudSettings):
+    def __init__(
+        self,
+        settings: CloudSettings,
+        *,
+        model_version: str = MODEL_VERSION,
+    ):
         self.settings = settings
+        self._model_version = model_version
         self._torch: Any | None = None
         self._device: Any | None = None
         self._model: Any | None = None
@@ -85,7 +91,7 @@ class MomentLightAdaptRunner:
 
     @property
     def model_version(self) -> str:
-        return MODEL_VERSION
+        return self._model_version
 
     def load(self) -> None:
         if self._model is not None:
@@ -138,7 +144,7 @@ class MomentLightAdaptRunner:
             label=LABEL_NAMES[index],
             confidence=float(probabilities[index]),
             probabilities=probability_map,
-            model_version=MODEL_VERSION,
+            model_version=self._model_version,
         )
 
     def _load_model_builder(self) -> Any:
