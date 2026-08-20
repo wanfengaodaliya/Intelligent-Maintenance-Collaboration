@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 from core.diagnosis_contracts import BearingDecisionResult, BearingLifecycleStatus
 from result_uploader import ResultUploader
@@ -21,7 +22,8 @@ def _bearing() -> BearingDecisionResult:
 
 
 def _row(database_path, result_id: str):
-    with sqlite3.connect(database_path) as connection:
+    # AUD-09: close the connection explicitly (with-commit does not close).
+    with closing(sqlite3.connect(database_path)) as connection:
         connection.row_factory = sqlite3.Row
         return connection.execute(
             "SELECT * FROM v12_result_upload WHERE result_id=?", (result_id,)
@@ -45,7 +47,7 @@ def test_result_uploader_retries_with_persisted_bounded_backoff_and_recovers_res
     assert failed["last_error"] == "TimeoutError: offline"
     assert uploader.run_once(now_ns=1_000_000_099) == 0
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute(
             "UPDATE v12_result_upload SET status='UPLOADING' WHERE result_id=?",
             (_bearing().result_id,),
@@ -57,7 +59,7 @@ def test_result_uploader_retries_with_persisted_bounded_backoff_and_recovers_res
 
 def test_result_uploader_migrates_the_existing_p1_queue_in_place(tmp_path) -> None:
     database_path = tmp_path / "legacy.db"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute("""CREATE TABLE v12_result_upload(
             result_id TEXT PRIMARY KEY,path TEXT NOT NULL,payload_json TEXT NOT NULL,
             status TEXT NOT NULL,created_at_ns INTEGER NOT NULL)""")

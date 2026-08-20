@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -144,10 +145,16 @@ class BearingResultRepository:
                 """
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # AUD-09: commit on success, rollback on error, and always close.
         connection = sqlite3.connect(self._database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
 
 def _serialize(result: BearingDecisionResult) -> str:

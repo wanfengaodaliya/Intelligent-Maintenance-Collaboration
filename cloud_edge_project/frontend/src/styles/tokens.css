@@ -1,0 +1,93 @@
+:root {
+  /* Colors */
+  --color-bg-primary: #F4F7F8;
+  --color-bg-card: #FFFFFF;
+  --color-bg-sidebar: #15243A;
+  --color-bg-hover: #E8ECF0;
+  --color-bg-selected: #D6E4F0;
+
+  --color-text-primary: #15243A;
+  --color-text-secondary: #5A6A7E;
+  --color-text-disabled: #A0AAB6;
+  --color-text-inverse: #FFFFFF;
+
+  --color-accent-blue: #2B5FB8;
+  --color-accent-teal: #2C9AA0;
+  --color-accent-amber: #E59B2F;
+  --color-accent-red: #C74444;
+  --color-accent-green: #3D9E6A;
+
+  --color-border: #D0D5DD;
+  --color-border-light: #E4E7EC;
+
+  --color-status-online: var(--color-accent-teal);
+  --color-status-stale: var(--color-accent-amber);
+  --color-status-offline: var(--color-accent-red);
+  --color-status-unknown: var(--color-text-disabled);
+
+  --color-link-normal: var(--color-accent-blue);
+  --color-link-active: var(--color-accent-teal);
+  --color-link-broken: var(--color-accent-red);
+  --color-link-unknown: var(--color-text-disabled);
+
+  /* Typography */
+  --font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-family-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 30px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-base: 1.5;
+  --line-height-loose: 1.8;
+
+  /* Spacing */
+  --spacing-xxs: 2px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 20px;
+  --spacing-2xl: 24px;
+  --spacing-3xl: 32px;
+  --spacing-4xl: 48px;
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.1);
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.25s ease;
+  --transition-slow: 0.4s ease;
+
+  /* Layout */
+  --sidebar-width: 200px;
+  --statusbar-height: 48px;
+  --link-strip-height: 56px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0s;
+    --transition-base: 0s;
+    --transition-slow: 0s;
+  }
+}

@@ -29,9 +29,13 @@ def test_report_serializes_all_required_status_dimensions() -> None:
             "logical_cpu_count": 4,
             "cpu_utilization_percent": 25.5,
             "memory_available_mb": 2048.0,
+            "cpu_measurement_status": "OK",
+            "memory_measurement_status": "OK",
             "gpu_available": False,
             "npu_available": True,
+            "accelerator_measurement_status": "OK",
             "queue_length": 0,
+            "queue_measurement_status": "OK",
         },
         "models": [{"model_version": "edge_bearing_mock", "load_status": "LOADED"}],
         "network_to_scheduler": {
@@ -40,6 +44,9 @@ def test_report_serializes_all_required_status_dimensions() -> None:
             "rtt_ms_avg": 8.0,
             "rtt_ms_p95": 10.0,
             "loss_rate": 0.01,
+            "measurement_status": "OK",
+            "rtt_p95_is_estimate": True,
+            "last_successful_measurement_ns": None,
         },
         "last_task_activity_ns": 100,
     }
@@ -57,3 +64,31 @@ def test_report_serializes_all_required_status_dimensions() -> None:
 def test_invalid_contract_values_are_rejected(factory, expected: str) -> None:
     with pytest.raises(ValueError, match=expected):
         factory()
+
+
+def test_report_serializes_memory_measurement_status() -> None:
+    """EDGE-3: Edge payload 必须携带 memory_measurement_status。"""
+    report = EdgeStatusReport(
+        edge_node_id="edge_01",
+        reported_at_ns=123,
+        resources=ResourceSnapshot(
+            4,
+            0.0,
+            0.0,
+            cpu_measurement_status="DEGRADED",
+            memory_measurement_status="DEGRADED",
+        ),
+        accelerators=AcceleratorSnapshot(False, True),
+        network_to_scheduler=NetworkSnapshot(120, 12.0, 8.0, 10.0, 0.01),
+        queue_length=0,
+        models=(ModelStatus("edge_bearing_mock", "loaded"),),
+        last_task_activity_ns=100,
+    )
+    resources = report.as_dict()["resources"]
+    assert resources["memory_measurement_status"] == "DEGRADED"
+    assert resources["memory_available_mb"] == 0.0
+
+
+def test_invalid_memory_measurement_status_is_rejected() -> None:
+    with pytest.raises(ValueError, match="memory_measurement_status"):
+        ResourceSnapshot(1, 1.0, 1.0, memory_measurement_status="SUSPICIOUS")

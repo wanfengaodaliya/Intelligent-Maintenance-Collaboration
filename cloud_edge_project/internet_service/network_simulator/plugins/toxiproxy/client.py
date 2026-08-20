@@ -16,9 +16,11 @@ import requests
 from domain.enums import DisconnectMode
 from domain.exceptions import (
     ProxyConflictError,
+    ProxyNotFoundError,
     ToxicOperationError,
     ToxiproxyUnavailableError,
 )
+from domain.models import MIN_APPLICABLE_BANDWIDTH_KBPS
 
 
 OperationLogger = Callable[[Mapping[str, Any]], None]
@@ -37,10 +39,18 @@ def kbps_to_kbytes_per_second(bandwidth_kbps: int) -> int:
 
     if bandwidth_kbps <= 0:
         raise ValueError("bandwidth_kbps must be greater than zero")
+    if bandwidth_kbps < MIN_APPLICABLE_BANDWIDTH_KBPS:
+        # AUD-10: 1~7 Kbps 无法用整数 KB/s 表示，静默抬高为 8 Kbps
+        # 会掩盖配置错误，必须显式失败。
+        raise ValueError(
+            "bandwidth_kbps below "
+            f"{MIN_APPLICABLE_BANDWIDTH_KBPS} Kbps cannot be represented "
+            "by Toxiproxy's integer KB/s rate; reject the configuration instead"
+        )
     converted = (Decimal(bandwidth_kbps) / Decimal(8)).quantize(
         Decimal("1"), rounding=ROUND_HALF_UP
     )
-    return max(1, int(converted))
+    return int(converted)
 
 
 class _RequestError(ToxiproxyUnavailableError):
@@ -372,6 +382,14 @@ class ToxiproxyClient:
                     json=payload,
                 )
         except (ToxiproxyUnavailableError, ToxicOperationError) as exc:
+            # HTTP 404 = proxy 已不存在（Toxiproxy 重启后内存丢失）。
+            # 这是可自愈的“缺失”信号，区别于参数 400/5xx 等普通失败；
+            # 让错误带上 status_code 上抛，供插件精确触发 ensure_proxy 自愈。
+            if getattr(exc, "status_code", None) == 404:
+                raise ProxyNotFoundError(
+                    f"proxy {proxy_name} not found while {operation} toxic "
+                    f"{proxy_name}/{toxic_name}"
+                ) from exc
             self._log_operation(
                 proxy_name,
                 toxic_name,

@@ -29,6 +29,8 @@ class NetworkLinkReport(StrictWireModel):
         ge=0,
         le=100,
         allow_inf_nan=False,
+        description="Markov Simulator 生成的模拟丢包率（%）。Toxiproxy 未真实施加，"
+        "不得当作 MQTT 实测发布成功率。",
     )
     link_reliability_score: float = Field(ge=0, le=100, allow_inf_nan=False)
     available: bool
@@ -56,6 +58,18 @@ class NetworkReport(StrictWireModel):
         return value
 
 
+class RejectedLinkResult(StrictWireModel):
+    link_id: str | None = None
+    accepted: bool
+    reason: str
+
+
 class ReportAcknowledgement(StrictWireModel):
     accepted: bool
     report_sequence: int = Field(ge=1)
+    # Batch endpoint counters (absent on the legacy single-link acknowledgement).
+    received_count: int | None = Field(default=None, ge=0)
+    accepted_count: int | None = Field(default=None, ge=0)
+    skipped_count: int | None = Field(default=None, ge=0)
+    rejected_count: int | None = Field(default=None, ge=0)
+    results: tuple[RejectedLinkResult, ...] | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sqlite3
+from contextlib import closing
 
 from cloud_service.config import CloudSettings
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
@@ -204,7 +205,7 @@ def test_v12_cloud_review_processes_and_persists_the_exact_100ms_window(tmp_path
 
     assert result["cloud_packet_result"]["window_start_sequence"] == 1
     assert result["cloud_packet_result"]["window_end_sequence"] == 2
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute(
             "SELECT start_timestamp_ns,sample_count FROM raw_packet_index WHERE packet_id='packet_02'"
         ).fetchone() == (0, 6_400)

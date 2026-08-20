@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
@@ -22,6 +23,7 @@ except ImportError:  # Allows running scheduler/api.py directly.
 
 
 EXPECTED_PACKET_COUNT = 80
+_MODULE_LOGGER = logging.getLogger(__name__)
 ASSIGNMENT_REQUEST_FIELDS = frozenset(
     {
         "device_id",
@@ -467,9 +469,25 @@ class AssignmentScheduler:
             elif node.config.edge_node_id in excluded_edge_node_ids:
                 continue
             resources = node.report["resources"] if node.report else {}
+            # EDGE-2: 采集状态不可信（FAILED）时保守排除，
+            # 绝不让 FAILED queue=0 被当作“空闲”通过容量门控。
+            gate_reason = _measurement_gate(resources)
+            if gate_reason is not None:
+                _MODULE_LOGGER.debug(
+                    "skip edge node %s in ranking: %s",
+                    node.config.edge_node_id,
+                    gate_reason,
+                )
+                continue
             if float(resources.get("cpu_utilization_percent", 100.0)) > 90.0:
                 continue
-            if float(resources.get("memory_available_mb", 0.0)) < 512.0:
+            # EDGE-3: 只有 memory status 为 OK（或字段缺失，等同旧行为）才执行
+            # 512MB 硬门控；DEGRADED 时 0MiB 是遥测 fallback，不是真实低内存，
+            # 该分量已由 base_score 中性化，故不执行硬门控。
+            if (
+                resources.get("memory_measurement_status", "OK") == "OK"
+                and float(resources.get("memory_available_mb", 0.0)) < 512.0
+            ):
                 continue
             reported_queue_length = int(resources.get("queue_length", 999))
             reservation_count = active_reservations.get(
@@ -607,8 +625,29 @@ def _network_score(snapshot: LinkSnapshot | None, required_mbps: float) -> float
         snapshot.available_throughput_mbps / max(required_mbps, 0.001),
         1.0,
     ) * 100.0
-    success_score = snapshot.mqtt_publish_success_rate * 100.0
-    return round(rtt_score * 0.40 + bandwidth_score * 0.40 + success_score * 0.20, 4)
+    # 该分项基于网络模型生成的模拟丢包率推导链路可靠性，
+    # 不是 MQTT 实测发布成功率。
+    loss_score = (1.0 - snapshot.simulated_packet_loss_rate) * 100.0
+    return round(rtt_score * 0.40 + bandwidth_score * 0.40 + loss_score * 0.20, 4)
+
+
+def _measurement_gate(resources: Mapping[str, Any]) -> str | None:
+    """EDGE-2: 基于采集状态做候选保守排除。
+
+    返回跳过原因（None=通过）。规则：
+    - CPU FAILED / QUEUE FAILED：采集不可信且无法确认空闲/未过载 → 排除；
+    - CPU DEGRADED：不排除（psutil 缺失等遥测缺口），仅由 base_score 中性化；
+    - QUEUE STALE：TTL 内使用 last-known-good 真实历史值，不排除；
+    - 字段缺失：默认 OK，保持旧行为。
+    """
+    if resources.get("cpu_measurement_status") == "FAILED":
+        return "cpu_measurement_failed"
+    if resources.get("queue_measurement_status") == "FAILED":
+        return "queue_measurement_failed"
+    # EDGE-3: 内存采集 FAILED 时拿到的 0MiB 不可信，保守排除候选。
+    if resources.get("memory_measurement_status") == "FAILED":
+        return "memory_measurement_failed"
+    return None
 
 
 def _has_loaded_model(node: EdgeNodeState) -> bool:

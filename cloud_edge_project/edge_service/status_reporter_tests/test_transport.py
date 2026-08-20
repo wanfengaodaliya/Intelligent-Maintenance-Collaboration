@@ -27,7 +27,10 @@ def test_target_retries_server_error_then_succeeds() -> None:
     target = HttpStatusTarget(_config(), http_post=post)
     payload = {"reported_at_ns": 1}
 
-    assert target.send(payload) is True
+    outcome = target.send(payload)
+    assert outcome.success is True
+    assert outcome.status_code == 200
+    assert outcome.attempts == 2
     assert len(calls) == 2
     assert calls[0]["json"] is payload
 
@@ -42,7 +45,11 @@ def test_target_does_not_retry_client_error() -> None:
 
     target = HttpStatusTarget(_config(retry_count=3), http_post=post)
 
-    assert target.send({"reported_at_ns": 1}) is False
+    outcome = target.send({"reported_at_ns": 1})
+    assert outcome.success is False
+    assert outcome.status_code == 400
+    assert outcome.error == "HTTP_400"
+    assert outcome.attempts == 1
     assert calls == 1
 
 
@@ -56,5 +63,9 @@ def test_target_retries_network_error_without_raising() -> None:
 
     target = HttpStatusTarget(_config(retry_count=2), http_post=post)
 
-    assert target.send({"reported_at_ns": 1}) is False
+    outcome = target.send({"reported_at_ns": 1})
+    assert outcome.success is False
+    assert outcome.status_code is None
+    assert outcome.error == "OSError"
+    assert outcome.attempts == 3
     assert calls == 3

@@ -83,7 +83,7 @@ network_simulator/
 - Docker Compose V2，可通过 `docker compose version` 检查；
 - 本地运行或测试时需要 Python 3.11+；
 - 默认仅在宿主机 `127.0.0.1` 绑定端口 `8000`、`8090`、`8474`、`1883`、`18831`、`18832`、`18931`、`18932`，这些端口需要可用；
-- 接入真实 Scheduler 时，应提供 `POST /api/v1/network/reports`；
+- 接入真实 Scheduler 时，应提供 `POST /scheduler/network-reports`（见 `reporter.yaml`）;
 - Windows 使用 Docker Desktop 时，必须先启动 Docker Desktop 并等待 Engine 就绪。
 
 建议先检查：
@@ -316,6 +316,8 @@ rate_KB_per_second = round_half_up(bandwidth_kbps / 8)
 
 例如 `500 Kbps ÷ 8 = 62.5 KB/s`，半入取整后传给 Toxiproxy 的 `rate` 为 `63`。
 
+**最小粒度限制**：Toxiproxy 只能表示整数 KB/s，即可表示的最小带宽为 `1 KB/s = 8 Kbps`。配置校验会直接拒绝 `1~7 Kbps` 的正数带宽（启动报错 `connected bandwidth must be at least 8 Kbps`），而不会静默抬高为 8 Kbps。若确需低于 8 Kbps 的极端带宽，需改用 `tc / netem` 等其他实现，本项目当前不支持。
+
 ### 7.6 修改转移矩阵
 
 `transition_matrix.yaml` 的行列顺序必须与 `states` 完全一致，每行概率非负、有限且总和为 1。状态集合必须恰好为 `GOOD`、`MEDIUM`、`BAD`、`DISCONNECTED`。
@@ -371,10 +373,10 @@ fixed_state:
 
 ## 9. Scheduler/Reporter 接入
 
-真实 Scheduler 应提供：
+真实 Scheduler 应提供（本项目的批量端点，见 `scheduler/api.py` 的 `update_network_report_batch`）：
 
 ```http
-POST /api/v1/network/reports
+POST /scheduler/network-reports
 Content-Type: application/json
 Authorization: Bearer <token>   # 仅 bearer 模式
 ```
@@ -590,3 +592,56 @@ Controller 收到 SIGINT/SIGTERM 后停止新 Tick，并按插件逆序退出。
 8. 停止 Scheduler 后网络状态仍继续更新；
 9. 日志卷中生成五类日志；
 10. `pytest -q` 全部通过；真实 Toxiproxy 条件具备时再运行集成效果测试。
+
+## 17. 拓扑与监控语义（P3 补充说明）
+
+### 17.1 ENV-2：compose `scheduler`（stub）与真实 Scheduler 的区别
+
+当前环境下存在两个“接收报告”的对象，容易误以为“容器 Up = 真实链路正常”：
+
+- compose 里的 **`scheduler`（stub / Fake Scheduler）**：仅用于 network simulator 的独立联调，`docker-compose.yml` 中绑定 `127.0.0.1:8000`，不做真实调度决策，只缓存/展示报告。**ENV-2：该服务已通过 `profiles: [standalone]` 隔离，默认完整栈启动不会拉起它**，仅当显式 `docker compose --profile standalone up -d` 时才运行（container_name `scheduler-stub`）。
+- **真实 Scheduler**：完整系统运行时 Reporter 的真实目标。本模块 Controller 实际把报告发给谁，取决于 `NETWORK_SCHEDULER_URL`（环境变量）或 `config/reporter.yaml` 的 `scheduler_url`，**不是**看 compose 里哪个容器在运行。Controller 启动成功会打印一次 `network reporter configured: target=<url>`。
+
+**两种运行模式：**
+
+- **模式 A（Standalone Network Simulator）**：`Controller + Toxiproxy + Mosquitto + Scheduler Stub`，用于独立测试网络模拟与 Reporter 请求。
+  ```bash
+  docker compose --profile standalone up -d --build
+  ```
+  stub 只验证 Reporter 网络请求 / 缓存展示报告，**不能代表完整 Scheduler**。
+- **模式 B（完整项目）**：`Controller + Toxiproxy + Mosquitto + 真实 Scheduler + Edge + Cloud`。Network Reporter 的权威目标是 `reporter.yaml` / 环境变量最终解析出的真实 Scheduler URL（默认 `host.docker.internal:8003/scheduler/network-reports`），默认启动不包含 stub。
+
+当前默认配置（以仓库内实际 YAML 为准）：
+
+- standalone stub：`127.0.0.1:8000`（仅 `--profile standalone` 启动）
+- 真实 Scheduler：`host.docker.internal:8003/scheduler/network-reports`
+
+因此：
+
+- 仅启动 compose（stub 正常）并不代表真实链路已通；真实 Scheduler 取决于 8003 是否可达；
+- “真实 Scheduler 不可达 → Controller 的 Reporter health 降级 → Docker health `unhealthy`”是**正确的故障可观测行为**，不代表任何已知告警（例如 AUD-13）又坏了。
+
+### 17.2 ENV-2：LinkSnapshot 与 Edge `network_to_scheduler` 的数据源边界
+
+- **Network Simulator 的 `LinkSnapshot`**：当前模拟场景下 Scheduler 网络决策的主数据源（`sender → edge` 链路笛卡尔积，含 apply 结果与评分）。
+- **Edge 侧 `network_to_scheduler`**：Edge 状态报告里的网络观测/诊断数据，当前**不直接参与** Assignment 调度排序。
+
+原因：两者不是同一条物理/逻辑链路；`measurement_status=FAILED` 表示“测量失败”，不等于“链路实际断开”。强行混用会造成链路语义错配或双数据源冲突。未来真实部署若移除 Network Simulator，再单独设计数据源切换/融合策略。
+
+### 17.3 NET-5：`skipped` / 未支持链路的监控语义
+
+Scheduler 目前只消费 `sender → edge` 的 MQTT 链路，其他方向的 HTTP 链路在上报中被标记为 `skipped`。这是**现有设计边界**，不是错误。因此：
+
+- `skipped_count > 0` 不直接作为 unhealthy 条件；
+- `unsupported/skipped` 若符合配置预期，只作为信息统计；
+- 告警应聚焦于：`transport delivery failure`、batch `accepted=false`、`rejected_count > 0`、以及 `accepted_count < 当前配置期望支持数`。
+
+“期望支持数”应从当前 `links`/拓扑/配置推导，**不要硬编码**成固定数字。例如：默认拓扑下 18 条链路中有 12 条 HTTP 被 `skipped`、6 条 MQTT 被接受，**仅当当前拓扑恰好如此时**这个示例成立；今后 sender/edge 数量变化后应立即随之变化。
+
+### 17.4 NET-2：`report_sequence` 语义（已知限制）
+
+当前 `report_sequence` 是**纳秒时间戳式的单调值**（默认取 `time.time_ns()` 作为起点，之后自增），**不是**从 1 开始的连续整数序号。因此 Scheduler **不能**通过 `seq > last + 1` 判断“缺报”，否则在 1、2、3 等合法序号之外会大量误报。
+
+本模块本轮**不实现** `last + 1` 缺口检测。若未来确需缺口检测，应另行设计：真正的单调 counter + reporter instance/restart identity，或基于报告周期的时间缺口观测。本轮不改消息合同。
+
+> 报告丢失的观测请使用 Reporter 的 `dropped_report_count`（NET-3）：一次报告经 Transport 内部所有重试后仍最终未交付才 +1，恢复成功不清零，表示为累计历史。

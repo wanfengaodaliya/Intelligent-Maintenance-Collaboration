@@ -7,6 +7,8 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -329,10 +331,16 @@ class DeferredCloudRepository:
                 "ON deferred_cloud_task(state,next_retry_at_ns)"
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # AUD-09: commit on success, rollback on error, and always close.
         connection = sqlite3.connect(self.database_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
 
 def _validate_task(payload: Mapping[str, Any]) -> dict[str, Any]:

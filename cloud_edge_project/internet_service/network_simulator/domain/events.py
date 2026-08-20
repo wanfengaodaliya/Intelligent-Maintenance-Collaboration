@@ -32,6 +32,12 @@ class LinkScoreCalculated:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedLink:
+    link_id: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReportCompleted:
     report_sequence: int
     link_count: int
@@ -40,6 +46,9 @@ class ReportCompleted:
     retry_count: int
     duration_ms: float
     error: str | None
+    accepted_count: int | None = None
+    rejected_count: int | None = None
+    rejected_links: tuple[RejectedLink, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

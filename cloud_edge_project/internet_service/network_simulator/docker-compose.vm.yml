@@ -43,7 +43,7 @@ services:
       NETWORK_CONFIG_DIR: /app/config
       NETWORK_LOG_DIR: /app/logs
       TOXIPROXY_API_BASE_URL: "${TOXIPROXY_API_BASE_URL:-http://127.0.0.1:8474}"
-      NETWORK_SCHEDULER_URL: "${NETWORK_SCHEDULER_URL:-http://127.0.0.1:8003/scheduler/network-reports/sender_01__to__edge_01__mqtt}"
+      NETWORK_SCHEDULER_URL: "${NETWORK_SCHEDULER_URL:-http://127.0.0.1:8003/scheduler/network-reports}"
       NETWORK_REPORT_TOKEN: "${NETWORK_REPORT_TOKEN:-}"
       NETWORK_LINK_UPSTREAMS_JSON: "${NETWORK_LINK_UPSTREAMS_JSON:-}"
       TZ: "${TZ:-Asia/Shanghai}"

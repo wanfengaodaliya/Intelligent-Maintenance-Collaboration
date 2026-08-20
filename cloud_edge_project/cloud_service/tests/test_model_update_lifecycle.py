@@ -1,5 +1,6 @@
 from pathlib import Path
 import sqlite3
+from contextlib import closing
 
 from cloud_service.model_update.contracts import ModelUpdateConfig
 from cloud_service.model_update.decision import decide_update
@@ -58,7 +59,7 @@ def test_repository_schema_does_not_require_candidate_at_task_creation(tmp_path:
 
 def test_v15_candidate_first_task_is_preserved_by_schema_migration(tmp_path: Path):
     database_path = tmp_path / "legacy.db"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         connection.executescript(
             """CREATE TABLE model_update_task (
                    update_id TEXT PRIMARY KEY,analysis_id TEXT NOT NULL,
@@ -88,7 +89,7 @@ def test_v15_candidate_first_task_is_preserved_by_schema_migration(tmp_path: Pat
 
 def test_v15_migration_recovers_after_schema_creation_was_interrupted(tmp_path: Path):
     database_path = tmp_path / "interrupted.db"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         connection.executescript(
             """CREATE TABLE model_update_task_legacy_v15 (
                    update_id TEXT PRIMARY KEY,analysis_id TEXT NOT NULL,
@@ -114,7 +115,7 @@ def test_v15_migration_recovers_after_schema_creation_was_interrupted(tmp_path: 
 
     assert migrated is not None
     assert migrated["status"] == "handoff_to_distribution"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         legacy_table = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='model_update_task_legacy_v15'"

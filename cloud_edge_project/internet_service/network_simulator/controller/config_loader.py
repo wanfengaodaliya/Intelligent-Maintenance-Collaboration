@@ -21,6 +21,7 @@ import yaml
 
 from domain.enums import ExperimentMode, LinkProtocol, LinkType, NetworkState
 from domain.exceptions import ConfigurationError
+from domain.models import MIN_APPLICABLE_BANDWIDTH_KBPS
 
 
 LINK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -470,8 +471,14 @@ class StateConfig(StrictFrozenModel):
             if not isinstance(self.packet_loss_percent, FloatRange):
                 raise ValueError("connected states require a packet loss range")
             assert self.bandwidth_kbps is not None
-            if self.bandwidth_kbps.min <= 0:
-                raise ValueError("connected bandwidth must be greater than zero")
+            if self.bandwidth_kbps.min < MIN_APPLICABLE_BANDWIDTH_KBPS:
+                # AUD-10: Toxiproxy 最小粒度为 1 KB/s = 8 Kbps，
+                # 1~7 Kbps 会被静默抬高为 8 Kbps，直接拒绝配置。
+                raise ValueError(
+                    "connected bandwidth must be at least "
+                    f"{MIN_APPLICABLE_BANDWIDTH_KBPS} Kbps "
+                    "(Toxiproxy minimum granularity is 1 KB/s = 8 Kbps)"
+                )
         else:
             if any(value is not None for value in ranges):
                 raise ValueError("disconnected states must use null network ranges")

@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable, Mapping
 
 from core.diagnosis_contracts import DeviceDecisionResult
@@ -186,7 +188,13 @@ class DeviceResultOutbox:
                 ON device_result_outbox(status, next_attempt_at_ns)"""
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # AUD-09: commit on success, rollback on error, and always close.
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()

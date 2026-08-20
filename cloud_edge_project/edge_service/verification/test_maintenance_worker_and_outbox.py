@@ -176,3 +176,26 @@ def test_maintenance_round_is_decoupled_from_status_reporting() -> None:
     coordinator.report_node_status()
     assert len(scheduler.reports) == 1
     assert scheduler.reports[0]["edge_node_id"] == "edge_01"
+
+
+def test_pending_aggregation_count_tracks_backlog_and_flush() -> None:
+    """AUD-11：aggregation_waiting 分桶可观测，聚合回补后归零。"""
+    coordinator = EdgeRuntimeCoordinator(
+        edge_node_id="edge_01",
+        ingress=object(),
+        cache=object(),
+        pipeline=SimpleNamespace(queue_length=0),
+        scheduler=_RecordingScheduler(),
+    )
+
+    assert coordinator.pending_aggregation_count == 0
+
+    packet = SimpleNamespace(sequence_number=1)
+    coordinator._pending_aggregation[
+        ("task_001", "machine_01", "bearing_a", "sender_a", "packet_001")
+    ] = packet
+    assert coordinator.pending_aggregation_count == 1
+
+    # 聚合工作流未装配时回补直接出队，计数归零。
+    assert coordinator._flush_aggregation() == 1
+    assert coordinator.pending_aggregation_count == 0

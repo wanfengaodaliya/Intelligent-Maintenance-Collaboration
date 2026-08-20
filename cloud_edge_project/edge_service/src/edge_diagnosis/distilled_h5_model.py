@@ -39,6 +39,11 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
     This class never reads environment variables or ``active_version.json``.
     """
 
+    # 类级默认值：只有全部部署产物（checkpoint 校验、归一化元数据、权重加载）
+    # 都成功完成后，__init__ 末尾才会置为 True。构造失败直接抛
+    # H5ModelArtifactError，未完成初始化的对象（如测试桩）保持 False。
+    ready: bool = False
+
     def __init__(
         self,
         model_dir: Path | str,
@@ -88,6 +93,8 @@ class DistilledH5DiagnosticModel(CodeFallbackRunner):
         self.model_version = model_version
         self.feature_pipeline_version = manifest["feature_pipeline_version"]
         self.deployment_status = "production"
+        # 全部部署产物加载成功，模型进入可用状态。
+        self.ready = True
 
     def prepare_inputs(
         self, raw_packet: Mapping[str, Any], cancel_event=None
