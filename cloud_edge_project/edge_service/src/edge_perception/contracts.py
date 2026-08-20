@@ -1,36 +1,23 @@
 # -*- coding: utf-8 -*-
-"""降采样和感知模块的最小调用契约。"""
+"""降采样与感知模块调用契约（薄转发层）。
+
+契约定义已收敛到唯一权威位置 `core.edge_perception_contracts`。
+本模块仅重导出契约类型与错误码，不再持有任何独立副本。
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional
+from core.edge_perception_contracts import (
+    DOWNSAMPLING_FAILED,
+    PERCEPTION_FAILED,
+    ModuleResult,
+    ModuleStatus,
+    PerceptionInvocationContext,
+)
 
-
-DOWNSAMPLING_FAILED = "DOWNSAMPLING_FAILED"
-PERCEPTION_FAILED = "PERCEPTION_FAILED"
-
-
-@dataclass(frozen=True)
-class ModuleStatus:
-    success: bool
-    error_code: Optional[str]
-
-
-@dataclass(frozen=True)
-class ModuleResult:
-    status: ModuleStatus
-    payload: Optional[dict[str, Any]]
-
-    @classmethod
-    def succeeded(cls, payload: dict[str, Any]) -> "ModuleResult":
-        return cls(ModuleStatus(True, None), payload)
-
-    @classmethod
-    def failed(cls, error_code: str) -> "ModuleResult":
-        return cls(ModuleStatus(False, error_code), None)
-
-
-@dataclass(frozen=True)
-class PerceptionInvocationContext:
-    edge_node_id: str
-    perception_received_at_ns: int
+__all__ = [
+    "DOWNSAMPLING_FAILED",
+    "PERCEPTION_FAILED",
+    "ModuleResult",
+    "ModuleStatus",
+    "PerceptionInvocationContext",
+]
