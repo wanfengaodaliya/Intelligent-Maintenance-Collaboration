@@ -257,7 +257,7 @@ def test_pending_distribution_api_endpoint(tmp_path: Path, monkeypatch) -> None:
     )
     _save_analysis(database_path, _analysis(_problem()))
     update_id = _advance_to_handoff(service, tmp_path)
-    settings = replace(load_cloud_settings(), backend="mock", database_path=database_path)
+    settings = replace(load_cloud_settings(), backend="moment_light_adapt", database_path=database_path)
     monkeypatch.setattr(app_module, "load_cloud_settings", lambda: settings)
     from fastapi.testclient import TestClient
 
@@ -271,3 +271,10 @@ def test_pending_distribution_api_endpoint(tmp_path: Path, monkeypatch) -> None:
     assert body["edge_node_id"] == "edge_01"
     assert body["pending_pull_count"] == 1
     assert body["pending_pulls"][0]["update_id"] == update_id
+
+
+def test_cloud_health_and_status_reporter_use_cloud_01_by_default() -> None:
+    health_payload = app_module._health_payload(load_cloud_settings(), "ok")
+
+    assert health_payload["node_id"] == "cloud_01"
+    assert app_module.status_reporter.cloud_node_id == "cloud_01"

@@ -290,11 +290,6 @@ CREATE TABLE IF NOT EXISTS device_task_result (
     has_conflict INTEGER NOT NULL, arbitration_id TEXT, summary TEXT, completed_at_ns INTEGER NOT NULL,
     result_json TEXT NOT NULL CHECK (json_valid(result_json)), PRIMARY KEY (device_id, task_id)
 );
-CREATE TABLE IF NOT EXISTS arbitration_summary (
-    arbitration_id TEXT PRIMARY KEY, status TEXT NOT NULL, summary TEXT, maintenance_advice TEXT,
-    error_code TEXT, created_at_ns INTEGER NOT NULL,
-    FOREIGN KEY (arbitration_id) REFERENCES device_arbitration_record(arbitration_id)
-);
 CREATE TABLE IF NOT EXISTS cloud_moment_review_record (
     review_id TEXT PRIMARY KEY,
     result_id TEXT NOT NULL,

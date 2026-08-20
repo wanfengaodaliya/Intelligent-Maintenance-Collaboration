@@ -15,7 +15,7 @@ def client(tmp_path: Path, monkeypatch):
     database_path = tmp_path / "cloud.db"
     initialize_database(database_path)
     settings = replace(
-        load_cloud_settings(), backend="mock", database_path=database_path
+        load_cloud_settings(), backend="moment_light_adapt", database_path=database_path
     )
     monkeypatch.setattr(app_module, "load_cloud_settings", lambda: settings)
     from fastapi.testclient import TestClient

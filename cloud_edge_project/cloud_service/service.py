@@ -25,11 +25,9 @@ from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.packet_diagnosis import (
     DiagnosisModel,
     PacketDiagnosis,
-    RuleBasedDiagnosisModel,
 )
 from cloud_service.perception.pipeline import run_single_packet_perception
 from cloud_service.storage.persistence import CloudReviewPersistence
-from cloud_service.vllm_backend import infer_vllm
 
 
 _moment_runner: MomentLightAdaptRunner | None = None
@@ -225,29 +223,15 @@ def _infer_packet(
     review_id = CloudReviewPersistence(selected.database_path).persist_packet(
         request, perception_result
     )
-    if diagnosis_model is not None:
-        model = diagnosis_model
-        diagnosis = model.predict(perception_result["cloud_recomputed_features"])
-        model_version = model.model_version
-    elif selected.backend == "mock":
-        model = RuleBasedDiagnosisModel()
-        diagnosis = model.predict(perception_result["cloud_recomputed_features"])
-        model_version = model.model_version
-    elif selected.backend == "vllm":
-        model_result = infer_vllm(perception_result, selected)
-        diagnosis = PacketDiagnosis(
-            label=model_result["label"],
-            confidence=model_result["confidence"],
-            risk_level=model_result["risk_level"],
-            recommended_action=model_result["decision"]["recommended_action"],
-        )
-        model_version = model_result["model_name"]
-    else:
+    if diagnosis_model is None:
         raise CloudServiceError(
             "INVALID_CLOUD_BACKEND",
             f"unsupported cloud backend: {selected.backend}",
             500,
         )
+    model = diagnosis_model
+    diagnosis = model.predict(perception_result["cloud_recomputed_features"])
+    model_version = model.model_version
     packet_result = _cloud_packet_result(
         review_id, request, diagnosis, model_version
     )

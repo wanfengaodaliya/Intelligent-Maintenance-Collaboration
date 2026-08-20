@@ -15,8 +15,6 @@ pytest.importorskip(
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cloud_service import app as cloud_service_app
-from cloud_service.app import infer_cloud_v01
-from cloud_service.config import CloudSettings
 from common.schemas import ContractError, validate_task_log, validate_task_request
 from edge_service import app as edge_service_app
 from edge_service.model import EDGE_NODE_ID, infer_edge_v01
@@ -37,19 +35,6 @@ TASK = {
         "vibration": 0.63,
         "current": 13.2,
         "load": 0.76,
-    },
-}
-
-CLOUD_REQUEST = {
-    "task_id": "task_0001",
-    "scenario": "industrial",
-    "task_type": "fault_detection",
-    "source_node": "edge_1",
-    "data": TASK["data"],
-    "edge_result": {
-        "label": "fault",
-        "confidence": 0.72,
-        "risk_level": "medium",
     },
 }
 
@@ -118,59 +103,6 @@ def test_edge_v01_reports_actual_edge_service_node():
     result = infer_edge_v01(TASK)
 
     assert result["node_id"] == EDGE_NODE_ID
-
-
-def test_cloud_v01_returns_documented_contract():
-    result = infer_cloud_v01(CLOUD_REQUEST)
-
-    assert result["task_id"] == "task_0001"
-    assert set(result) == {
-        "task_id",
-        "node_id",
-        "model_name",
-        "label",
-        "confidence",
-        "risk_level",
-        "cloud_latency_ms",
-        "decision",
-    }
-    assert set(result["decision"]) == {"action", "description"}
-
-
-def test_cloud_v01_uses_vllm_when_configured(monkeypatch, tmp_path: Path):
-    calls = []
-    settings = CloudSettings(
-        backend="vllm",
-        vllm_url="http://127.0.0.1:6006/v1/chat/completions",
-        vllm_model_name="qwen3.5-2b-local",
-        vllm_api_key="",
-        vllm_timeout_seconds=30,
-        database_path=tmp_path / "cloud.db",
-    )
-
-    def fake_infer_v01_vllm(payload: dict, received_settings: CloudSettings) -> dict:
-        calls.append((payload, received_settings))
-        return {
-            "task_id": payload["task_id"],
-            "node_id": "cloud_1",
-            "model_name": "qwen3.5-2b-local",
-            "label": "fault",
-            "confidence": 0.88,
-            "risk_level": "medium",
-            "cloud_latency_ms": 12.3,
-            "decision": {"action": "send_alert", "description": "模型复核发现异常"},
-        }
-
-    monkeypatch.setattr(cloud_service_app, "load_cloud_settings", lambda: settings)
-    monkeypatch.setattr(
-        cloud_service_app, "infer_v01_vllm", fake_infer_v01_vllm, raising=False
-    )
-
-    result = infer_cloud_v01(CLOUD_REQUEST)
-
-    assert calls == [(CLOUD_REQUEST, settings)]
-    assert result["model_name"] == "qwen3.5-2b-local"
-    assert result["decision"]["action"] == "send_alert"
 
 
 def test_task_request_rejects_out_of_range_priority():

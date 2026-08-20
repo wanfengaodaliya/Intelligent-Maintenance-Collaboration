@@ -8,7 +8,6 @@ from typing import Any
 from cloud_service.device_arbitration.fusion import calculate_fusion
 from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
 from cloud_service.storage.database import initialize_database
-from cloud_service.arbitration_summary import ArbitrationSummaryService
 from core.arbitration_contracts import ScenarioArbitrationAdapter
 
 
@@ -81,7 +80,7 @@ class DeviceArbitrationService:
         if decision["resolution_method"] == "weighted_fusion":
             result["decision_margin"] = decision["decision_margin"]
         persisted = self.repository.save(request=request, result=result)
-        return persisted | ArbitrationSummaryService(self.database_path).summarize(persisted)
+        return persisted
 
     def get(self, conflict_id: str) -> dict[str, Any] | None:
         return self.repository.get_by_conflict_id(conflict_id)

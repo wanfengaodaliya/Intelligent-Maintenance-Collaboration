@@ -88,7 +88,7 @@ def test_cloud_endpoint_accepts_scheduler_v12_arbitration_payload(
     monkeypatch.setattr(
         cloud_api,
         "load_cloud_settings",
-        lambda: CloudSettings("mock", "", "", "", 1.0, tmp_path / "cloud.db"),
+        lambda: CloudSettings("moment_light_adapt", "", "", "", 1.0, tmp_path / "cloud.db"),
     )
 
     result = cloud_api.device_arbitration(_request())

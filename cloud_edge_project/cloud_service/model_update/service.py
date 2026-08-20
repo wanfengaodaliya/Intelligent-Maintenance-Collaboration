@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from cloud_service.model_update.approval import ApprovalError, approve_candidate
 from cloud_service.model_update.candidate_registry import CandidateRegistry
+from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.model_update.contracts import (
     CONFIRMATION_STATES,
     DATA_PREPARATION_STATES,
@@ -41,6 +42,7 @@ from cloud_service.model_update.post_validator import (
     validate_post_deployment,
 )
 from cloud_service.model_update.repository import ModelUpdateRepository
+from cloud_service.model_update.suggestion import generate_suggestion as _generate_suggestion
 from cloud_service.model_update.trainer import build_training_plan
 from cloud_service.model_update.training import OfflineTrainingRunner
 from cloud_service.model_update.validator import validate_candidate
@@ -63,8 +65,10 @@ class ModelUpdateService:
         training_data_source: Any | None = None,
         label_provider: LabelConfirmationProvider | None = None,
         trainer: OfflineTrainingRunner | None = None,
+        settings: CloudSettings | None = None,
     ) -> None:
         self.database_path = Path(database_path)
+        self.settings = settings or load_cloud_settings()
         self.data_root = (
             data_root
             or Path(__file__).resolve().parents[1] / "data" / "model_updates"
@@ -136,7 +140,32 @@ class ModelUpdateService:
             "created_at_ns": now,
             "updated_at_ns": now,
         }
-        return {"decision": decision, "update": self.repository.create(task)}
+        created = self.repository.create(task)
+        try:
+            self.generate_suggestion(created["update_id"])
+        except Exception:
+            pass
+        return {"decision": decision, "update": self.repository.get(created["update_id"])}
+
+    def generate_suggestion(self, update_id: str) -> dict[str, Any]:
+        """Generate (or regenerate) the human-facing LLM suggestion for a task.
+
+        The suggestion is a sidecar artifact for frontend review only; it never
+        feeds back into data preparation or training. Falls back to a template
+        when the LLM is unavailable.
+        """
+
+        task = self._task(update_id)
+        text, source = _generate_suggestion(task, self.settings)
+        return self.repository.update(
+            update_id,
+            suggestion_json={
+                "text": text,
+                "source": source,
+                "generated_at_ns": time.time_ns(),
+            },
+            updated_at_ns=time.time_ns(),
+        )
 
     def get(self, update_id: str) -> dict[str, Any]:
         return self._task(update_id)

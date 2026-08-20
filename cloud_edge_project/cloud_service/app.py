@@ -14,7 +14,6 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import requests
 from fastapi import Body, FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
@@ -66,7 +65,6 @@ from cloud_service.service import (
     get_moment_runner,
     preload_moment_runner,
 )
-from cloud_service.vllm_backend import infer_v01_vllm
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
@@ -76,11 +74,7 @@ from common.config import load_config
 from common.schemas import (
     ContractError,
     error_response,
-    is_v01_cloud_request,
-    require_confidence,
-    require_field,
     require_mapping,
-    require_non_empty_string,
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
@@ -120,7 +114,7 @@ def build_cloud_status_reporter() -> CloudNodeStatusReporter:
 
     return CloudNodeStatusReporter(
         scheduler_base_url=scheduler_base_url,
-        cloud_node_id=os.getenv("CLOUD_REVIEW_NODE_ID", "cloud_01").strip(),
+        cloud_node_id=CLOUD_NODE_ID,
         settings_provider=load_cloud_settings,
         queue_length_provider=lambda: 0,
         health_provider=health_provider,
@@ -223,73 +217,12 @@ async def _lifespan(_: FastAPI):
 app = FastAPI(title="cloud_service", lifespan=_lifespan)
 
 
-def infer_cloud_v01(payload: dict[str, Any]) -> dict[str, Any]:
-    """Produce the documented V0.1 CloudResult from an edge result."""
-
-    request = require_mapping(payload, "CloudRequest")
-    task_id = require_non_empty_string(require_field(request, "task_id"), "task_id")
-    scenario = require_field(request, "scenario", task_id)
-    if scenario not in {"industrial", "energy"}:
-        raise ContractError("INVALID_PACKET", "scenario must be industrial or energy", task_id)
-    for field in ("task_type", "source_node"):
-        require_non_empty_string(require_field(request, field, task_id), field, task_id)
-    data = require_mapping(require_field(request, "data", task_id), "data", task_id)
-    if not data:
-        raise ContractError("INVALID_PACKET", "data must be a non-empty object", task_id)
-    edge_result = require_mapping(require_field(request, "edge_result", task_id), "edge_result", task_id)
-    label = require_field(edge_result, "label", task_id)
-    if label not in {"normal", "fault"}:
-        raise ContractError("INVALID_PACKET", "edge_result.label must be normal or fault", task_id)
-    edge_confidence = require_confidence(
-        require_field(edge_result, "confidence", task_id), "edge_result.confidence", task_id
-    )
-    risk_level = require_field(edge_result, "risk_level", task_id)
-    if risk_level not in {"low", "medium", "high"}:
-        raise ContractError("INVALID_PACKET", "edge_result.risk_level must be low, medium, or high", task_id)
-
-    settings = load_cloud_settings()
-    if settings.backend == "vllm":
-        return infer_v01_vllm(request, settings)
-    if settings.backend != "mock":
-        raise CloudServiceError(
-            "INVALID_CLOUD_BACKEND",
-            f"unsupported cloud backend: {settings.backend}",
-            500,
-        )
-
-    if label == "fault":
-        confidence = max(edge_confidence, 0.93)
-        decision = {"action": "send_alert", "description": "设备存在高风险异常，建议停机检查"}
-        final_risk = "high"
-    else:
-        confidence = max(edge_confidence, 0.9)
-        decision = {"action": "ignore", "description": "未发现高风险异常，建议持续监测"}
-        final_risk = "low"
-    return {
-        "task_id": task_id,
-        "node_id": "cloud_1",
-        "model_name": "cloud_full_model",
-        "label": label,
-        "confidence": round(confidence, 2),
-        "risk_level": final_risk,
-        "cloud_latency_ms": 1.0,
-        "decision": decision,
-    }
-
-
 def _edge_summary_repository() -> EdgeFeatureRepository:
     database_path = Path(
         os.getenv("CLOUD_SUMMARY_DATABASE_PATH", str(Path(__file__).resolve().parents[1] / "data" / "cloud_summary.db"))
     )
     initialize_database(database_path)
     return EdgeFeatureRepository(database_path)
-
-
-def _models_url(settings: CloudSettings) -> str:
-    base_url = settings.vllm_url.rstrip("/")
-    if base_url.endswith("/chat/completions"):
-        return base_url[: -len("/chat/completions")] + "/models"
-    return base_url + "/models"
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
@@ -310,37 +243,12 @@ def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
 @app.get("/health", response_model=None)
 def health() -> dict[str, object] | JSONResponse:
     settings = load_cloud_settings()
-    if settings.backend == "mock":
+    if get_moment_runner(settings).loaded:
         return _health_payload(settings, "ok")
-    if settings.backend == "moment_light_adapt":
-        if get_moment_runner(settings).loaded:
-            return _health_payload(settings, "ok")
-        return JSONResponse(
-            status_code=503,
-            content=_health_payload(settings, "unavailable"),
-        )
-    if settings.backend != "vllm":
-        return JSONResponse(
-            status_code=500,
-            content=_health_payload(settings, "unavailable"),
-        )
-
-    headers: dict[str, str] = {}
-    if settings.vllm_api_key:
-        headers["Authorization"] = f"Bearer {settings.vllm_api_key}"
-    try:
-        response = requests.get(
-            _models_url(settings),
-            headers=headers,
-            timeout=min(settings.vllm_timeout_seconds, 3.0),
-        )
-        response.raise_for_status()
-    except requests.RequestException:
-        return JSONResponse(
-            status_code=503,
-            content=_health_payload(settings, "unavailable"),
-        )
-    return _health_payload(settings, "ok")
+    return JSONResponse(
+        status_code=503,
+        content=_health_payload(settings, "unavailable"),
+    )
 
 
 @app.post("/cloud/edge-status", response_model=None)
@@ -369,8 +277,6 @@ def get_edge_status(edge_node_id: str) -> dict | JSONResponse:
 def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
         request = require_mapping(payload, "CloudRequest")
-        if is_v01_cloud_request(request):
-            return infer_cloud_v01(request)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
             request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
@@ -727,6 +633,14 @@ def list_pending_model_distribution(
 def get_model_update(update_id: str) -> dict | JSONResponse:
     try:
         return _model_update_service().get(update_id)
+    except ModelUpdateError as error:
+        return _model_update_error_response(error)
+
+
+@app.post("/cloud/model-update/{update_id}/suggestion", response_model=None)
+def generate_model_update_suggestion(update_id: str) -> dict | JSONResponse:
+    try:
+        return _model_update_service().generate_suggestion(update_id)
     except ModelUpdateError as error:
         return _model_update_error_response(error)
 

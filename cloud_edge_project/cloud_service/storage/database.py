@@ -47,6 +47,7 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v18_to_v19_label_confirmation_risk_level(connection)
         _migrate_v19_to_v20_dual_model_support(connection)
         _migrate_v20_to_v21_model_update_columns(connection)
+        _migrate_v21_to_v22_model_update_suggestion(connection)
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
@@ -317,6 +318,17 @@ def _migrate_v20_to_v21_model_update_columns(connection: sqlite3.Connection) -> 
     if "rollback_result_json" not in columns:
         connection.execute(
             "ALTER TABLE model_update_task ADD COLUMN rollback_result_json TEXT"
+        )
+
+
+def _migrate_v21_to_v22_model_update_suggestion(connection: sqlite3.Connection) -> None:
+    """Add the suggestion_json column to model_update_task (idempotent)."""
+
+    if not _table_exists(connection, "model_update_task"):
+        return
+    if "suggestion_json" not in _columns(connection, "model_update_task"):
+        connection.execute(
+            "ALTER TABLE model_update_task ADD COLUMN suggestion_json TEXT"
         )
 
 

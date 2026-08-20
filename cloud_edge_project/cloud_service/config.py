@@ -46,8 +46,13 @@ class CloudSettings:
 def load_cloud_settings() -> CloudSettings:
     """Load cloud backend settings from environment variables."""
 
+    backend = os.getenv("CLOUD_BACKEND", "moment_light_adapt").strip().lower()
+    if backend != "moment_light_adapt":
+        raise ValueError(
+            f"unsupported cloud backend: {backend}; only moment_light_adapt is supported"
+        )
     return CloudSettings(
-        backend=os.getenv("CLOUD_BACKEND", "mock").strip().lower(),
+        backend=backend,
         vllm_url=os.getenv(
             "VLLM_URL",
             "http://127.0.0.1:6006/v1/chat/completions",

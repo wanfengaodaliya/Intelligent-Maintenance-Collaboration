@@ -12,6 +12,7 @@ from typing import Any, Callable
 import requests
 
 from .config import CloudSettings
+from .moment_light_adapt import MODEL_VERSION
 
 
 def build_status_payload(
@@ -34,13 +35,13 @@ def build_status_payload(
             "logical_cpu_count": max(int(os.cpu_count() or 1), 1),
             "cpu_utilization_percent": 0.0,
             "memory_available_mb": 0.0,
-            "gpu_available": settings.backend == "vllm",
+            "gpu_available": model_load_status == "LOADED",
             "npu_available": False,
             "queue_length": queue_length,
         },
         "models": [
             {
-                "model_version": settings.vllm_model_name or "cloud-model",
+                "model_version": MODEL_VERSION,
                 "model_load_status": model_load_status,
             }
         ],

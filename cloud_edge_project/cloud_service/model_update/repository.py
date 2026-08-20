@@ -19,6 +19,7 @@ JSON_FIELDS = {
     "distribution_result_json": "distribution_result",
     "post_validation_result_json": "post_validation_result",
     "rollback_result_json": "rollback_result",
+    "suggestion_json": "suggestion",
 }
 
 

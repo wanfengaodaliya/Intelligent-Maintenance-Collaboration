@@ -14,16 +14,16 @@
   <section class="hero">
     <div class="eyebrow">Cloud service · final code health audit</div>
     <h1>云端模块最终体检报告</h1>
-    <p>覆盖云端 API、真实 MOMENT 推理、vLLM/Mock 后端、感知预处理、原始信号分析、设备仲裁、全局分析、SQLite 存储、模型更新闭环、状态上报、启动配置与可迁移性。结论来自修复后代码快照、171 个云端测试和多组独立探针。</p>
+    <p>覆盖云端 API、真实 MOMENT 推理、感知预处理、原始信号分析、设备仲裁、全局分析、SQLite 存储、模型更新闭环、状态上报、启动配置与可迁移性。本次复检基于修复后代码快照、172 个云端测试、真实 MOMENT 隔离实例和独立 HTTP 探针。</p>
     <div class="verdict">
-      <span class="tag"><span class="dot"></span><b>结论：开发验证通过，生产发布暂缓</b></span>
+      <span class="tag"><span class="dot"></span><b>结论：功能复检通过，生产发布仍暂缓</b></span>
       <span class="tag">0 个发布阻断项</span><span class="tag">4 个高风险项</span><span class="tag">3 个关键问题已修复</span>
     </div>
-    <div class="meta">体检时间：2026-08-20（Asia/Shanghai） · 审查目录：D:\codex_workspace\Intelligent-Maintenance-Collaboration\cloud_edge_project\cloud_service</div>
+    <div class="meta">最近复检：2026-08-20（Asia/Shanghai） · 审查目录：D:\codex_workspace\Intelligent-Maintenance-Collaboration\cloud_edge_project\cloud_service</div>
   </section>
 
   <section class="grid kpis" aria-label="关键指标">
-    <div class="card kpi"><b class="ok">171/171</b><span>云端测试通过</span></div>
+    <div class="card kpi"><b class="ok">172/172</b><span>标准云端测试通过</span></div>
     <div class="card kpi"><b>33</b><span>业务 API 路由</span></div>
     <div class="card kpi"><b>75</b><span>运行时代码文件</span></div>
     <div class="card kpi"><b>10,141</b><span>运行时代码行</span></div>
@@ -39,8 +39,10 @@
         <ul>
           <li>功能主体完整，核心算法和数据库迁移测试基础较强。</li>
           <li>新数据库在对外服务前完成初始化，真实 MOMENT 冷启动首请求已验证为 HTTP 200。</li>
+          <li>本次隔离实例的 <code>/health</code> 与符合 V1.2 契约的真实 MOMENT 推理均返回 HTTP 200，结果使用 <code>moment-scl05-final</code>。</li>
           <li>云端候选模型现在先完整加载、后原子切换 Runner；失败时保留旧模型和旧版本指针。</li>
           <li>MOMENT 运行资产已迁入版本化 model_assets 目录；手册用固定 Hugging Face revision 恢复，不再依赖 Junction。</li>
+          <li>严格警告模式（<code>-W error</code>）仍因未锁定的 Starlette 1.6 对 <code>httpx2</code> 的弃用警告及 <code>np.trapz</code> 弃用警告而失败，不能作为当前发布门禁。</li>
         </ul>
       </div>
     </article>
@@ -59,7 +61,7 @@
       <rect class="node" x="20" y="45" width="150" height="70" rx="12"/><text class="svgtitle" x="95" y="72" text-anchor="middle">Edge / Scheduler</text><text class="svgsub" x="95" y="93" text-anchor="middle">状态、窗口、任务结果</text>
       <rect class="node warnn" x="220" y="25" width="180" height="110" rx="12"/><text class="svgtitle" x="310" y="55" text-anchor="middle">FastAPI app.py</text><text class="svgsub" x="310" y="77" text-anchor="middle">33 个业务路由</text><text class="svgsub" x="310" y="96" text-anchor="middle">启动建库已闭合 / 无鉴权</text><text class="svgsub" x="310" y="115" text-anchor="middle">单体入口仍偏大</text>
       <rect class="node" x="455" y="20" width="175" height="80" rx="12"/><text class="svgtitle" x="542" y="50" text-anchor="middle">场景处理与感知</text><text class="svgsub" x="542" y="72" text-anchor="middle">契约校验 · 特征提取</text>
-      <rect class="node warnn" x="680" y="20" width="200" height="80" rx="12"/><text class="svgtitle" x="780" y="48" text-anchor="middle">推理后端</text><text class="svgsub" x="780" y="69" text-anchor="middle">Mock / vLLM / MOMENT</text><text class="svgsub" x="780" y="86" text-anchor="middle">真实 MOMENT 已验证</text>
+      <rect class="node warnn" x="680" y="20" width="200" height="80" rx="12"/><text class="svgtitle" x="780" y="48" text-anchor="middle">推理后端</text><text class="svgsub" x="780" y="69" text-anchor="middle">MOMENT LIGHT_ADAPT</text><text class="svgsub" x="780" y="86" text-anchor="middle">真实 HTTP 推理已验证</text>
       <rect class="node" x="930" y="20" width="200" height="80" rx="12"/><text class="svgtitle" x="1030" y="48" text-anchor="middle">SQLite 持久化</text><text class="svgsub" x="1030" y="69" text-anchor="middle">启动前统一初始化</text><text class="svgsub" x="1030" y="86" text-anchor="middle">Repository 幂等自初始化</text>
       <path class="flow" d="M170 80H220"/><path class="flow" d="M400 70H455"/><path class="flow" d="M630 60H680"/><path class="flow" d="M880 60H930"/>
       <rect class="node" x="220" y="190" width="180" height="82" rx="12"/><text class="svgtitle" x="310" y="221" text-anchor="middle">原始信号分析</text><text class="svgsub" x="310" y="243" text-anchor="middle">上传 · 队列 · 频谱/包络</text><text class="svgsub" x="310" y="260" text-anchor="middle">缺少上传大小上限</text>
@@ -68,7 +70,7 @@
       <rect class="node warnn" x="930" y="190" width="200" height="82" rx="12"/><text class="svgtitle" x="1030" y="221" text-anchor="middle">分发 / 回滚边界</text><text class="svgsub" x="1030" y="243" text-anchor="middle">云端本地激活已接通</text><text class="svgsub" x="1030" y="260" text-anchor="middle">回滚仍无云端 ACK 清理</text>
       <path class="flow" d="M310 135V190"/><path class="flow" d="M400 231H455"/><path class="flow" d="M630 231H680"/><path class="flow dash" d="M880 231H930"/>
       <rect class="node" x="220" y="345" width="260" height="60" rx="12"/><text class="svgtitle" x="350" y="370" text-anchor="middle">版本化模型资产</text><text class="svgsub" x="350" y="390" text-anchor="middle">model_assets/moment · 无 Junction</text>
-      <rect class="node warnn" x="530" y="345" width="260" height="60" rx="12"/><text class="svgtitle" x="660" y="370" text-anchor="middle">状态上报</text><text class="svgsub" x="660" y="390" text-anchor="middle">节点 ID / GPU / 模型版本信息失真</text>
+      <rect class="node warnn" x="530" y="345" width="260" height="60" rx="12"/><text class="svgtitle" x="660" y="370" text-anchor="middle">状态上报</text><text class="svgsub" x="660" y="390" text-anchor="middle">模型版本字段已修复，待端到端观测</text>
       <rect class="node warnn" x="840" y="345" width="290" height="60" rx="12"/><text class="svgtitle" x="985" y="370" text-anchor="middle">启动与运行手册</text><text class="svgsub" x="985" y="390" text-anchor="middle">moment / vLLM / 端口 / 环境来源不统一</text>
       <path class="flow" d="M780 290C780 330 350 315 350 345"/><path class="flow dash" d="M310 135C310 320 660 300 660 345"/><path class="flow dash" d="M310 135C310 325 985 290 985 345"/>
     </svg>
@@ -77,15 +79,15 @@
   <section class="section grid two">
     <article class="card">
       <h2>验证证据</h2>
-      <div class="probe pass"><span class="icon">✓</span><div><b>云端测试全集</b><small>新增生命周期、运行时切换、回滚和制品完整性回归测试，共 171 项</small></div><span class="ok">PASS</span></div>
+      <div class="probe pass"><span class="icon">✓</span><div><b>云端测试全集</b><small>Conda <code>moment</code> 环境执行标准命令，172 项测试全部通过</small></div><span class="ok">PASS</span></div>
       <div class="probe pass"><span class="icon">✓</span><div><b>Python 编译与 pip check</b><small>cloud_service/common/core/scenarios 编译通过；无损坏依赖</small></div><span class="ok">PASS</span></div>
-      <div class="probe pass"><span class="icon">✓</span><div><b>真实 MOMENT 预加载</b><small>checkpoint、norm、pretrained、deployment 均可访问；CUDA 加载成功</small></div><span class="ok">PASS</span></div>
-      <div class="probe pass"><span class="icon">✓</span><div><b>新数据库首个 MOMENT 请求</b><small>禁用周期分析“顺带建库”后，真实模型冷启动首请求 HTTP 200</small></div><span class="ok">PASS</span></div>
+      <div class="probe pass"><span class="icon">✓</span><div><b>真实 MOMENT 预加载</b><small>5 个运行资产均存在；CUDA 可用，隔离实例以 <code>auto</code> 设备成功启动</small></div><span class="ok">PASS</span></div>
+      <div class="probe pass"><span class="icon">✓</span><div><b>隔离 HTTP 健康与推理</b><small>临时 DB、关闭周期分析；<code>/health</code> 和 50ms/64kHz/3200 点 V1.2 推理均返回 HTTP 200</small></div><span class="ok">PASS</span></div>
       <div class="probe pass"><span class="icon">✓</span><div><b>真实 MOMENT 运行时切换</b><small>候选 Runner 完整加载后替换缓存，推理版本变为 moment-probe-candidate-v2</small></div><span class="ok">PASS</span></div>
       <div class="probe pass"><span class="icon">✓</span><div><b>模型资产可迁移性</b><small>默认路径位于 model_assets/moment；固定 Hugging Face revision 可恢复 5 个必需文件</small></div><span class="ok">PASS</span></div>
-      <div class="probe fail"><span class="icon">×</span><div><b>回滚待办闭环</b><small>status=rolled_back 的任务仍返回 pending_rollback_count=1</small></div><span class="bad">FAIL</span></div>
-      <div class="probe fail"><span class="icon">×</span><div><b>状态上报真实性</b><small>MOMENT/CUDA 实际运行时仍上报 qwen-cloud、gpu_available=false</small></div><span class="bad">FAIL</span></div>
-      <div class="probe warnp"><span class="icon">!</span><div><b>覆盖率</b><small>环境未安装 pytest-cov/coverage；当前无法量化行覆盖率</small></div><span class="warn">UNKNOWN</span></div>
+      <div class="probe pass"><span class="icon">✓</span><div><b>回滚 ACK 闭环</b><small>边端成功 ACK 后 rollback_requested 清零，pending_rollback_count=0；ACK 失败将在下一轮重试</small></div><span class="ok">PASS</span></div>
+      <div class="probe warnp"><span class="icon">!</span><div><b>状态上报端到端观测</b><small>代码已改为上报 <code>moment-scl05-final</code> 且以 LOADED 状态派生 GPU 标志；本次未启动 Scheduler 观察接收结果</small></div><span class="warn">PARTIAL</span></div>
+      <div class="probe warnp"><span class="icon">!</span><div><b>严格警告门禁与覆盖率</b><small><code>-W error</code> 被 Starlette/httpx2 与 <code>np.trapz</code> 弃用警告阻断；且未安装 pytest-cov/coverage</small></div><span class="warn">OPEN</span></div>
     </article>
     <article class="card">
       <h2>环境快照</h2>
@@ -94,12 +96,13 @@
         <tr><td>PyTorch</td><td>2.13.0+cu130</td><td class="ok">CUDA 可用</td></tr>
         <tr><td>NumPy / SciPy</td><td>1.25.2 / 1.11.4</td><td class="ok">依赖一致</td></tr>
         <tr><td>FastAPI</td><td>0.141.1</td><td class="ok">可导入</td></tr>
+        <tr><td>Starlette</td><td>1.6.0</td><td class="warn">未锁定；TestClient 要求 httpx2</td></tr>
         <tr><td>Transformers</td><td>5.15.0</td><td class="ok">可导入</td></tr>
         <tr><td>MOMENT</td><td>固定 Git commit</td><td class="ok">真实加载</td></tr>
         <tr><td>数据库 schema</td><td>v21</td><td class="ok">启动前初始化</td></tr>
         <tr><td>工作树</td><td>修复分支有受控变更</td><td class="ok">差异已审查</td></tr>
       </table>
-      <div class="callout okcall"><b>修复证据：</b> lifespan 在模型预加载和后台任务之前统一调用 <code>initialize_database</code>，<code>MomentReviewRepository</code> 也执行幂等初始化。全新临时数据库、禁用周期分析时，真实 MOMENT 首请求返回 200。</div>
+      <div class="callout okcall"><b>本次复检证据：</b>lifespan 在模型预加载和后台任务之前统一调用 <code>initialize_database</code>，<code>MomentReviewRepository</code> 也执行幂等初始化。全新临时数据库、禁用周期分析时，真实 MOMENT 健康检查与首个 V1.2 推理均返回 200，并返回 <code>moment-scl05-final</code>。</div>
     </article>
   </section>
 
@@ -112,9 +115,9 @@
 
   <section class="section card">
     <h2>模型更新状态机体检</h2>
-    <p class="lead">训练、验证、人工确认和云端激活已经串联；批准不再等同于生效，剩余主要缺口是回滚 ACK。</p>
+    <p class="lead">训练、验证、人工确认、云端激活和边端回滚确认已经串联；批准不再等同于生效。</p>
     <div class="timeline">
-      <div class="step"><b>创建</b><span>persistent problem</span></div><div class="step"><b>准备数据</b><span>冻结标签与拆分</span></div><div class="step"><b>训练</b><span>H5 / MOMENT</span></div><div class="step"><b>验证</b><span>硬门槛</span></div><div class="step"><b>批准</b><span>只冻结候选</span></div><div class="step"><b>分发</b><span>按 family 执行</span></div><div class="step"><b>云端激活</b><span>加载后原子换 Runner</span></div><div class="step gap"><b>回滚确认</b><span>无 ACK 清理</span></div>
+      <div class="step"><b>创建</b><span>persistent problem</span></div><div class="step"><b>准备数据</b><span>冻结标签与拆分</span></div><div class="step"><b>训练</b><span>H5 / MOMENT</span></div><div class="step"><b>验证</b><span>硬门槛</span></div><div class="step"><b>批准</b><span>只冻结候选</span></div><div class="step"><b>分发</b><span>按 family 执行</span></div><div class="step"><b>云端激活</b><span>加载后原子换 Runner</span></div><div class="step"><b>回滚确认</b><span>ACK 结清 pending</span></div>
     </div>
     <div class="grid three" style="margin-top:18px">
       <div class="card"><b class="ok">已闭合</b><p>问题判定、幂等创建、数据清单、分组防泄漏、候选文件哈希、特征契约、验证门槛、人工批准。</p></div>
@@ -163,7 +166,7 @@
       <div class="action"><h3 class="ok">P0-1：统一数据库启动初始化（已完成）</h3><p>lifespan 在加载模型和启动后台任务之前初始化主数据库；MomentReviewRepository 可独立幂等初始化。全新临时 DB 和真实首请求探针均通过。</p></div>
       <div class="action"><h3 class="ok">P0-2：闭合云端模型激活（已完成）</h3><p>批准只冻结候选；Cloud 候选完整加载后原子切换 Runner，再记录分发成功和 active_version。失败保持旧模型；重启按数据库活动版本恢复。</p></div>
       <div class="action"><h3 class="ok">P0-3：标准化模型资产交付（已完成）</h3><p>Junction 已移除；默认路径统一为 model_assets/moment，启动手册固定 Hugging Face revision 下载最小运行资产。本机真实 MOMENT 已从新路径加载。</p></div>
-      <div class="action"><h3>P1：回滚 ACK、身份与遥测</h3><p>增加 edge rollback result 回传并清除 pending；统一 cloud_1/cloud_01；上报真实 GPU、模型版本、队列与最近活动。</p></div>
+      <div class="action"><h3>P1：遥测</h3><p>回滚 ACK 已闭合：edge rollback result 成功回传后清除 pending，失败则由轮询器重试。云节点身份已统一为 cloud_01；剩余工作是上报真实 GPU、模型版本、队列与最近活动。</p></div>
       <div class="action"><h3>P1：安全与资源限制</h3><p>内部接口至少使用共享令牌/mTLS；限制上传体积与并发；校验 sample_id 和 payload/manifest 一致性；避免向客户端泄漏内部异常文本。</p></div>
     </article>
     <article class="card">
@@ -171,7 +174,7 @@
       <div class="probe pass"><span class="icon">✓</span><div><b>资产路径独立（已通过）</b><small>默认配置不读取上级仓库；按交付说明可重建 model_assets。</small></div></div>
       <div class="probe pass"><span class="icon">✓</span><div><b>新库首请求（已通过）</b><small>不依赖后台任务时序，真实 MOMENT 首请求返回 200。</small></div></div>
       <div class="probe pass"><span class="icon">✓</span><div><b>真实版本切换（已通过）</b><small>批准前版本不变；候选加载成功后推理结果显示新版本，失败保持旧版本。</small></div></div>
-      <div class="probe"><span class="icon">4</span><div><b>回滚闭环</b><small>边端回滚 ACK 后 pending_rollback_count 归零，重启后不重复。</small></div></div>
+      <div class="probe pass"><span class="icon">✓</span><div><b>回滚闭环（已通过）</b><small>边端回滚 ACK 后 pending_rollback_count 归零；ACK 短暂失败时下一轮会重试，确认成功后才本地标记完成。</small></div></div>
       <div class="probe"><span class="icon">5</span><div><b>启动入口唯一</b><small>以根目录 start_project.ps1 为唯一正式入口；将 scripts 下的 vLLM 辅助脚本明确标为可选模式。</small></div></div>
       <div class="probe"><span class="icon">6</span><div><b>安全基线</b><small>所有写接口有认证，上传大小可控，异常响应不泄漏内部结构。</small></div></div>
       <div class="callout warncall"><b>正面结论：</b>感知、仲裁、全局分析、SQLite 迁移、训练数据防泄漏、候选哈希与验证门槛具备较好的工程基础。完成上述闭环后，不需要推倒重做。</div>
@@ -186,20 +189,21 @@ const findings=[
 ['C-01','fixed','生命周期 / 存储','已修复：新数据库在对外服务、模型预加载和后台任务启动前完成 schema 初始化。','全新临时 DB、GLOBAL_ANALYSIS_POLL_SECONDS=0、真实 MOMENT 冷启动首请求返回 HTTP 200；Repository 独立保存测试通过。','回归测试持续覆盖 lifespan 顺序和 Repository 幂等初始化。'],
 ['C-02','fixed','模型更新 / 推理','已修复：云端 MOMENT 候选完整加载后才原子替换 Runner；公共分发回调不可绕过激活，回滚也同步切换运行时。','真实 checkpoint/norm 激活探针与重启恢复测试通过；候选包同时核验 checkpoint 与 condition_norm 哈希，失败保持旧 Runner 和旧活动版本。','持续覆盖批准前不生效、成功切换、旁路拒绝、回滚换 Runner、辅助文件篡改拒绝和重启恢复。'],
 ['C-03','fixed','可迁移性','已修复：运行资产迁入 cloud_edge_project/model_assets/moment，默认配置、启动预检和手册均使用新路径。','两个 Junction 已移除；真实 MOMENT 从新 checkpoint、pretrained 和 deployment 路径加载成功；下载流程固定 HF revision。','持续验证新检出目录按手册可重建 5 个运行文件；离线包需携带 model_assets。'],
-['H-01','high','模型更新 / 回滚','回滚执行后云端 pending 队列不会清除，缺少边端回滚 ACK 状态。','构造 status=rolled_back、rollback_requested=1 后，pending_rollback_count 仍为 1；Edge poller只本地记忆，不回传。','边端回传 rollback succeeded，云端状态进入终态并不再返回 pending。'],
+['H-01','fixed','模型更新 / 回滚','已修复：边端回滚成功后回传 rollback-result ACK；云端保留审计结果并清除 active pending 标记。','回归验证：success ACK 将 rollback_requested 置为 0，status 保持 rolled_back，pending_rollback_count=0；ACK 网络失败时边端下一轮重试且不会提前写入本地完成状态。','持续覆盖 ACK 成功结清、目标版本不匹配拒绝与 ACK 重试路径。'],
 ['H-02','fixed','模型更新 / 版本一致性','已修复：approve() 不再更新 active_version；只有分发或本地 Cloud 激活成功后才更新。','状态机回归测试验证 approved 阶段无新指针；distribution_succeeded 后才写入候选版本，失败时旧版本不变。','保持成功/失败两条路径的状态机回归测试。'],
 ['H-03','high','安全','33 个业务接口未见认证或授权；训练、批准、回滚、标签写入和模型下载均可直接调用。','app.py 无 Security/Depends/认证中间件，写接口和 file endpoint 全部公开。','部署边界内启用 mTLS 或最小共享令牌，按角色限制批准/回滚。'],
 ['H-04','high','原始样本接口','UploadFile 被一次性 await read() 读入内存，无体积、包数量或并发上限。','app.py:426-427；RawAnalysisSampleService 仅校验 checksum 与部分 manifest 连续性。','流式落盘、最大字节数、包数与 sample_count 一致性校验，超限返回 413。'],
-['H-05','high','节点身份','同一进程使用 cloud_1 与 cloud_01 两套节点 ID，健康检查和状态上报身份不一致。','独立探针：health_node_id=cloud_1，status_node_id=cloud_01。','单一 CLOUD_NODE_ID 配置源贯穿 health、status、vLLM、分发与数据库。'],
-['M-01','medium','状态上报','MOMENT/CUDA 实际运行时上报 model=qwen-cloud、gpu_available=false，CPU/内存/网络/队列/活动均为 0。','build_status_payload 独立探针已复现；app provider 也固定 queue=0、last_activity=0。','上报真实后端版本、torch device、psutil 指标、队列长度和最后任务时间。'],
+['H-05','fixed','节点身份','已修复：cloud_service 使用独立的单一 CLOUD_NODE_ID 来源，统一为 cloud_01。','本次隔离 /health 实测返回 node_id=cloud_01；状态上报复用同一常量。','后续改造继续复用该独立身份来源。'],
+['M-01','fixed','状态上报字段','已修复：状态负载使用 MOMENT 固定模型版本；gpu_available 以模型加载状态派生。','status_reporter.py 现在上报 moment-scl05-final；本次未运行 Scheduler 接收端验证。','补一条 Cloud→Scheduler 的端到端断言，并把 CPU、内存、网络、队列和活动时间接入真实采集。'],
 ['M-02','medium','启动配置','根目录 start_project.ps1 已成为 moment 正式入口，但 scripts 下的 PowerShell/Shell 辅助脚本仍指向 vLLM、6008、.venv/cloud_llm。','静态比对 start_project.ps1、scripts/start_cloud_service_local.ps1、start_cloud_service.sh 与 local.yaml。','在脚本命名和手册中明确辅助脚本仅用于可选 vLLM 模式；CI 对每种受支持模式做启动探针。'],
 ['M-03','medium','模型训练数据','生产训练默认要求 cloud_edge_project/data/paderborn，但目录不存在，4 个相关环境变量未写入当前启动手册。','_model_update_service 默认 PADERBORN_DATA_ROOT；本地路径检查不存在；手册无对应变量。','增加模型更新专章、preflight 数据检查及明确的“训练功能禁用/可用”状态。'],
 ['M-04','medium','健康检查','/health 只判断推理后端，未检查 DB 可写、schema、后台 worker、scheduler 上报和磁盘空间。','静态审查：moment 分支仅检查 runner.loaded，未执行持久化与后台任务 readiness 探针。','readiness 检查 DB schema/模型/写入路径；liveness 与 readiness 分离。'],
 ['M-05','medium','异常契约','cloud_infer 捕获 Exception 后把 str(exc) 返回客户端，仍可能泄漏路径或内部依赖信息。','静态审查：通用异常分支仍直接把异常字符串放入响应。','客户端只返回稳定 error_code/correlation_id，详细栈仅写服务日志。'],
 ['M-06','medium','可维护性','4 个核心文件过大且职责交织：training 1076、app 928、database 768、model_update/service 612 行。','运行时代码度量。','按路由域、迁移版本、trainer family、状态机命令拆分，并保持公共契约不变。'],
+['M-07','medium','测试环境可复现性','标准 172 项测试通过，但 requirements-moment.txt 未锁定 Starlette；解析到 1.6.0 后，TestClient 的 httpx2 弃用警告会在 -W error 下中断收集。','Conda moment 与 .venv 均为 Starlette 1.6.0、httpx2 缺失；严格命令在收集期失败。','锁定经验证的 Starlette/httpx 组合或显式加入 httpx2，并消除 np.trapz 弃用警告后再启用严格警告门禁。'],
 ['L-01','low','兼容接口','生产 backend=moment_light_adapt 时 V0.1 CloudRequest 仍走 infer_cloud_v01，并返回 INVALID_CLOUD_BACKEND。','app.py 先识别 V0.1；infer_cloud_v01 仅允许 mock/vLLM。','明确废弃 V0.1 或为 MOMENT 模式返回可解释的 4xx/兼容路径。'],
 ['L-02','low','目录卫生','bearing_review/context_aggregation/enhanced_analysis/final_summary/raw_context/workflow_review 为被忽略的空目录。','文件扫描无有效源文件，git status --ignored 可见。','删除残留空目录，或补 README 明确占位用途。'],
-['L-03','low','测试工具','全部测试通过，但没有覆盖率工具，无法判断 app.py/training.py 大文件的未执行分支。','pytest-cov 与 coverage 模块均不存在。','在 dev 依赖中加入 coverage，仅在 CI 生成报告并设关键模块分支阈值。']
+['L-03','low','测试工具','172 项标准测试通过，但没有覆盖率工具，无法判断 app.py/training.py 大文件的未执行分支。','pytest-cov 与 coverage 模块均不存在。','在 dev 依赖中加入 coverage，仅在 CI 生成报告并设关键模块分支阈值。']
 ];
 const labels={fixed:'已修复',blocker:'阻断',high:'高',medium:'中',low:'低'};
 function renderFindings(filter='all'){document.getElementById('findings').innerHTML=findings.filter(x=>filter==='all'||x[1]===filter).map(x=>`<tr class="finding"><td><b>${x[0]}</b><br><span class="sev ${x[1]}">${labels[x[1]]}</span></td><td>${x[2]}</td><td>${x[3]}</td><td class="evidence">${x[4]}</td><td>${x[5]}</td></tr>`).join('')}

@@ -55,9 +55,15 @@ def test_cloud_lifespan_initializes_schema_before_accepting_requests(
     tmp_path: Path, monkeypatch
 ) -> None:
     database_path = tmp_path / "fresh.db"
-    monkeypatch.setenv("CLOUD_BACKEND", "mock")
+    monkeypatch.setenv("CLOUD_BACKEND", "moment_light_adapt")
     monkeypatch.setenv("CLOUD_REVIEW_DB_PATH", str(database_path))
     monkeypatch.setenv("GLOBAL_ANALYSIS_POLL_SECONDS", "0")
+
+    class _LoadedRunner:
+        loaded = True
+
+    monkeypatch.setattr("cloud_service.app.preload_moment_runner", lambda settings: None)
+    monkeypatch.setattr("cloud_service.app.get_moment_runner", lambda settings: _LoadedRunner())
 
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
