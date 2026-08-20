@@ -15,11 +15,16 @@ Write-Host "=== Project Root: $ProjectRoot ==="
 
 # Pre-checks
 Write-Host "[Check] Docker Desktop ..."
-try { docker info 2>&1 | Out-Null; Write-Host "  Docker OK" }
-catch { Write-Host "  Docker not running, start Docker Desktop first"; exit 1 }
+$dockerInfo = docker info 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Docker not running, start Docker Desktop first"
+    exit 1
+}
+Write-Host "  Docker OK"
 
 Write-Host "[Check] Conda moment env ..."
 $condaEnvs = conda env list 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "  Could not query Conda environments"; exit 1 }
 if ($condaEnvs -notmatch "^\s*moment\s") { Write-Host "  moment env missing, create it first"; exit 1 }
 Write-Host "  moment OK"
 
@@ -66,9 +71,16 @@ if (-not $SkipLLM) {
 # Window 1: Docker Network Simulator
 Write-Host "[Win 1] Starting Docker network simulator ..."
 Push-Location $NetSim
-if (-not (Test-Path ".env")) { Copy-Item ".env.example" ".env" }
-docker compose --env-file .env up -d --build
-Pop-Location
+try {
+    if (-not (Test-Path ".env")) { Copy-Item ".env.example" ".env" }
+    docker compose --env-file .env up -d --build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Network simulator failed to start"
+        exit 1
+    }
+} finally {
+    Pop-Location
+}
 Start-Sleep -Seconds 15
 
 # Window 2: Scheduler
@@ -103,17 +115,29 @@ function Check-Svc {
     try {
         $r = Invoke-RestMethod $Url -TimeoutSec 5
         $ok = & $Script $r
-        Write-Host "  [$Name] $(if($ok){'OK'}else{'WARN'})"
+        if ($ok) {
+            Write-Host "  [$Name] OK"
+            return $true
+        }
+        Write-Host "  [$Name] FAIL (unexpected health response)"
+        return $false
     } catch {
         Write-Host "  [$Name] FAIL"
+        return $false
     }
 }
-Check-Svc "NetSim(8090)" "http://127.0.0.1:8090/health" { param($r) $r.status -eq "ok" }
-Check-Svc "Scheduler(8003)" "http://127.0.0.1:8003/health" { param($r) $r.status -eq "ok" }
-Check-Svc "Cloud(8004)" "http://127.0.0.1:8004/health" { param($r) $r.status -eq "ok" -and $r.model_backend -eq "moment_light_adapt" }
-Check-Svc "Edge(8001)" "http://127.0.0.1:8001/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_01" -and $r.mqtt_connected -eq $true }
+$allHealthy = $true
+if (-not (Check-Svc "NetSim(8090)" "http://127.0.0.1:8090/health" { param($r) $r.status -eq "ok" })) { $allHealthy = $false }
+if (-not (Check-Svc "Scheduler(8003)" "http://127.0.0.1:8003/health" { param($r) $r.status -eq "ok" })) { $allHealthy = $false }
+if (-not (Check-Svc "Cloud(8004)" "http://127.0.0.1:8004/health" { param($r) $r.status -eq "ok" -and $r.model_backend -eq "moment_light_adapt" })) { $allHealthy = $false }
+if (-not (Check-Svc "Edge(8001)" "http://127.0.0.1:8001/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_01" -and $r.mqtt_connected -eq $true })) { $allHealthy = $false }
 if (-not $SkipLLM) {
-    Check-Svc "LLM(8002)" "http://127.0.0.1:8002/v1/models" { param($r) $r.data.Count -gt 0 }
+    if (-not (Check-Svc "LLM(8002)" "http://127.0.0.1:8002/v1/models" { param($r) $r.data.Count -gt 0 })) { $allHealthy = $false }
+}
+if (-not $allHealthy) {
+    Write-Host "`n========== Startup FAILED =========="
+    Write-Host "One or more required services are unhealthy. Check the service windows above."
+    exit 1
 }
 
 Write-Host "`n========== Done =========="
