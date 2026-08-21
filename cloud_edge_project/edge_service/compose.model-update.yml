@@ -1,0 +1,39 @@
+# 自动模型更新 overlay：显式开启 ModelUpdatePoller 并挂载 Ed25519 签名公钥。
+#
+# 用法（在 cloud_edge_project/edge_service 目录下，叠加在正式 Compose 之上）：
+#   $env:EDGE_MODEL_SIGNING_PUBLIC_KEY_HOST_PATH = "<宿主机公钥绝对路径>"
+#   docker compose -f compose.multi-edge.yml -f compose.model-update.yml up -d --no-build
+#
+# 约束：
+#   - 基础 compose.multi-edge.yml 的 Poller 默认关闭且不要求签名公钥；
+#     只有本 overlay 才能开启 Poller。
+#   - 公钥来自宿主机部署配置（EDGE_MODEL_SIGNING_PUBLIC_KEY_HOST_PATH，
+#     未设置或文件不存在时启动前直接失败）；私钥只存在于可信发布环境，
+#     绝不进入 Edge 镜像、Compose 或仓库。
+#   - 容器内公钥路径固定为 /run/secrets/model_signing_public_key.pem
+#     （Compose secret 只读挂载）。
+#   - 不得同时设置 EDGE_MODEL_VERSION（pin 与 Poller 冲突，退出码 78）。
+#   - 模型加载保持 weights_only=True，禁止任何自定义 Unpickler 回退。
+
+services:
+  edge_01:
+    environment:
+      EDGE_MODEL_UPDATE_POLLER_ENABLED: "true"
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
+    secrets:
+      - source: model_signing_public_key
+        target: model_signing_public_key.pem
+
+  edge_02:
+    environment:
+      EDGE_MODEL_UPDATE_POLLER_ENABLED: "true"
+      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
+      EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
+    secrets:
+      - source: model_signing_public_key
+        target: model_signing_public_key.pem
+
+secrets:
+  model_signing_public_key:
+    file: ${EDGE_MODEL_SIGNING_PUBLIC_KEY_HOST_PATH:?set EDGE_MODEL_SIGNING_PUBLIC_KEY_HOST_PATH to the host public key path}

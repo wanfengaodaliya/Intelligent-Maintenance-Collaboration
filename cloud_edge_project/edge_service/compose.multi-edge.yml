@@ -76,7 +76,6 @@ services:
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
-      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
       EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       # 可选：pin 模型版本；与 readiness 上报不一致时本节点 readiness 不通过，
@@ -126,7 +125,6 @@ services:
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
-      EDGE_MODEL_SIGNING_PUBLIC_KEY_FILE: /run/secrets/model_signing_public_key.pem
       EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       EDGE_MODEL_VERSION: ${EDGE_MODEL_VERSION:-}
