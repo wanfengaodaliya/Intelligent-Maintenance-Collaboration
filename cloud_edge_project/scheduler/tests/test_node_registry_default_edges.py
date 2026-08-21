@@ -30,14 +30,15 @@ def _mqtt_link(link_id, sender_id, edge_id):
     }
 
 
-# T1: 默认 Registry 必须同时包含 edge_01 与 edge_02。
+# T1: 默认 Registry 必须同时包含 edge_01 与 edge_02，
+#     控制回调走 Toxiproxy 链路 18042/18052（上游为 Edge 容器端口 8001/8002）。
 def test_default_registry_registers_both_edges(monkeypatch):
     _clear_env(monkeypatch)
     configs = load_edge_node_configs()
     assert set(configs) == {"edge_01", "edge_02"}
-    assert configs["edge_01"].control_url == "http://127.0.0.1:8001"
+    assert configs["edge_01"].control_url == "http://127.0.0.1:18042"
     assert configs["edge_01"].target_topic == "edge/edge_01/input"
-    assert configs["edge_02"].control_url == "http://127.0.0.1:8002"
+    assert configs["edge_02"].control_url == "http://127.0.0.1:18052"
     assert configs["edge_02"].target_topic == "edge/edge_02/input"
 
 
@@ -99,8 +100,8 @@ def test_default_registry_constructs_edge_node_configs(monkeypatch):
     registry = NodeRegistry(load_edge_node_configs())
     states = registry._nodes
     assert states["edge_01"].config == EdgeNodeConfig(
-        "edge_01", "http://127.0.0.1:8001", "edge/edge_01/input"
+        "edge_01", "http://127.0.0.1:18042", "edge/edge_01/input"
     )
     assert states["edge_02"].config == EdgeNodeConfig(
-        "edge_02", "http://127.0.0.1:8002", "edge/edge_02/input"
+        "edge_02", "http://127.0.0.1:18052", "edge/edge_02/input"
     )

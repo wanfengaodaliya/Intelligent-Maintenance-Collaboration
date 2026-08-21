@@ -81,13 +81,15 @@ def load_edge_node_configs() -> dict[str, EdgeNodeConfig]:
     else:
         # ENV-1: 与 network_simulator/config/entities.yaml 的默认完整拓扑一致，
         # 默认 3 sender × 2 edge 的 6 条 MQTT 链路都应被 Scheduler 注册。
+        # 控制回调统一走 Toxiproxy 链路 18042/18052（上游为 Edge 容器
+        # 宿主机端口 8001/8002），保证调度投递流量可被网络模拟。
         payload = {
             "edge_01": {
-                "control_url": "http://127.0.0.1:8001",
+                "control_url": "http://127.0.0.1:18042",
                 "target_topic": "edge/edge_01/input",
             },
             "edge_02": {
-                "control_url": "http://127.0.0.1:8002",
+                "control_url": "http://127.0.0.1:18052",
                 "target_topic": "edge/edge_02/input",
             },
         }

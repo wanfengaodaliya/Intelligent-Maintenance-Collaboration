@@ -6,21 +6,33 @@
       "bearing_id": "bearing_01",
       "scheduler_url": "http://127.0.0.1:18031/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 18831
+      "mqtt_port": 18831,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18831,
+        "edge_02": 18832
+      }
     },
     {
       "sender_id": "sender_02",
       "bearing_id": "bearing_02",
       "scheduler_url": "http://127.0.0.1:18032/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 18931
+      "mqtt_port": 18931,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18931,
+        "edge_02": 18932
+      }
     },
     {
       "sender_id": "sender_03",
       "bearing_id": "bearing_03",
       "scheduler_url": "http://127.0.0.1:18033/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 19031
+      "mqtt_port": 19031,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 19031,
+        "edge_02": 19032
+      }
     }
   ],
   "scheduler_timeout_seconds": 2.0,
