@@ -25,6 +25,10 @@ $NetSim = Join-Path $CloudEdge "internet_service\network_simulator"
 $EdgeService = Join-Path $CloudEdge "edge_service"
 $NetSimProject = "network_simulator"
 $LLM_DIR = "D:\develop\llama.cpp"
+# moment 环境的绝对 python 路径。直接用其调用 uvicorn，绕开对
+# "conda activate" 的依赖（Start-Process 的 powershell 会话未必初始化过
+# conda shell 函数，activate 会失败并落到 PATH 里错误的 python/torch）。
+$MomentPython = "C:\Users\Lenovo\.conda\envs\moment\python.exe"
 $PollIntervalSeconds = 2
 
 # EDGE_CONTROL_SHARED_SECRET：Scheduler 与 Edge 之间控制链路的 HMAC 密钥（≥32字节）。
@@ -36,24 +40,35 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
     [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
     if (Test-Path $SecretFile) {
         $env:EDGE_CONTROL_SHARED_SECRET = (Get-Content $SecretFile -Raw).Trim()
-    } else {
-        $generated = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+    }
+    # 未设置、文件不存在，或文件内容无效(过短)时，用 PowerShell 5.1 兼容方式重新生成。
+    if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
+        [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
+        $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+        $bytes = New-Object byte[] 48
+        $rng.GetBytes($bytes)
+        $rng.Dispose()
+        $generated = [Convert]::ToBase64String($bytes)
         Set-Content -Path $SecretFile -Value $generated -NoNewline
         $env:EDGE_CONTROL_SHARED_SECRET = $generated
-        Write-Host "[info] EDGE_CONTROL_SHARED_SECRET not set; generated a fixed one at $SecretFile"
+        Write-Host "[info] EDGE_CONTROL_SHARED_SECRET not set/invalid; generated a fixed one at $SecretFile"
     }
-}
-if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
-    [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
-    throw "EDGE_CONTROL_SHARED_SECRET must be at least 32 bytes"
 }
 
 Write-Host "=== Project Root: $ProjectRoot ==="
 Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --no-build) ==="
 
 function Get-Json {
-    param([string]$Url)
-    try { return Invoke-RestMethod -Uri $Url -TimeoutSec 5 } catch { return $null }
+    param([string]$Url, [string]$UserAgent)
+    try {
+        $params = @{ Uri = $Url; TimeoutSec = 5 }
+        if ($UserAgent) {
+            # toxiproxy API 会校验 User-Agent：仅放行 toxiproxy 官方客户端 UA，
+            # 默认的 PowerShell UA 会被 403 拒绝。这里用官方 client UA 规避。
+            $params["Headers"] = @{ "User-Agent" = $UserAgent }
+        }
+        return Invoke-RestMethod @params
+    } catch { return $null }
 }
 
 function Test-TcpPort {
@@ -204,11 +219,13 @@ $requiredProxies = @(
     "scheduler__to__edge_02__http",
     "cloud__to__scheduler__http"
 )
+# toxiproxy API 仅放行其官方客户端 UA，用于绕过 PowerShell 默认 UA 的 403。
+$ToxiproxyUserAgent = "toxiproxy-http-client/2.12.0"
 
 $stage1 = $true
-if (-not (Wait-Gate "Toxiproxy API (8474)" { $null -ne (Get-Json "http://127.0.0.1:8474/proxies") })) { $stage1 = $false }
+if (-not (Wait-Gate "Toxiproxy API (8474)" { $null -ne (Get-Json "http://127.0.0.1:8474/proxies" -UserAgent $ToxiproxyUserAgent) })) { $stage1 = $false }
 if ($stage1 -and -not (Wait-Gate "Toxiproxy proxies present" {
-    $proxies = Get-Json "http://127.0.0.1:8474/proxies"
+    $proxies = Get-Json "http://127.0.0.1:8474/proxies" -UserAgent $ToxiproxyUserAgent
     if ($null -eq $proxies) { return $false }
     foreach ($name in $requiredProxies) {
         if ($null -eq $proxies.PSObject.Properties[$name]) { return $false }
@@ -216,18 +233,23 @@ if ($stage1 -and -not (Wait-Gate "Toxiproxy proxies present" {
     return $true
 })) { $stage1 = $false }
 if ($stage1 -and -not (Wait-Gate "MQTT broker (1883)" { Test-TcpPort "127.0.0.1" 1883 })) { $stage1 = $false }
-if ($stage1 -and -not (Wait-Gate "Network controller (8090)" {
+if ($stage1 -and -not (Wait-Gate "Network controller (8090) reachable" {
+    # 注意：此处只要求 controller 可达，不要求 status=="ok"。
+    # controller 的 scheduler_reporter 每 1s 探测 Scheduler(host:8003)，而 Scheduler
+    # 要到 Stage 2 才启动；若在此要求 status=="ok"，会因 Scheduler 未起而永远
+    # degraded，形成 Stage 1 死锁（Scheduler 永远无法被拉起）。故控制器可达即可，
+    # 待 Stage 2 的 Scheduler 起来后其 reporter 自然转 healthy。
     $controller = Get-Json "http://127.0.0.1:8090/health"
-    $null -ne $controller -and $controller.status -eq "ok"
+    $null -ne $controller
 })) { $stage1 = $false }
 if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
 # ---------- Stage 2: host Scheduler + Cloud ----------
 Write-Host "`n========== Stage 2/4: Host Scheduler (8003) + Cloud (8004) =========="
-$schCmd = "Set-Location '$CloudEdge'; conda activate moment; python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
+$schCmd = "Set-Location '$CloudEdge'; & '$MomentPython' -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
-$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; conda activate moment; python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
+$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; & '$MomentPython' -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $stage2 = $true
