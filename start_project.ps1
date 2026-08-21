@@ -51,6 +51,8 @@ Write-Host "  MOMENT OK"
 
 Write-Host "[Check] H5 model ..."
 $h5Root = Join-Path $CloudEdge "edge_service\models\distilled_h5"
+$edge01ModelState = Join-Path $h5Root "edge_01_model_update_state.json"
+$edge02ModelState = Join-Path $h5Root "edge_02_model_update_state.json"
 $activePointer = Join-Path $h5Root "active_version.json"
 if (-not (Test-Path $activePointer)) {
     Write-Host "  H5 active_version.json missing, restore the model package first"
@@ -118,12 +120,12 @@ Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 # Window 4: Edge 01
 Write-Host "[Win 4] Starting Edge service edge_01 ..."
-$edge01Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_01'; `$env:EDGE_MQTT_CLIENT_ID='edge_01-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_01/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18011'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18021'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge01Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge01Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge01Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge01Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge01Data\model_update_state.json'; `$env:EDGE_NETWORK_LINK_ID='edge_01__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8001"
+$edge01Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_01'; `$env:EDGE_MQTT_CLIENT_ID='edge_01-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_01/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18011'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18021'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge01Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge01Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge01Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge01Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge01ModelState'; `$env:EDGE_NETWORK_LINK_ID='edge_01__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8001"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$edge01Cmd
 
 # Window 5: Edge 02
 Write-Host "[Win 5] Starting Edge service edge_02 ..."
-$edge02Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_02'; `$env:EDGE_MQTT_CLIENT_ID='edge_02-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_02/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18051'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18053'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge02Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge02Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge02Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge02Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge02Data\model_update_state.json'; `$env:EDGE_NETWORK_LINK_ID='edge_02__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8002"
+$edge02Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_02'; `$env:EDGE_MQTT_CLIENT_ID='edge_02-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_02/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18051'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18053'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge02Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge02Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge02Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge02Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge02ModelState'; `$env:EDGE_NETWORK_LINK_ID='edge_02__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8002"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$edge02Cmd
 
 # Window 6: LLM (optional)
