@@ -25,11 +25,12 @@ $NetSim = Join-Path $CloudEdge "internet_service\network_simulator"
 $EdgeService = Join-Path $CloudEdge "edge_service"
 $NetSimProject = "network_simulator"
 $LLM_DIR = "D:\develop\llama.cpp"
-# moment 环境的绝对 python 路径。直接用其调用 uvicorn，绕开对
-# "conda activate" 的依赖（Start-Process 的 powershell 会话未必初始化过
-# conda shell 函数，activate 会失败并落到 PATH 里错误的 python/torch）。
-$MomentPython = "C:\Users\Lenovo\.conda\envs\moment\python.exe"
 $PollIntervalSeconds = 2
+
+# 通用 conda 激活引导：不依赖用户是否执行过 conda init powershell，
+# 只要 conda 在 PATH 中即可（前置检查已保证），队友机器同样适用。
+# 用法：在子进程命令前拼接本前缀，即可用标准 "conda activate moment"。
+$CondaActivatePrefix = "conda shell.powershell hook | Out-String | Invoke-Expression; conda activate moment; "
 
 # EDGE_CONTROL_SHARED_SECRET：Scheduler 与 Edge 之间控制链路的 HMAC 密钥（≥32字节）。
 # 优先使用已设置的环境变量；未设置时自动生成一个固定密钥并写入项目根目录的
@@ -246,10 +247,10 @@ if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
 # ---------- Stage 2: host Scheduler + Cloud ----------
 Write-Host "`n========== Stage 2/4: Host Scheduler (8003) + Cloud (8004) =========="
-$schCmd = "Set-Location '$CloudEdge'; & '$MomentPython' -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
+$schCmd = "Set-Location '$CloudEdge'; $CondaActivatePrefix python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
-$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; & '$MomentPython' -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
+$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; $CondaActivatePrefix python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $stage2 = $true
