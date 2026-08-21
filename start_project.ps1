@@ -177,11 +177,28 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "  Image OK"
 
 Write-Host "[Check] Host ports 8001/8002 must be free for the Edge containers ..."
+$occupiedPorts = @()
 foreach ($port in 8001, 8002) {
-    if (Test-TcpPort "127.0.0.1" $port) {
-        Write-Host "  Port $port already in use (stale host Edge process or container). Stop it first."
-        exit 1
+    if (Test-TcpPort "127.0.0.1" $port) { $occupiedPorts += $port }
+}
+if ($occupiedPorts.Count -gt 0) {
+    # 端口被占用：通常是上次运行遗留的 edge 容器（Docker 容器不随终端关闭而停止）。
+    # 自动执行 compose down 清理，再重新检查；若仍被占用则说明不是本项目的容器。
+    Write-Host "  Ports $($occupiedPorts -join ', ') in use. Stopping stale Edge containers ..."
+    Push-Location $EdgeService
+    try {
+        docker compose -f compose.multi-edge.yml down
+    } finally {
+        Pop-Location
     }
+    $occupiedPorts = @()
+    foreach ($port in 8001, 8002) {
+        if (Test-TcpPort "127.0.0.1" $port) { $occupiedPorts += $port }
+    }
+}
+if ($occupiedPorts.Count -gt 0) {
+    Write-Host "  Ports $($occupiedPorts -join ', ') still in use (not from Edge containers). Stop the occupying process first."
+    exit 1
 }
 Write-Host "  Ports free"
 
