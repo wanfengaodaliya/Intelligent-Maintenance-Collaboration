@@ -30,7 +30,7 @@ Write-Host "  Docker OK"
 Write-Host "[Check] Conda moment env ..."
 $condaEnvs = conda env list 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "  Could not query Conda environments"; exit 1 }
-if ($condaEnvs -notmatch "^\s*moment\s") { Write-Host "  moment env missing, create it first"; exit 1 }
+if (-not ($condaEnvs -match "^\s*moment\s")) { Write-Host "  moment env missing, create it first"; exit 1 }
 Write-Host "  moment OK"
 
 Write-Host "[Check] MOMENT model ..."
@@ -101,7 +101,9 @@ Start-Sleep -Seconds 15
 
 # Window 2: Scheduler
 Write-Host "[Win 2] Starting Scheduler ..."
-$schCmd = "Set-Location '$CloudEdge'; `$env:SCHEDULER_EDGE_NODES_JSON='{""edge_01"":{""control_url"":""http://127.0.0.1:18042"",""target_topic"":""edge/edge_01/input""}}'; conda activate moment; python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
+$schedulerNodesJson = '{"edge_01":{"control_url":"http://127.0.0.1:18042","target_topic":"edge/edge_01/input"}}'
+$env:SCHEDULER_EDGE_NODES_JSON = $schedulerNodesJson
+$schCmd = "Set-Location '$CloudEdge'; conda activate moment; python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
 # Window 3: Cloud
