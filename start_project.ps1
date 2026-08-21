@@ -27,9 +27,25 @@ $NetSimProject = "network_simulator"
 $LLM_DIR = "D:\develop\llama.cpp"
 $PollIntervalSeconds = 2
 
+# EDGE_CONTROL_SHARED_SECRET：Scheduler 与 Edge 之间控制链路的 HMAC 密钥（≥32字节）。
+# 优先使用已设置的环境变量；未设置时自动生成一个固定密钥并写入项目根目录的
+# .edge_control_secret 文件（首次生成后即固定，后续每次复用同一个值）。
+# 该文件不入库，仅本机 Scheduler 与 Edge 配对使用，与他人配置互不影响。
+$SecretFile = Join-Path $ProjectRoot ".edge_control_secret"
 if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
     [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
-    throw "EDGE_CONTROL_SHARED_SECRET must be set to at least 32 bytes before startup"
+    if (Test-Path $SecretFile) {
+        $env:EDGE_CONTROL_SHARED_SECRET = (Get-Content $SecretFile -Raw).Trim()
+    } else {
+        $generated = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+        Set-Content -Path $SecretFile -Value $generated -NoNewline
+        $env:EDGE_CONTROL_SHARED_SECRET = $generated
+        Write-Host "[info] EDGE_CONTROL_SHARED_SECRET not set; generated a fixed one at $SecretFile"
+    }
+}
+if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
+    [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
+    throw "EDGE_CONTROL_SHARED_SECRET must be at least 32 bytes"
 }
 
 Write-Host "=== Project Root: $ProjectRoot ==="
