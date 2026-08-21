@@ -141,25 +141,28 @@ Start-Sleep -Seconds 20
 
 Write-Host "`n========== Health Checks =========="
 function Check-Svc {
-    param($Name,$Url,$Script)
-    try {
-        $r = Invoke-RestMethod $Url -TimeoutSec 5
-        $ok = & $Script $r
-        if ($ok) {
-            Write-Host "  [$Name] OK"
-            return $true
+    param($Name,$Url,$Script,[int]$Attempts = 1)
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            $r = Invoke-RestMethod $Url -TimeoutSec 5
+            $ok = & $Script $r
+            if ($ok) {
+                Write-Host "  [$Name] OK"
+                return $true
+            }
+        } catch {
         }
-        Write-Host "  [$Name] FAIL (unexpected health response)"
-        return $false
-    } catch {
-        Write-Host "  [$Name] FAIL"
-        return $false
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Seconds 2
+        }
     }
+    Write-Host "  [$Name] FAIL"
+    return $false
 }
 $allHealthy = $true
 if (-not (Check-Svc "NetSim(8090)" "http://127.0.0.1:8090/health" { param($r) $r.status -eq "ok" })) { $allHealthy = $false }
 if (-not (Check-Svc "Scheduler(8003)" "http://127.0.0.1:8003/health" { param($r) $r.status -eq "ok" })) { $allHealthy = $false }
-if (-not (Check-Svc "Cloud(8004)" "http://127.0.0.1:8004/health" { param($r) $r.status -eq "ok" -and $r.model_backend -eq "moment_light_adapt" })) { $allHealthy = $false }
+if (-not (Check-Svc "Cloud(8004)" "http://127.0.0.1:8004/health" { param($r) $r.status -eq "ok" -and $r.model_backend -eq "moment_light_adapt" } 20)) { $allHealthy = $false }
 if (-not (Check-Svc "Edge(8001)" "http://127.0.0.1:8001/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_01" -and $r.mqtt_connected -eq $true })) { $allHealthy = $false }
 if (-not (Check-Svc "Edge(8002)" "http://127.0.0.1:8002/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_02" -and $r.mqtt_connected -eq $true })) { $allHealthy = $false }
 if (-not $SkipLLM) {
