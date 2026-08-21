@@ -105,7 +105,7 @@ class RawSampleCaptureConfig:
 @dataclass(frozen=True)
 class SuggestionLlmConfig:
     enabled: bool = True
-    base_url: str = "http://127.0.0.1:8002"
+    base_url: str = "http://127.0.0.1:8005"
     timeout_seconds: float = 3.0
     history_window: int = 10
     fallback_text: str = "设备异常，建议关注。"
@@ -164,7 +164,7 @@ class EdgeRuntimeConfig:
                 enabled=env.get("EDGE_SUGGESTION_LLM_ENABLED", "true").strip().lower() == "true",
                 base_url=env.get(
                     "EDGE_SUGGESTION_LLM_BASE_URL",
-                    "http://127.0.0.1:8002",
+                    "http://127.0.0.1:8005",
                 ).rstrip("/"),
                 timeout_seconds=float(
                     env.get("EDGE_SUGGESTION_LLM_TIMEOUT_SECONDS", "3.0")

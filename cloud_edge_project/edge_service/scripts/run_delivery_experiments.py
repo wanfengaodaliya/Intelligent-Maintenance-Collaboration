@@ -4,7 +4,7 @@
 前置条件（见 docs/交付与可复现实验指南.md）：
   ① 网络模拟器已启动（Toxiproxy/MQTT/network-controller）
   ② 宿主机 8012 端口空闲（运行器自带可控 Fake 模型服务）
-  ③ 双 Edge 容器已启动（compose.network-sim.yml，端口 8001/8002）
+  ③ 双 Edge 容器已启动（compose.multi-edge.yml，端口 8001/8002）
   Cloud 可不启动（暂定结果路径正是无 Cloud 时的预期行为）；
   Scheduler 必须启动（决策流依赖 /scheduler/packet-route 路由，指南第 ③ 步）。
 
@@ -66,7 +66,7 @@ TOXIPROXY = "http://127.0.0.1:8474"
 SENDER_PORTS = {("sender_01", "edge_01"): 18831, ("sender_01", "edge_02"): 18832,
                 ("sender_02", "edge_01"): 18931, ("sender_02", "edge_02"): 18932}
 PACKETS_PER_BEARING = 80
-COMPOSE_FILE = "edge_service/compose.network-sim.yml"
+COMPOSE_FILE = "edge_service/compose.multi-edge.yml"
 # 运行 nonce：任务 ID 唯一化，避免跨运行触发任务冲突（Edge 任务态为进程内存态）。
 RUN_TOKEN = time.strftime("%Y%m%d%H%M%S")
 # 本脚本的故障演练矩阵（model_unavailable / queue_saturation 等）依赖可注入

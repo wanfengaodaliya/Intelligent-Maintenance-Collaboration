@@ -3,12 +3,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-COMPOSE_PATH = Path(__file__).resolve().parents[1] / "compose.network-sim.yml"
-MULTI_EDGE_COMPOSE_PATH = Path(__file__).resolve().parents[1] / "compose.multi-edge.yml"
-MODEL_SERVICE_APP_PATH = (
-    Path(__file__).resolve().parents[1] / "src" / "model_service" / "app.py"
-)
-EDGE_APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
+EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[1]
+COMPOSE_PATH = EDGE_SERVICE_ROOT / "compose.multi-edge.yml"
+DELETED_NETWORK_SIM_COMPOSE = EDGE_SERVICE_ROOT / "compose.network-sim.yml"
+MODEL_SERVICE_APP_PATH = EDGE_SERVICE_ROOT / "src" / "model_service" / "app.py"
+EDGE_APP_PATH = EDGE_SERVICE_ROOT / "app.py"
 
 # 与 internet_service/network_simulator/config/links.yaml 对齐的链路代理端口。
 EXPECTED_EDGE_ROUTES = {
@@ -23,6 +22,17 @@ EXPECTED_EDGE_ROUTES = {
         "link_id": "edge_02__to__scheduler__http",
     },
 }
+
+# 正式拓扑地址在 Compose 中固定取值，不允许 ${...} 插值（.env 覆盖）。
+FIXED_TOPOLOGY_ENV_VARS = (
+    "EDGE_MQTT_HOST",
+    "EDGE_MQTT_PORT",
+    "SCHEDULER_SERVICE_BASE_URL",
+    "CLOUD_SERVICE_BASE_URL",
+    "EDGE_SUGGESTION_LLM_BASE_URL",
+)
+
+EXPECTED_LLM_BASE_URL = "http://host.docker.internal:8005"
 
 
 def _services_section(text: str) -> str:
@@ -54,7 +64,13 @@ def _environment(block: str) -> dict[str, str]:
     return env
 
 
-def test_compose_defines_exactly_the_sim_edge_nodes() -> None:
+def test_old_network_sim_compose_is_removed() -> None:
+    assert not DELETED_NETWORK_SIM_COMPOSE.exists(), (
+        "compose.network-sim.yml 已被 compose.multi-edge.yml 取代，不得保留兼容副本"
+    )
+
+
+def test_compose_defines_exactly_the_two_edge_nodes() -> None:
     blocks = _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8"))
     assert set(blocks) == {"edge_01", "edge_02"}
 
@@ -84,6 +100,35 @@ def test_outbound_http_goes_through_matching_toxiproxy_links() -> None:
         assert env["EDGE_NETWORK_LINK_ID"] == expected["link_id"], name
         assert expected["link_id"] in env["EDGE_NETWORK_STATUS_URL"], name
         assert env["EDGE_MQTT_HOST"] == "mqtt-broker", name
+
+
+def test_suggestion_llm_targets_host_llama_service() -> None:
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    for name, block in _service_blocks(text).items():
+        env = _environment(block)
+        assert env["EDGE_SUGGESTION_LLM_BASE_URL"] == EXPECTED_LLM_BASE_URL, name
+
+
+def test_topology_addresses_are_fixed_and_not_env_overridable() -> None:
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    for name, block in _service_blocks(text).items():
+        env = _environment(block)
+        for variable in FIXED_TOPOLOGY_ENV_VARS:
+            value = env.get(variable)
+            assert value, f"{name}: {variable} is required"
+            assert "${" not in value and "}" not in value, (
+                f"{name}: {variable} 必须固定取值，不允许 .env 插值覆盖"
+            )
+
+
+def test_compose_joins_the_external_simulator_network() -> None:
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    assert re.search(
+        r"^networks:\n  default:\n    name: \$\{NETWORK_SIM_NETWORK:-network_simulator_default\}\n"
+        r"    external: true\n",
+        text,
+        re.M,
+    ), "compose 必须以外部网络加入 network_simulator_default"
 
 
 def test_data_volumes_and_host_ports_do_not_collide() -> None:
@@ -122,8 +167,7 @@ def test_model_service_port_is_reserved_and_never_mapped_by_compose() -> None:
         "model_service 默认端口必须与 Edge ModelClient 默认端口一致"
     )
 
-    for compose_path in (COMPOSE_PATH, MULTI_EDGE_COMPOSE_PATH):
-        host_ports = _compose_host_ports(compose_path)
-        assert model_port not in host_ports, (
-            f"{compose_path.name} 的宿主机端口映射占用了模型服务端口 {model_port}"
-        )
+    host_ports = _compose_host_ports(COMPOSE_PATH)
+    assert model_port not in host_ports, (
+        f"{COMPOSE_PATH.name} 的宿主机端口映射占用了模型服务端口 {model_port}"
+    )
