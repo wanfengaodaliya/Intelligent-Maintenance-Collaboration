@@ -4,9 +4,12 @@
 
 | 组件 | 默认端口 |
 |---|---:|
-| Edge Service | 8001 |
+| Edge Service（edge_01，宿主机映射） | 8001 |
+| Edge Service（edge_02，宿主机映射） | 8002 |
 | Scheduler Service | 8003 |
 | Cloud Service | 8004 |
+| Edge 建议 LLM（宿主机 llama.cpp 0.5B，不经网络模拟） | 8005 |
+| 云端模型更新 LLM（宿主机 llama.cpp 3B，不经网络模拟） | 6006 |
 | MQTT Broker | 1883 |
 | Network API | 8090 |
 | Toxiproxy API | 8474 |
@@ -32,16 +35,18 @@
 | edge_01 → Scheduler | `127.0.0.1:18011` | `toxiproxy:18011` | `host.docker.internal:8003` |
 | Scheduler → edge_01 | `127.0.0.1:18042` | `toxiproxy:18042` | `host.docker.internal:8001` |
 | edge_01 → Cloud | `127.0.0.1:18021` | `toxiproxy:18021` | `host.docker.internal:8004` |
-| Cloud → edge_01 | `127.0.0.1:18044` | `toxiproxy:18044` | `host.docker.internal:8001` |
+| Cloud → edge_01（预留，当前无消费者） | `127.0.0.1:18044` | `toxiproxy:18044` | `host.docker.internal:8001` |
 | Cloud → Scheduler | `127.0.0.1:18045` | `toxiproxy:18045` | `host.docker.internal:8003` |
 | edge_02 → Scheduler | `127.0.0.1:18051` | `toxiproxy:18051` | `host.docker.internal:8003` |
 | Scheduler → edge_02 | `127.0.0.1:18052` | `toxiproxy:18052` | `host.docker.internal:8002` |
 | edge_02 → Cloud | `127.0.0.1:18053` | `toxiproxy:18053` | `host.docker.internal:8004` |
-| Cloud → edge_02 | `127.0.0.1:18054` | `toxiproxy:18054` | `host.docker.internal:8002` |
+| Cloud → edge_02（预留，当前无消费者） | `127.0.0.1:18054` | `toxiproxy:18054` | `host.docker.internal:8002` |
 
 ## 业务接入规则
 
-宿主机上的业务进程使用 `127.0.0.1:<代理端口>`，Compose 容器内的业务进程使用 `toxiproxy:<代理端口>`。业务如果继续直接访问 `8001`、`8003` 或 `8004`，流量不会经过网络模拟链路。
+宿主机上的业务进程使用 `127.0.0.1:<代理端口>`，Compose 容器内的业务进程使用 `toxiproxy:<代理端口>`。业务如果继续直接访问 `8001`、`8002`、`8003` 或 `8004`，流量不会经过网络模拟链路。
+
+Edge 建议 LLM（宿主机 `8005`）由 Edge 容器经 `host.docker.internal:8005` 直连调用，云端模型更新 LLM（宿主机 `6006`）由 Cloud 直接调用；两者均不经过网络模拟，也不占用本表中的任何代理端口，且互不相干（详见启动手册第 6 节）。
 
 Edge Status Reporter 经过网络模拟时，宿主机启动前设置：
 

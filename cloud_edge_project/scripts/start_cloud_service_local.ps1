@@ -18,7 +18,9 @@ if (-not $python) {
     throw "Project virtual environment was not found: $($pythonCandidates -join '; ')"
 }
 
-$env:CLOUD_BACKEND = "vllm"
+# 正式诊断后端为 moment_light_adapt；vLLM（6006）只服务模型更新建议书，
+# 相关变量保留供该路径使用。
+$env:CLOUD_BACKEND = "moment_light_adapt"
 $env:VLLM_URL = $VllmUrl
 $env:VLLM_MODEL_NAME = $ModelName
 $env:VLLM_TIMEOUT_SECONDS = "$TimeoutSeconds"
