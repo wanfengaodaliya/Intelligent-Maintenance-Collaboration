@@ -99,9 +99,14 @@ try {
 }
 Start-Sleep -Seconds 15
 
+# 每个 Edge 都有自己的运行状态，避免两个进程争用同一个 SQLite 文件或缓存目录。
+$edge01Data = Join-Path $CloudEdge "data\edge_01"
+$edge02Data = Join-Path $CloudEdge "data\edge_02"
+New-Item -ItemType Directory -Force -Path $edge01Data, $edge02Data | Out-Null
+
 # Window 2: Scheduler
 Write-Host "[Win 2] Starting Scheduler ..."
-$schedulerNodesJson = '{"edge_01":{"control_url":"http://127.0.0.1:18042","target_topic":"edge/edge_01/input"}}'
+$schedulerNodesJson = '{"edge_01":{"control_url":"http://127.0.0.1:18042","target_topic":"edge/edge_01/input"},"edge_02":{"control_url":"http://127.0.0.1:18052","target_topic":"edge/edge_02/input"}}'
 $env:SCHEDULER_EDGE_NODES_JSON = $schedulerNodesJson
 $schCmd = "Set-Location '$CloudEdge'; conda activate moment; python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
@@ -111,15 +116,20 @@ Write-Host "[Win 3] Starting Cloud service ..."
 $cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; conda activate moment; python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
-# Window 4: Edge
-Write-Host "[Win 4] Starting Edge service ..."
-$edgeCmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_01'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18011'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18021'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8001"
-Start-Process powershell -ArgumentList "-NoExit","-Command",$edgeCmd
+# Window 4: Edge 01
+Write-Host "[Win 4] Starting Edge service edge_01 ..."
+$edge01Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_01'; `$env:EDGE_MQTT_CLIENT_ID='edge_01-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_01/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18011'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18021'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge01Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge01Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge01Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge01Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge01Data\model_update_state.json'; `$env:EDGE_NETWORK_LINK_ID='edge_01__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8001"
+Start-Process powershell -ArgumentList "-NoExit","-Command",$edge01Cmd
 
-# Window 5: LLM (optional)
+# Window 5: Edge 02
+Write-Host "[Win 5] Starting Edge service edge_02 ..."
+$edge02Cmd = "Set-Location '$CloudEdge'; `$env:EDGE_NODE_ID='edge_02'; `$env:EDGE_MQTT_CLIENT_ID='edge_02-runtime'; `$env:EDGE_MQTT_INPUT_TOPIC='edge/edge_02/input'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18051'; `$env:CLOUD_SERVICE_BASE_URL='http://127.0.0.1:18053'; `$env:EDGE_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; `$env:EDGE_V12_DATABASE_PATH='$edge02Data\edge_v12.db'; `$env:EDGE_PACKET_ROUTE_ERROR_LOG='$edge02Data\edge_packet_route_errors.jsonl'; `$env:EDGE_CLOUD_REVIEW_CACHE_DIR='$edge02Data\cloud_review'; `$env:EDGE_RAW_SAMPLE_DIRECTORY='$edge02Data\raw_analysis_samples'; `$env:EDGE_MODEL_UPDATE_STATE_PATH='$edge02Data\model_update_state.json'; `$env:EDGE_NETWORK_LINK_ID='edge_02__to__scheduler__http'; conda activate moment; python edge_service/run_edge_service.py --host 127.0.0.1 --port 8002"
+Start-Process powershell -ArgumentList "-NoExit","-Command",$edge02Cmd
+
+# Window 6: LLM (optional)
 if (-not $SkipLLM) {
-    Write-Host "[Win 5] Starting LLM service ..."
-    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8002 --ctx-size 2048 --n-gpu-layers 99"
+    Write-Host "[Win 6] Starting LLM service ..."
+    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8005 --ctx-size 2048 --n-gpu-layers 99"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$llmCmd
 }
 
@@ -149,8 +159,9 @@ if (-not (Check-Svc "NetSim(8090)" "http://127.0.0.1:8090/health" { param($r) $r
 if (-not (Check-Svc "Scheduler(8003)" "http://127.0.0.1:8003/health" { param($r) $r.status -eq "ok" })) { $allHealthy = $false }
 if (-not (Check-Svc "Cloud(8004)" "http://127.0.0.1:8004/health" { param($r) $r.status -eq "ok" -and $r.model_backend -eq "moment_light_adapt" })) { $allHealthy = $false }
 if (-not (Check-Svc "Edge(8001)" "http://127.0.0.1:8001/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_01" -and $r.mqtt_connected -eq $true })) { $allHealthy = $false }
+if (-not (Check-Svc "Edge(8002)" "http://127.0.0.1:8002/health" { param($r) $r.status -eq "ok" -and $r.node_id -eq "edge_02" -and $r.mqtt_connected -eq $true })) { $allHealthy = $false }
 if (-not $SkipLLM) {
-    if (-not (Check-Svc "LLM(8002)" "http://127.0.0.1:8002/v1/models" { param($r) $r.data.Count -gt 0 })) { $allHealthy = $false }
+    if (-not (Check-Svc "LLM(8005)" "http://127.0.0.1:8005/v1/models" { param($r) $r.data.Count -gt 0 })) { $allHealthy = $false }
 }
 if (-not $allHealthy) {
     Write-Host "`n========== Startup FAILED =========="
