@@ -23,6 +23,7 @@ class PendingMessage:
     payload: bytes
     topic: str
     first_publish_monotonic_ns: int
+    last_publish_monotonic_ns: int
     mqtt_publish_timestamp_ns: int
     retry_count: int = 0
     mids: set[int] = field(default_factory=set)
@@ -151,6 +152,7 @@ class MqttPublisher:
                 payload=payload,
                 topic=topic,
                 first_publish_monotonic_ns=time.monotonic_ns(),
+                last_publish_monotonic_ns=time.monotonic_ns(),
                 mqtt_publish_timestamp_ns=time.time_ns(),
             )
             self._pending[packet_id] = pending
@@ -167,8 +169,7 @@ class MqttPublisher:
             if pending is None:
                 return True
             if is_retry:
-                age = time.monotonic_ns() - pending.first_publish_monotonic_ns
-                if pending.retry_count >= self.max_retries or age >= self.delivery_timeout_ns:
+                if pending.retry_count >= self.max_retries:
                     return False
                 pending.retry_count += 1
                 self._publish_retry_total += 1
@@ -200,6 +201,7 @@ class MqttPublisher:
 
             mid = int(info.mid)
             current.initial_publish_error = False
+            current.last_publish_monotonic_ns = time.monotonic_ns()
             current.mids.add(mid)
             self._mid_to_packet[mid] = packet_id
             if mid in self._early_acks:
@@ -341,13 +343,23 @@ class MqttPublisher:
         while not self._stop_monitor.wait(0.01):
             now = time.monotonic_ns()
             expired_records: list[dict[str, Any]] = []
+            retry_packet_ids: list[str] = []
             with self._condition:
                 for packet_id, pending in list(self._pending.items()):
                     age = now - pending.first_publish_monotonic_ns
+                    attempt_age = now - pending.last_publish_monotonic_ns
                     if age >= self.warning_timeout_ns and not pending.warned:
                         pending.warned = True
                         self.warning_packet_ids.add(packet_id)
-                    if age >= self.delivery_timeout_ns:
+                    if (
+                        pending.retry_count < self.max_retries
+                        and attempt_age >= self.warning_timeout_ns
+                    ):
+                        retry_packet_ids.append(packet_id)
+                    elif (
+                        pending.retry_count >= self.max_retries
+                        and attempt_age >= self.delivery_timeout_ns
+                    ):
                         error_code = (
                             "MQTT_NOT_CONNECTED"
                             if pending.initial_publish_error or not self._connected.is_set()
@@ -361,6 +373,8 @@ class MqttPublisher:
                                 broker_ack_timestamp_ns=None,
                             )
                         )
+            for packet_id in retry_packet_ids:
+                self._attempt_publish(packet_id, is_retry=True)
             for record in expired_records:
                 self._write_packet_log(record)
 
