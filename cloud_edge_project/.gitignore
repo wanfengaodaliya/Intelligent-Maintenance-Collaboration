@@ -6,10 +6,14 @@ tests/
 !cloud_service/tests/**
 !scheduler/tests/
 !scheduler/tests/**
+!sender_module/tests/
+!sender_module/tests/**
 scheduler/tests/__pycache__/
 scheduler/tests/*.pyc
 cloud_service/tests/__pycache__/
 cloud_service/tests/*.pyc
+sender_module/tests/__pycache__/
+sender_module/tests/*.pyc
 logs/*.jsonl
 logs/*.csv
 data/*.db
