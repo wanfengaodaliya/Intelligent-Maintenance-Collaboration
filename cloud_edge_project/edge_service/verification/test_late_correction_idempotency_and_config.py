@@ -261,8 +261,8 @@ def test_multi_edge_validator_detects_duplicate_topics(tmp_path) -> None:
     module = _load_validator_module()
     compose_path = Path(__file__).resolve().parents[1] / "compose.multi-edge.yml"
     broken = compose_path.read_text(encoding="utf-8").replace(
-        "EDGE_MQTT_INPUT_TOPIC: edge/edge_002/input",
-        "EDGE_MQTT_INPUT_TOPIC: edge/edge_001/input",
+        "EDGE_MQTT_INPUT_TOPIC: edge/edge_02/input",
+        "EDGE_MQTT_INPUT_TOPIC: edge/edge_01/input",
     )
     target = tmp_path / "compose.broken.yml"
     target.write_text(broken, encoding="utf-8")

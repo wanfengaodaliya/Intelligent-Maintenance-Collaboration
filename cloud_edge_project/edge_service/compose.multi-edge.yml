@@ -1,28 +1,28 @@
-# 多节点边缘部署（阶段 3 第一版）：同一镜像，显式定义 edge_001 与 edge_002。
+# 多节点边缘部署（阶段 3 第一版）：同一镜像，显式定义 edge_01 与 edge_02。
 # 不使用 `docker compose --scale`：每个节点的身份、Topic、客户端 ID 和数据卷必须唯一。
 #
 # 使用（在 cloud_edge_project/edge_service 目录下）：
 #   docker compose -f compose.multi-edge.yml up -d --build
 #
 # Scheduler 需要注册两个节点（在宿主机启动 Scheduler 时设置）：
-#   SCHEDULER_EDGE_NODES_JSON='{"edge_001":{"control_url":"http://127.0.0.1:8001","target_topic":"edge/edge_001/input"},"edge_002":{"control_url":"http://127.0.0.1:8002","target_topic":"edge/edge_002/input"}}'
+#   SCHEDULER_EDGE_NODES_JSON='{"edge_01":{"control_url":"http://127.0.0.1:8001","target_topic":"edge/edge_01/input"},"edge_02":{"control_url":"http://127.0.0.1:8002","target_topic":"edge/edge_02/input"}}'
 #
 # MQTT Broker、Scheduler、Cloud 第一版假设运行在宿主机，
 # 可用环境变量 EDGE_MQTT_HOST / SCHEDULER_SERVICE_BASE_URL / CLOUD_SERVICE_BASE_URL 覆盖。
 
 services:
-  edge_001:
+  edge_01:
     build:
       context: ..
       dockerfile: edge_service/Dockerfile
     image: cloud-edge/edge-service:latest
-    container_name: edge_001
+    container_name: edge_01
     environment:
-      EDGE_NODE_ID: edge_001
+      EDGE_NODE_ID: edge_01
       EDGE_MQTT_HOST: ${EDGE_MQTT_HOST:-host.docker.internal}
       EDGE_MQTT_PORT: "1883"
-      EDGE_MQTT_CLIENT_ID: edge_001-runtime
-      EDGE_MQTT_INPUT_TOPIC: edge/edge_001/input
+      EDGE_MQTT_CLIENT_ID: edge_01-runtime
+      EDGE_MQTT_INPUT_TOPIC: edge/edge_01/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
@@ -39,7 +39,7 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - edge_001_data:/app/data
+      - edge_01_data:/app/data
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
@@ -51,18 +51,18 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
-  edge_002:
+  edge_02:
     build:
       context: ..
       dockerfile: edge_service/Dockerfile
     image: cloud-edge/edge-service:latest
-    container_name: edge_002
+    container_name: edge_02
     environment:
-      EDGE_NODE_ID: edge_002
+      EDGE_NODE_ID: edge_02
       EDGE_MQTT_HOST: ${EDGE_MQTT_HOST:-host.docker.internal}
       EDGE_MQTT_PORT: "1883"
-      EDGE_MQTT_CLIENT_ID: edge_002-runtime
-      EDGE_MQTT_INPUT_TOPIC: edge/edge_002/input
+      EDGE_MQTT_CLIENT_ID: edge_02-runtime
+      EDGE_MQTT_INPUT_TOPIC: edge/edge_02/input
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
@@ -77,7 +77,7 @@ services:
     ports:
       - "8002:8001"
     volumes:
-      - edge_002_data:/app/data
+      - edge_02_data:/app/data
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
@@ -90,5 +90,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  edge_001_data:
-  edge_002_data:
+  edge_01_data:
+  edge_02_data:

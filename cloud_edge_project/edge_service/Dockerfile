@@ -11,16 +11,30 @@ WORKDIR /app
 
 COPY requirements-moment.txt ./requirements-moment.txt
 # momentfm 以 git+https 形式安装，镜像内需要 git。
-# PIP_INDEX_URL / PIP_EXTRA_URL 可在构建时覆盖为镜像源（如国内网络环境）。
+# PIP_INDEX_URL / PIP_EXTRA_INDEX_URL 可在构建时覆盖为镜像源（如国内网络环境）。
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=""
 ARG EDGE_BUILD_REVISION=unknown
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/* \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git \
+    && git config --system http.version HTTP/1.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先缓存 PyPI 依赖（包括 Torch/CUDA）；MOMENT 的 GitHub 安装失败时可复用此层。
+RUN sed '/^momentfm[[:space:]]*@/d' requirements-moment.txt > /tmp/requirements-pypi.txt \
     && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
         $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
-        --requirement requirements-moment.txt
+        --requirement /tmp/requirements-pypi.txt \
+    && rm /tmp/requirements-pypi.txt
+
+# 固定提交的 MOMENT 单独成层，GitHub 短暂失败后重试不会重新下载 Torch/CUDA。
+RUN sed -n '/^momentfm[[:space:]]*@/p' requirements-moment.txt > /tmp/requirements-moment-git.txt \
+    && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
+        $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
+        --requirement /tmp/requirements-moment-git.txt \
+    && rm /tmp/requirements-moment-git.txt
 
 COPY common ./common
 COPY core ./core
