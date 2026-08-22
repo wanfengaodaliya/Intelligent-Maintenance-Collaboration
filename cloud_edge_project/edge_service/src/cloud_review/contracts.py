@@ -66,7 +66,11 @@ def validate_control(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def parse_cloud_bearing_result(payload: Mapping[str, Any]) -> CloudBearingResult:
-    """Validate every V1.2 cloud-result field before it may revise edge state."""
+    """Validate every V1.2 cloud-result field before it may revise edge state.
+
+    云端可在 V1.2 契约字段之外附带信息性字段（如 edge_label 供比对），
+    因此这里要求 payload 至少包含全部必填字段（子集校验），而非恰好相等。
+    """
     required = {
         "schema_version", "result_id", "review_id", "device_id", "task_id",
         "bearing_id", "sender_id", "decision_round_id", "diagnosis_window_id",
@@ -74,7 +78,7 @@ def parse_cloud_bearing_result(payload: Mapping[str, Any]) -> CloudBearingResult
         "bearing_state", "confidence", "data_quality_score", "risk_level", "action_grade",
         "recommended_action", "model_version", "created_at_ns",
     }
-    if not isinstance(payload, Mapping) or set(payload) != required:
+    if not isinstance(payload, Mapping) or not required <= set(payload):
         raise CloudReviewError("INVALID_CLOUD_BEARING_RESULT", "cloud bearing-result fields do not match V1.2")
     try:
         if payload["schema_version"] != "cloud-bearing-result/2.0":
