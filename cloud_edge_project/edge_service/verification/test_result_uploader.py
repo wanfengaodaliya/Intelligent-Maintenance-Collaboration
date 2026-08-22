@@ -57,6 +57,30 @@ def test_result_uploader_retries_with_persisted_bounded_backoff_and_recovers_res
     assert _row(database_path, _bearing().result_id)["status"] == "ACKNOWLEDGED"
 
 
+def test_result_uploader_dead_letters_a_non_retryable_delivery_error_after_one_attempt(tmp_path) -> None:
+    """A permanent Cloud rejection must not consume the transient retry budget."""
+    database_path = tmp_path / "edge.db"
+    attempts: list[str] = []
+
+    class PermanentDeliveryError(RuntimeError):
+        retryable = False
+
+    def reject(_path, _payload):
+        attempts.append("attempt")
+        raise PermanentDeliveryError("HTTP_400: INVALID_V12_RESULT")
+
+    uploader = ResultUploader(database_path, reject, max_attempts=8)
+    uploader.enqueue_bearing(_bearing())
+
+    assert uploader.run_once(now_ns=100) == 1
+    row = _row(database_path, _bearing().result_id)
+    assert attempts == ["attempt"]
+    assert row["status"] == "DEAD_LETTER"
+    assert row["attempt_count"] == 1
+    assert row["next_attempt_at_ns"] is None
+    assert uploader.run_once(now_ns=10_000_000_000) == 0
+
+
 def test_result_uploader_migrates_the_existing_p1_queue_in_place(tmp_path) -> None:
     database_path = tmp_path / "legacy.db"
     with closing(sqlite3.connect(database_path)) as connection, connection:

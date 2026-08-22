@@ -83,8 +83,10 @@ class ResultUploader:
                 )
         except Exception as error:
             attempts = int(row["attempt_count"]) + 1
-            if attempts >= self.max_attempts:
-                # 阶段 5：达到重试上限进入死信，保留现场等待人工恢复入口处理。
+            retryable = bool(getattr(error, "retryable", True))
+            if not retryable or attempts >= self.max_attempts:
+                # 契约、路由等不可恢复错误无需等待；只对显式可重试的暂态
+                # 错误使用重试预算。两类失败都保留在死信中供人工恢复。
                 with self._connect() as connection:
                     connection.execute(
                         """UPDATE v12_result_upload

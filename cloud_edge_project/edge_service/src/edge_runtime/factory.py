@@ -125,14 +125,6 @@ def build_edge_runtime(
             )
         )
 
-    def _enrich_uploaded_payload(payload, route_id: str):
-        # 阶段 4：轴承/设备结果上报 Cloud 时统一携带 trace 身份字段。
-        return with_trace_identity(
-            payload,
-            edge_node_id=config.edge_node_id,
-            route_id=route_id,
-        )
-
     def _publish_suggestion_with_identity(payload):
         # 建议发布统一携带 trace 身份字段，route_id 使用建议主题，
         # 便于跨模块按链路追踪。
@@ -189,7 +181,6 @@ def build_edge_runtime(
                 _cloud_result_base_url(config),
                 timeout_seconds=config.scheduler.request_timeout_seconds,
             ).post,
-            payload_enricher=_enrich_uploaded_payload,
             max_attempts=config.v12.result_upload_max_attempts,
         )
         device_result_outbox = DeviceResultOutbox(
