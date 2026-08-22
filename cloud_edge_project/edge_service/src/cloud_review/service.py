@@ -142,8 +142,11 @@ class CloudReviewService:
                 raise CloudReviewError("CLOUD_REVIEW_DECISION_CONFLICT", "decision_id has different control data", 409)
             if checkpoint["phase"] == "COMPLETED":
                 response = dict(checkpoint["response"])
-                response["duplicate"] = True
-                return response
+                if response.get("upload_status") != "RETRYABLE_FAILED":
+                    response["duplicate"] = True
+                    return response
+                # RETRYABLE_FAILED（重试耗尽但错误可重试）：调度器重新派发说明网络可能
+                # 已恢复，重新尝试上云复核，而不是直接返回 duplicate。
 
         self._validate_source(control)
         record = self.store.get(control["task_id"], control["bearing_id"], control["packet_id"])
@@ -240,7 +243,9 @@ class CloudReviewService:
         )
         self.scheduler_reporter.report(report)
         response = self._response(control, status, None, reason_code=error.reason_code)
-        self.store.release(control["task_id"], control["bearing_id"], control["packet_id"])
+        if status == "PERMANENT_FAILED":
+            # 仅不可重试的终态释放原始数据包；RETRYABLE_FAILED 保留供恢复后补传复核。
+            self.store.release(control["task_id"], control["bearing_id"], control["packet_id"])
         self.store.save_decision(
             control,
             phase="COMPLETED",

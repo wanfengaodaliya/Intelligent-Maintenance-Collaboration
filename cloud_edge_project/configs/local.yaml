@@ -23,6 +23,10 @@ packet_routing:
 cloud_node:
   max_queue_length: 5
   status_ttl_seconds: 5
+  # 网络模拟器把 edge→cloud 方向建模为 "{edge_id}__to__{link_alias}__http" 链路，
+  # 调度器据此把这类 HTTP 链路写入 cloud_registry，供补传派发判断云可达性。
+  default_cloud_node_id: "cloud_01"
+  link_alias: "cloud"
 
 cloud_network:
   min_uplink_mbps: 2.0
