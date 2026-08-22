@@ -79,7 +79,7 @@ Test-NetConnection 127.0.0.1 -Port 1883
     }
   ],
   "scheduler_timeout_seconds": 2.0,
-  "schedule_max_retries": 2,
+  "schedule_max_retries": 3,
   "mqtt_keepalive_seconds": 30,
   "qos": 1,
   "retain": false,
@@ -209,7 +209,7 @@ Content-Type: application/json
 - `sender_id`、`bearing_id`、`task_id`：说明这条任务属于哪台发送器、哪个轴承和哪一次任务。
 - `target_topic`：调度器为该任务返回的 MQTT 主题；调度失败时为 `null`。
 - `expected_packet_count`：本任务预计发送包数，当前固定为 80。
-- `schedule_retry_count`：本次 HTTP 调度请求的重试次数，不包含第一次请求。
+- `schedule_retry_count`：本次 HTTP 调度请求的重试次数，不包含第一次请求；当前最多重试 3 次，依次等待 0.5、1、2 秒。
 - `mqtt_reconnect_count`：任务期间 MQTT 断线后重新连接成功的次数。
 - `mqtt_publish_retry_total`：本任务全部数据包的 MQTT 重发次数总和。
 - `task_started_timestamp_ns`、`task_finished_timestamp_ns`：发送器任务开始和结束的本机时间，单位为纳秒。

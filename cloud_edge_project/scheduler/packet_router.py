@@ -284,7 +284,8 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
             if item["error"] is not None:
                 raise ValueError("successful result requires error=null")
             output = _mapping(item.get("output"), "output")
-            if set(output) != {"edge_result", "confidence", "task_complexity", "edge_risk_level", "model_version"}:
+            required_output = {"edge_result", "confidence", "task_complexity", "edge_risk_level", "model_version"}
+            if not required_output <= set(output):
                 raise ValueError("output fields do not match the contract")
             confidence = _bounded_float(output["confidence"], "confidence", 0.0, 1.0)
             complexity = _bounded_float(output["task_complexity"], "task_complexity", 0.0, 1.0)

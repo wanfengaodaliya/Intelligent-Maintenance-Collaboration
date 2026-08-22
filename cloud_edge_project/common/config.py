@@ -19,6 +19,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     # 边缘诊断默认后端为蒸馏模型 H5 三通道并行；official 供对照与故障演练。
     "model": {"edge_backend": "local_h5"},
+    "cloud_node": {
+        "max_queue_length": 5,
+        "status_ttl_seconds": 5,
+        "default_cloud_node_id": "cloud_01",
+        "link_alias": "cloud",
+    },
     "log": {"path": "logs/task_trace.jsonl"},
     "demo": {
         "network_state": {

@@ -58,6 +58,7 @@ except ImportError:
 default_runtime = SchedulerRuntime()
 # Compatibility aliases for callers that imported the previous module globals.
 node_registry = default_runtime.node_registry
+cloud_registry = default_runtime.cloud_registry
 task_repository = default_runtime.task_repository
 scheduler = default_runtime.assignment_scheduler
 
@@ -128,9 +129,18 @@ def update_network_report(
         link_id = item.get("link_id")
         if selected_link_ids is not None and link_id not in selected_link_ids:
             continue
+        if item.get("protocol") != "mqtt":
+            cloud_link = _edge_cloud_link_snapshot(item, measured_at_ns)
+            if cloud_link is None:
+                continue
+            try:
+                cloud_registry.update_link(cloud_link)
+            except RegistryError as error:
+                if error.code != "UNREGISTERED_EDGE_NODE":
+                    raise
+            continue
         if (
-            item.get("protocol") != "mqtt"
-            or not isinstance(item.get("sender_id"), str)
+            not isinstance(item.get("sender_id"), str)
             or not isinstance(item.get("edge_id"), str)
         ):
             continue
@@ -178,9 +188,35 @@ def update_network_report_batch(request: dict[str, Any]) -> dict[str, Any]:
             results.append({"link_id": link_id, "accepted": False, "reason": "invalid_link"})
             continue
         if item.get("protocol") != "mqtt":
-            # Scheduler 的链路快照模型只覆盖 sender→edge 的 MQTT 发布链路；
-            # HTTP 链路跳过是设计边界，显式计数，不算失败。
-            skipped_count += 1
+            # HTTP 链路：edge→cloud 链路写入 cloud_registry（补传派发依赖
+            # 该链路判断云可达性）；其余 HTTP 链路属于 Scheduler 链路模型
+            # 之外的有意跳过，显式计数，不算失败。
+            cloud_link = _edge_cloud_link_snapshot(item, measured_at_ns)
+            if cloud_link is None:
+                skipped_count += 1
+                continue
+            try:
+                outcome = cloud_registry.update_link(cloud_link)
+            except RegistryError as error:
+                results.append(
+                    {"link_id": link_id, "accepted": False, "reason": error.code.lower()}
+                )
+                continue
+            if outcome.get("accepted") is not True:
+                if outcome.get("reason_code") == "STALE_LINK_SNAPSHOT":
+                    # 重复投递或乱序补投：注册表内已有不早于本报告的链路状态，
+                    # 视为该链路已确认最新，保证 Reporter 重试幂等。
+                    accepted_count += 1
+                    continue
+                results.append(
+                    {
+                        "link_id": link_id,
+                        "accepted": False,
+                        "reason": str(outcome.get("reason_code", "rejected")).lower(),
+                    }
+                )
+                continue
+            accepted_count += 1
             continue
         if (
             not isinstance(item.get("sender_id"), str)
@@ -250,6 +286,63 @@ def _simulator_link_snapshot(item: dict[str, Any], measured_at_ns: int) -> dict[
         # 只能按“模拟丢包率”传递，不得伪装成 MQTT 实测发布成功率。
         "simulated_packet_loss_rate": loss_percent / 100.0 if available else 1.0,
     }
+
+
+def _cloud_link_config() -> tuple[str, str]:
+    """Return (cloud_node_id, link_alias) that edge→cloud simulator links map to."""
+    cloud = load_config().get("cloud_node", {})
+    cloud_node_id = str(cloud.get("default_cloud_node_id", "cloud_01"))
+    link_alias = str(cloud.get("link_alias", "cloud"))
+    return cloud_node_id, link_alias
+
+
+def _edge_cloud_link_snapshot(
+    item: dict[str, Any], measured_at_ns: int
+) -> dict[str, Any] | None:
+    """Convert an edge→cloud HTTP simulator link into a cloud-registry link payload.
+
+    网络模拟器把 edge→cloud 方向建模为 ``{edge_id}__to__{alias}__http`` 链路。
+    补传派发依赖 cloud_registry 中的该链路判断云可达性，因此这里把这类 HTTP
+    链路纳入注册表；其余 HTTP 链路仍按设计跳过。
+    """
+    cloud_node_id, link_alias = _cloud_link_config()
+    if item.get("protocol") != "http":
+        return None
+    edge_id = item.get("edge_id")
+    link_id = item.get("link_id")
+    if not isinstance(edge_id, str) or not edge_id or not isinstance(link_id, str):
+        return None
+    if link_id != f"{edge_id}__to__{link_alias}__http":
+        return None
+    base = {
+        "sent_at_ns": measured_at_ns,
+        "link_id": link_id,
+        "source_id": edge_id,
+        "target_id": cloud_node_id,
+        "measured_at_ns": measured_at_ns,
+    }
+    available = item.get("available") is True and item.get("last_apply_success") is True
+    if not available:
+        base["measurement_status"] = "UNAVAILABLE"
+        base["connected"] = False
+        for field in ("goodput_mbps", "rtt_ms_p50", "rtt_ms_p95", "jitter_ms", "loss_rate"):
+            base[field] = None
+        return base
+    latency = _non_negative_network_value(item.get("latency_ms"))
+    jitter = _non_negative_network_value(item.get("jitter_ms"))
+    bandwidth_kbps = _non_negative_network_value(item.get("bandwidth_kbps"))
+    loss_percent = min(
+        _non_negative_network_value(item.get("packet_loss_percent")), 100.0
+    )
+    base["measurement_status"] = "AVAILABLE"
+    base["connected"] = True
+    base["goodput_mbps"] = bandwidth_kbps / 1000.0
+    base["rtt_ms_p50"] = latency
+    # RTT P95 是估算值（latency + 2*jitter），与 MQTT 链路口径一致。
+    base["rtt_ms_p95"] = latency + 2.0 * jitter
+    base["jitter_ms"] = jitter
+    base["loss_rate"] = loss_percent / 100.0
+    return base
 
 
 def _non_negative_network_value(value: Any) -> float:
