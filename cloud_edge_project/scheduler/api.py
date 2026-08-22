@@ -1,5 +1,7 @@
 """HTTP API for assignment and package-level cloud review scheduling."""
 
+# 提供调度接口以及 P1 路由策略状态查询。
+
 from __future__ import annotations
 
 import json
@@ -385,6 +387,12 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
     ) -> dict[str, Any] | JSONResponse:
         return endpoint("save_device_arbitration_result", request)
 
+    @router.get("/routing-policy", response_model=None)
+    def routing_policy_endpoint() -> dict[str, Any]:
+        from scheduler.p1_policy_adapter import policy_status
+
+        return policy_status()
+
     application = FastAPI(
         title="Edge Node Assignment Scheduler",
         lifespan=lifespan,
@@ -407,6 +415,14 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send_json(200, health())
+            return
+        if self.path == "/scheduler/routing-policy":
+            try:
+                from scheduler.p1_policy_adapter import policy_status
+
+                self._send_json(200, policy_status())
+            except Exception as error:
+                self._send_json(500, {"error_code": "ROUTING_POLICY_ERROR", "message": str(error)})
             return
         self._send_json(404, {"detail": "not found"})
 

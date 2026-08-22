@@ -1,4 +1,5 @@
 #最核心的文件，真正决定任务走 edge、cloud 还是 fallback_edge
+# 该模块同时承载 P1 策略接入与 R0 固定规则回退。
 """Legacy PER-DDPG rules plus the separate documented V0.1 projection."""
 
 from __future__ import annotations
@@ -260,14 +261,24 @@ def decide_schedule(request: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def decide_schedule_v01(request: Mapping[str, Any]) -> dict[str, Any]:
-    """Apply only the three V0.1 rules and return exactly six public fields."""
+    """Apply only the three V0.1 rules and return exactly six public fields.
+
+    实验挂钩：SCHEDULER_ROUTING_POLICY=p1 时先尝试 P1 LinUCB 策略；
+    P1 返回 None（r0 模式 / 模型不可用 / 异常）时完全回退到固定规则。
+    """
 
     task = _mapping(request.get("task"))
     edge_result = _mapping(request.get("edge_result"))
     network_state = _mapping(request.get("network_state"))
+    node_state = _mapping(request.get("node_state"))
     task_id = str(task.get("task_id", ""))
     source_node = str(task.get("source_node") or "edge_1")
     edge_latency_ms = _number(edge_result.get("edge_latency_ms"), 0.0)
+
+    # ---- P1 实验挂钩（默认 r0 模式下直接返回 None，零开销）----
+    p1_choice = _p1_hook(task, edge_result, network_state, node_state)
+    if p1_choice is not None:
+        return _p1_v01_decision(task, edge_result, network_state, p1_choice)
 
     if not network_state.get("cloud_available"):
         return _v01_decision(
@@ -330,3 +341,61 @@ def _number(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+# ---- P1 实验挂钩辅助函数 ------------------------------------------------
+
+
+def _p1_hook(
+    task: Mapping[str, Any],
+    edge_result: Mapping[str, Any],
+    network_state: Mapping[str, Any],
+    node_state: Mapping[str, Any],
+):
+    """调用 P1 适配器；任何异常返回 None（回退固定规则）。"""
+    try:
+        from .p1_policy_adapter import maybe_choose_v01_route
+    except ImportError:
+        try:
+            from p1_policy_adapter import maybe_choose_v01_route
+        except ImportError:
+            return None
+    try:
+        return maybe_choose_v01_route(
+            task=task,
+            edge_result=edge_result,
+            network_state=network_state,
+            node_state=node_state,
+        )
+    except Exception:
+        return None
+
+
+def _p1_v01_decision(
+    task: Mapping[str, Any],
+    edge_result: Mapping[str, Any],
+    network_state: Mapping[str, Any],
+    choice,
+) -> dict[str, Any]:
+    """把 P1 选择转换为 v0.1 六字段决策（与固定规则输出格式一致）。"""
+    task_id = str(task.get("task_id", ""))
+    source_node = str(task.get("source_node") or "edge_1")
+    edge_latency_ms = _number(edge_result.get("edge_latency_ms"), 0.0)
+    route = choice.route
+
+    if route == "cloud":
+        bandwidth = max(_number(network_state.get("bandwidth_mbps"), 0.0), 0.1)
+        transfer_ms = _number(task.get("data_size_kb"), 0.0) * 8.0 / 1024.0 / bandwidth * 1000.0
+        latency = round(
+            edge_latency_ms + _number(network_state.get("latency_ms"), 0.0) + transfer_ms + 45.0,
+            3,
+        )
+        target_node = "cloud_1"
+        upload_required = True
+    else:
+        latency = edge_latency_ms
+        target_node = source_node
+        upload_required = False
+
+    reason = "p1:" + ",".join(choice.reason_codes)
+    return _v01_decision(task_id, route, target_node, reason, latency, upload_required)
