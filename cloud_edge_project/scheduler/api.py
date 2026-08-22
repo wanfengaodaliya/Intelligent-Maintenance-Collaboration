@@ -366,10 +366,13 @@ def health() -> dict[str, Any]:
 def _error_payload(error: Exception) -> tuple[int, dict[str, Any]]:
     if isinstance(error, ContractError):
         return 400, {"error_code": error.code, "message": error.message}
+    if isinstance(error, AssignmentError):
+        payload = {"error_code": error.code, "message": error.message}
+        payload.update(error.details)
+        return error.status_code, payload
     if isinstance(
         error,
         (
-            AssignmentError,
             TaskRepositoryError,
             PacketRouteError,
             DeferredCloudError,
