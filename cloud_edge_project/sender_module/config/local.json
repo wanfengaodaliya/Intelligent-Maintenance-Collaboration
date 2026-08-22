@@ -36,7 +36,7 @@
     }
   ],
   "scheduler_timeout_seconds": 2.0,
-  "schedule_max_retries": 2,
+  "schedule_max_retries": 3,
   "mqtt_keepalive_seconds": 30,
   "qos": 1,
   "retain": false,

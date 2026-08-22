@@ -63,7 +63,7 @@ class SchedulerClient:
         url: str,
         timeout_seconds: float,
         max_retries: int,
-        retry_delay_seconds: float = 0.2,
+        retry_delay_seconds: float = 0.5,
         session: requests.Session | None = None,
     ) -> None:
         self.url = url
@@ -104,6 +104,6 @@ class SchedulerClient:
                 last_error = f"scheduler request failed: {exc}"
 
             if attempt < self.max_retries and self.retry_delay_seconds:
-                time.sleep(self.retry_delay_seconds)
+                time.sleep(self.retry_delay_seconds * (2 ** attempt))
 
         raise SchedulerError(last_error, self.max_retries)
