@@ -107,6 +107,32 @@ def test_legacy_cloud_moment_exports_are_scenario_objects(
         assert getattr(legacy_module, public_name) is scenario_value
 
 
+def test_cloud_moment_compatibility_exports_have_exact_public_surface() -> None:
+    compatibility_module = importlib.import_module(
+        "compatibility.bearing_v12.cloud_moment_exports"
+    )
+    expected = tuple(
+        public_name
+        for _scenario_name, _legacy_name, public_names in MODULE_EXPORTS
+        for public_name in public_names
+    )
+
+    assert tuple(compatibility_module.__all__) == expected
+
+
+def test_cloud_service_receives_scenario_runtime_through_legacy_boundary() -> None:
+    service_module = importlib.import_module("cloud_service.service")
+    scenario_module = importlib.import_module(
+        "scenarios.bearing.cloud_diagnosis.moment_light_adapt"
+    )
+
+    assert service_module.MomentLightAdaptRunner is (
+        scenario_module.MomentLightAdaptRunner
+    )
+    assert service_module.MomentReviewPolicy is scenario_module.MomentReviewPolicy
+    assert service_module.MODEL_VERSION is scenario_module.MODEL_VERSION
+
+
 def test_legacy_condition_vector_and_policy_match_frozen_goldens() -> None:
     from cloud_service.moment_light_adapt import (
         LABEL_NAMES,
@@ -323,6 +349,24 @@ def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def test_runtime_submodule_import_keeps_provider_assembly_lazy() -> None:
+    code = """
+import importlib
+import sys
+
+importlib.import_module("cloud_service.moment_backbone")
+assert "scenarios.bearing.cloud_diagnosis.provider" not in sys.modules
+package = importlib.import_module("scenarios.bearing.cloud_diagnosis")
+provider = package.BearingCloudDiagnosisProvider
+assert provider.__module__ == "scenarios.bearing.cloud_diagnosis.provider"
+assert "scenarios.bearing.cloud_diagnosis.provider" in sys.modules
+"""
+
+    completed = _run_isolated(code)
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize(

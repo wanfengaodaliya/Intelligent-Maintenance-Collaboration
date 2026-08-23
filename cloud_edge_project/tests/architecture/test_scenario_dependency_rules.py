@@ -549,3 +549,15 @@ def test_bearing_cloud_moment_business_definitions_have_exactly_one_owner() -> N
                 if business_name in _defined_names(path)
             ]
             assert owners == [expected_owner]
+
+
+def test_cloud_moment_consumers_keep_legacy_compatibility_boundaries() -> None:
+    service_path = PROJECT_ROOT / "cloud_service" / "service.py"
+    training_path = (
+        PROJECT_ROOT / "cloud_service" / "model_update" / "training.py"
+    )
+
+    assert "cloud_service.moment_light_adapt" in _imported_modules(service_path)
+    assert "cloud_service.moment_backbone" in _imported_modules(training_path)
+    assert not _imports_bearing_plugin(service_path)
+    assert not _imports_bearing_plugin(training_path)
