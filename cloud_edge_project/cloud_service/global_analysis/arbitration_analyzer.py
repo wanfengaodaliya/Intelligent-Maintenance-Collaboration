@@ -6,11 +6,11 @@ from collections import Counter
 from typing import Any
 
 from cloud_service.global_analysis.common import rate
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
+from cloud_service.global_analysis.runtime_contracts import GlobalAnalysisRuntimeConfig
 
 
 def analyze_device_arbitration(
-    device_rows: list[dict[str, Any]], arbitration_rows: list[dict[str, Any]], config: GlobalAnalysisConfig
+    device_rows: list[dict[str, Any]], arbitration_rows: list[dict[str, Any]], config: GlobalAnalysisRuntimeConfig
 ) -> dict[str, Any]:
     task_count = len(device_rows)
     conflict_count = sum(bool(row.get("has_conflict")) for row in device_rows)

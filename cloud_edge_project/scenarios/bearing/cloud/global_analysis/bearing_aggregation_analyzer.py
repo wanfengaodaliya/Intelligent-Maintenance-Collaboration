@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from cloud_service.global_analysis.common import analysis_status, review_metrics
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
+from scenarios.bearing.cloud.global_analysis.config import GlobalAnalysisConfig
 
 
 def analyze_bearing_aggregation(rows: list[dict[str, Any]], config: GlobalAnalysisConfig) -> dict[str, Any]:

@@ -22,7 +22,7 @@ from common.model_signing import ModelSigningError, sign_manifest
 LOGGER = logging.getLogger(__name__)
 
 from cloud_service.config import CloudSettings, load_cloud_settings
-from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.runtime_contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.periodic import run_all as run_periodic_global_analysis
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.model_update.service import ModelUpdateError

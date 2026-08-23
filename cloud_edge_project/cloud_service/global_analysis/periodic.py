@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
+from cloud_service.global_analysis.runtime_contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.service import GlobalAnalysisService
 from cloud_service.storage.database import connect
 

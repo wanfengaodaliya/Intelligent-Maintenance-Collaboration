@@ -12,12 +12,16 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from cloud_service.global_analysis.arbitration_analyzer import analyze_device_arbitration
-from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT, GlobalAnalysisConfig
+from cloud_service.global_analysis import contracts as legacy_contracts
 from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
 from cloud_service.global_analysis.packet_model_analyzer import analyze_packet_model
 from cloud_service.global_analysis.physical_evidence_analyzer import analyze_physical_evidence
 from cloud_service.global_analysis.problem_detector import detect_problem_candidates
 from cloud_service.global_analysis.result_repository import GlobalAnalysisResultRepository
+from cloud_service.global_analysis.runtime_contracts import (
+    DEFAULT_TASK_LIMIT,
+    GlobalAnalysisRuntimeConfig,
+)
 from cloud_service.global_analysis.v12_data_source import V12GlobalAnalysisDataSource
 
 
@@ -33,7 +37,7 @@ class GlobalAnalysisService:
         self,
         database_path: Path,
         data_source: Any | None = None,
-        config: GlobalAnalysisConfig | None = None,
+        config: GlobalAnalysisRuntimeConfig | None = None,
         *,
         # Optional scenario-specific analysis callables.
         # Each receives (data, config) and returns a dict.
@@ -43,7 +47,7 @@ class GlobalAnalysisService:
         self.database_path = Path(database_path)
         self.repository = GlobalAnalysisResultRepository(self.database_path)
         self.data_source = data_source or V12GlobalAnalysisDataSource(self.database_path)
-        self.config = config or GlobalAnalysisConfig()
+        self.config = config or legacy_contracts.GlobalAnalysisConfig()
         self.scenario_analyzers = dict(scenario_analyzers or {})
 
     def analyze(self, scenario_type: str, subject_id: str, task_limit: int = DEFAULT_TASK_LIMIT) -> dict[str, Any]:
