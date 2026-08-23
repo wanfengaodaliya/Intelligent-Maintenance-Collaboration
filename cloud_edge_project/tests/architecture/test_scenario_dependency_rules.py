@@ -53,6 +53,11 @@ CLOUD_MOMENT_MODULES = {
         },
     ),
 }
+GLOBAL_ANALYSIS_SCENARIO_MODULES = {
+    "config.py": {"GlobalAnalysisConfig"},
+    "v12_data_source.py": {"V12GlobalAnalysisDataSource"},
+    "problem_detector.py": {"detect_bearing_problem_candidates"},
+}
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
@@ -554,3 +559,123 @@ def test_cloud_moment_consumers_keep_legacy_compatibility_boundaries() -> None:
     assert "cloud_service.moment_backbone" in _imported_modules(training_path)
     assert not _imports_bearing_plugin(service_path)
     assert not _imports_bearing_plugin(training_path)
+
+
+@pytest.mark.parametrize(
+    "legacy_filename",
+    ("contracts.py", "v12_data_source.py"),
+)
+def test_legacy_global_analysis_modules_use_compatibility_boundary(
+    legacy_filename: str,
+) -> None:
+    legacy_path = PROJECT_ROOT / "cloud_service" / "global_analysis" / legacy_filename
+    imported_modules = _imported_modules(legacy_path)
+
+    assert "compatibility.bearing_v12.global_analysis_exports" in imported_modules
+    assert not any(
+        module.startswith("scenarios.bearing") for module in imported_modules
+    )
+
+
+def test_legacy_global_analysis_modules_are_thin_explicit_shims() -> None:
+    legacy_root = PROJECT_ROOT / "cloud_service" / "global_analysis"
+    for legacy_filename in ("contracts.py", "v12_data_source.py"):
+        path = legacy_root / legacy_filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assignments = [
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
+
+        assert assignments == ["__all__"]
+        assert tree.body and _is_module_docstring(tree.body[0])
+        assert all(
+            isinstance(node, (ast.ImportFrom, ast.Assign))
+            for node in tree.body[1:]
+        )
+        assert all(
+            alias.name != "*"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        )
+
+
+def test_global_analysis_compatibility_exports_are_explicit() -> None:
+    path = (
+        PROJECT_ROOT
+        / "compatibility"
+        / "bearing_v12"
+        / "global_analysis_exports.py"
+    )
+
+    assert path.is_file()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assignments = [
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
+
+    assert assignments == ["__all__"]
+    assert tree.body and _is_module_docstring(tree.body[0])
+    assert all(
+        isinstance(node, (ast.ImportFrom, ast.FunctionDef, ast.Assign))
+        for node in tree.body[1:]
+    )
+    assert all(
+        alias.name != "*"
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    )
+
+
+def test_bearing_global_analysis_business_definitions_have_exactly_one_owner() -> None:
+    scenario_root = (
+        PROJECT_ROOT / "scenarios" / "bearing" / "cloud" / "global_analysis"
+    )
+    excluded_parts = {"__pycache__", "tests", "verification", ".cache", ".venv"}
+    production_paths = [
+        path
+        for path in PROJECT_ROOT.rglob("*.py")
+        if excluded_parts.isdisjoint(path.relative_to(PROJECT_ROOT).parts)
+    ]
+
+    for scenario_filename, business_names in GLOBAL_ANALYSIS_SCENARIO_MODULES.items():
+        expected_owner = scenario_root / scenario_filename
+        assert expected_owner.is_file()
+        for business_name in business_names:
+            owners = [
+                path
+                for path in production_paths
+                if business_name in _defined_names(path)
+            ]
+            assert owners == [expected_owner]
+
+
+def test_generic_global_analysis_runtime_is_scenario_neutral() -> None:
+    generic_paths = (
+        PROJECT_ROOT / "cloud_service" / "global_analysis" / "runtime_contracts.py",
+        PROJECT_ROOT / "cloud_service" / "global_analysis" / "service.py",
+        PROJECT_ROOT / "cloud_service" / "global_analysis" / "periodic.py",
+        PROJECT_ROOT / "cloud_service" / "global_analysis" / "problem_detector.py",
+    )
+    forbidden = (
+        "bearing_id",
+        "bearing_tasks",
+        "bearing_risk",
+        "bearing_review",
+        "scenario_type: str = \"bearing\"",
+    )
+
+    for path in generic_paths:
+        assert path.is_file()
+        source = path.read_text(encoding="utf-8")
+        assert not _imports_bearing_plugin(path)
+        assert all(word not in source for word in forbidden)
