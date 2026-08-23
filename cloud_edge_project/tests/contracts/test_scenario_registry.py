@@ -29,6 +29,7 @@ from core.scenario_plugin import (
     INPUT_ADAPTER,
     MODEL_PROVIDER,
     MODEL_UPDATE,
+    STORAGE_PROVIDER,
     CapabilityBinding,
 )
 from scenarios.bearing.manifest import BEARING_CAPABILITIES
@@ -94,6 +95,7 @@ def test_registry_registers_bearing_plugin_and_exposes_all_capabilities() -> Non
             MODEL_UPDATE,
             CONSISTENCY_POLICY,
             ARBITRATION_POLICY,
+            STORAGE_PROVIDER,
         }:
             assert binding.resolved
             assert registry.require_provider("bearing", capability) is binding.provider
@@ -116,6 +118,7 @@ def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:
         GLOBAL_ANALYSIS,
         MODEL_UPDATE,
         ARBITRATION_POLICY,
+        STORAGE_PROVIDER,
     }:
         assert cloud_registry.get_capability("bearing", capability).resolved
         assert not edge_registry.get_capability("bearing", capability).resolved
@@ -128,6 +131,7 @@ def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:
         MODEL_UPDATE,
         CONSISTENCY_POLICY,
         ARBITRATION_POLICY,
+        STORAGE_PROVIDER,
     }:
         assert not sender_registry.get_capability("bearing", capability).resolved
 

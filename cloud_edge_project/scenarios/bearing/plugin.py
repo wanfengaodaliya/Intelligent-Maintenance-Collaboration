@@ -14,6 +14,7 @@ from core.scenario_plugin import (
     INPUT_ADAPTER,
     MODEL_PROVIDER,
     MODEL_UPDATE,
+    STORAGE_PROVIDER,
     CapabilityBinding,
     ScenarioManifest,
 )
@@ -29,7 +30,7 @@ _IMPLEMENTATION_AREAS = {
     "arbitration_policy": "scenarios.bearing.arbitration.BearingArbitrationPolicy",
     "global_analysis": "scenarios.bearing.cloud.global_analysis",
     "model_provider": "scenarios.bearing.edge_inference.BearingEdgeModelProvider",
-    "storage_provider": "cloud_service.storage",
+    "storage_provider": "scenarios.bearing.storage.BearingStorageProvider",
     "model_update": "scenarios.bearing.cloud.model_update.BearingModelUpdateProvider",
 }
 
@@ -48,6 +49,7 @@ class BearingScenarioPlugin:
                 MODEL_UPDATE,
                 CONSISTENCY_POLICY,
                 ARBITRATION_POLICY,
+                STORAGE_PROVIDER,
             })
             if resolved_capabilities is None
             else resolved_capabilities
@@ -94,6 +96,10 @@ class BearingScenarioPlugin:
             from scenarios.bearing.arbitration import BearingArbitrationPolicy
 
             resolved_providers[ARBITRATION_POLICY] = BearingArbitrationPolicy()
+        if STORAGE_PROVIDER in requested:
+            from scenarios.bearing.storage import BearingStorageProvider
+
+            resolved_providers[STORAGE_PROVIDER] = BearingStorageProvider()
         self._capabilities = MappingProxyType(
             {
                 capability: (

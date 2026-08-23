@@ -62,6 +62,7 @@ from core.scenario_plugin import (
     CLOUD_DIAGNOSIS,
     GLOBAL_ANALYSIS,
     MODEL_UPDATE,
+    STORAGE_PROVIDER,
 )
 from core.scenario_registry import (
     DEFAULT_SCENARIO_TYPE,
@@ -91,6 +92,9 @@ def _scenario_provider(scenario_type: object, capability: str) -> object:
         UnresolvedScenarioCapabilityError,
     ) as exc:
         raise UnsupportedScenarioError(normalized) from exc
+
+
+storage_provider = _scenario_provider(DEFAULT_SCENARIO_TYPE, STORAGE_PROVIDER)
 
 
 def get_scenario_handler(scenario_type: object, *, database_path: Path):
@@ -191,7 +195,11 @@ async def _run_periodic_global_analysis() -> None:
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = load_cloud_settings()
-    await asyncio.to_thread(initialize_database, settings.database_path)
+    await asyncio.to_thread(
+        initialize_database,
+        settings.database_path,
+        storage_providers=(storage_provider,),
+    )
     if settings.backend == "moment_light_adapt":
         await asyncio.to_thread(preload_moment_runner, settings)
     worker_task = asyncio.create_task(_run_background_workers())

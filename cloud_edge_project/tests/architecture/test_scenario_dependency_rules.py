@@ -87,7 +87,9 @@ def test_cloud_app_uses_registry_instead_of_bearing_implementation_imports() -> 
         for alias in node.names
     }
 
-    assert "build_cloud_scenario_registry" in imported_names
+    assert {"build_cloud_scenario_registry", "STORAGE_PROVIDER"}.issubset(
+        imported_names
+    )
     assert not _imports_bearing_plugin(app_path)
 
 

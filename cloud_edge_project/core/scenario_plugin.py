@@ -202,8 +202,16 @@ class ModelUpdateProvider(Protocol):
     def activate_version(self, settings: object, version: str) -> object: ...
 
 
+@runtime_checkable
+class StorageRegistrar(Protocol):
+    def execute_schema(self, script: str) -> None: ...
+
+
+@runtime_checkable
 class StorageProvider(Protocol):
-    def initialize(self, storage: object) -> None: ...
+    scenario_id: str
+
+    def initialize(self, registrar: StorageRegistrar) -> None: ...
 
 
 class ScenarioPlugin(Protocol):

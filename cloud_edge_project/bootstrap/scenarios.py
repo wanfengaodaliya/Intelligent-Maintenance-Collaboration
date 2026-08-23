@@ -12,6 +12,7 @@ from core.scenario_plugin import (
     INPUT_ADAPTER,
     MODEL_PROVIDER,
     MODEL_UPDATE,
+    STORAGE_PROVIDER,
 )
 from scenarios.bearing.plugin import BearingScenarioPlugin
 
@@ -20,7 +21,13 @@ EDGE_CAPABILITIES = frozenset(
     {EDGE_INFERENCE, MODEL_PROVIDER, CONSISTENCY_POLICY}
 )
 CLOUD_CAPABILITIES = frozenset(
-    {CLOUD_DIAGNOSIS, GLOBAL_ANALYSIS, MODEL_UPDATE, ARBITRATION_POLICY}
+    {
+        CLOUD_DIAGNOSIS,
+        GLOBAL_ANALYSIS,
+        MODEL_UPDATE,
+        ARBITRATION_POLICY,
+        STORAGE_PROVIDER,
+    }
 )
 SENDER_CAPABILITIES = frozenset({INPUT_ADAPTER})
 
