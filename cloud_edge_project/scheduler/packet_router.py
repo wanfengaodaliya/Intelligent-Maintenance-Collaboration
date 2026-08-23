@@ -18,10 +18,22 @@ try:
 except ImportError:
     from cloud_registry import CloudNodeRegistry, CloudNodeSnapshot, EdgeCloudLinkSnapshot
 
+try:
+    from .p1_policy_adapter import maybe_choose_v01_route as _p1_choose_route
+except ImportError:  # pragma: no cover - experimental policy unavailable
+    _p1_choose_route = None
+
 
 DIRECT_FINAL_TO_SUMMARY = "DIRECT_FINAL_TO_SUMMARY"
 CLOUD_REVIEW_NOW = "CLOUD_REVIEW_NOW"
 EDGE_PROVISIONAL_AND_DEFER_CLOUD = "EDGE_PROVISIONAL_AND_DEFER_CLOUD"
+
+# P1 route action -> packet-level route in the V1.2 single-packet flow.
+_P1_ROUTE_TO_PACKET_ROUTE = {
+    "edge": DIRECT_FINAL_TO_SUMMARY,
+    "cloud": CLOUD_REVIEW_NOW,
+    "fallback_edge": EDGE_PROVISIONAL_AND_DEFER_CLOUD,
+}
 
 
 class PacketRouteError(ValueError):
@@ -70,6 +82,16 @@ class PacketRouter:
         output = result.get("output")
         confidence = output["confidence"] if output is not None else None
         complexity = output["task_complexity"] if output is not None else None
+        p1_response = self._try_p1_route(
+            result,
+            output,
+            confidence,
+            complexity,
+            decision_id=decision_id,
+            now_ns=now_ns,
+        )
+        if p1_response is not None:
+            return p1_response
         if output is not None and confidence >= self.config.confidence_threshold:
             return self._response(
                 result,
@@ -140,6 +162,88 @@ class PacketRouter:
             return False, reasons[0]
         return True, None
 
+
+    def _try_p1_route(
+        self,
+        result: Mapping[str, Any],
+        output: Mapping[str, Any] | None,
+        confidence: float | None,
+        complexity: float | None,
+        *,
+        decision_id: str,
+        now_ns: int,
+    ) -> dict[str, Any] | None:
+        """Prefer the P1 packet-routing policy in the V1.2 single-packet flow.
+
+        Returns None so the caller keeps the fixed rule whenever P1 is
+        unavailable, the packet carries no edge output, or P1 falls back to R0.
+        """
+        if output is None or _p1_choose_route is None:
+            return None
+        cloud = self.cloud_registry.snapshot(
+            self.config.default_cloud_node_id, now_ns=now_ns
+        )
+        link = self.cloud_registry.link_snapshot(
+            result["edge_node_id"], self.config.default_cloud_node_id, now_ns=now_ns
+        )
+        task = {
+            "task_id": result["task_id"],
+            "source_node": result["device_id"],
+            "bearing_id": result["bearing_id"],
+        }
+        edge_result = {"confidence": confidence}
+        network_state = self._p1_network_state(cloud, link)
+        node_state = {
+            "cloud_queue_length": cloud.queue_length if cloud is not None else 0
+        }
+        choice = _p1_choose_route(
+            task=task,
+            edge_result=edge_result,
+            network_state=network_state,
+            node_state=node_state,
+        )
+        if choice is None:
+            return None
+        route = _P1_ROUTE_TO_PACKET_ROUTE.get(choice.route)
+        if route is None:
+            return None
+        reasons = list(choice.reason_codes)
+        defer_reason = (
+            reasons[0] if route == EDGE_PROVISIONAL_AND_DEFER_CLOUD else None
+        )
+        return self._response(
+            result,
+            decision_id=decision_id,
+            route=route,
+            reasons=reasons,
+            defer_reason=defer_reason,
+            confidence=confidence,
+            complexity=complexity,
+            cloud=cloud,
+            link=link,
+            now_ns=now_ns,
+        )
+
+    def _p1_network_state(
+        self,
+        cloud: CloudNodeSnapshot | None,
+        link: EdgeCloudLinkSnapshot | None,
+    ) -> dict[str, Any]:
+        link_usable = (
+            link is not None
+            and link.measurement_status == "AVAILABLE"
+            and link.connected
+        )
+        return {
+            "cloud_available": bool(
+                cloud is not None
+                and cloud.is_fresh
+                and cloud.health_status == "ONLINE"
+            ),
+            "bandwidth_mbps": link.goodput_mbps if link_usable else 0.0,
+            "latency_ms": link.rtt_ms_p95 if link_usable else None,
+            "packet_loss": link.loss_rate if link_usable else None,
+        }
 
     def _condition_reasons(
         self,
