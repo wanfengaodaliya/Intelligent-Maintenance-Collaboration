@@ -10,6 +10,8 @@ from core.scenario_contracts import (
     ScenarioDecision,
     ScenarioDiagnosis,
 )
+from core.consistency_engine import ConsistencyPolicy
+from core.arbitration_contracts import ScenarioArbitrationAdapter as ArbitrationPolicy
 
 
 INPUT_ADAPTER = "input_adapter"
@@ -151,18 +153,6 @@ class CloudScenarioHandler(Protocol):
 
 class DecisionPolicy(Protocol):
     def decide(self, diagnosis: ScenarioDiagnosis) -> ScenarioDecision: ...
-
-
-class ConsistencyPolicy(Protocol):
-    def compare(
-        self,
-        edge_result: ScenarioDiagnosis,
-        cloud_result: ScenarioDiagnosis,
-    ) -> object: ...
-
-
-class ArbitrationPolicy(Protocol):
-    def arbitrate(self, payload: Mapping[str, Any]) -> ScenarioDecision: ...
 
 
 class GlobalAnalysisProvider(Protocol):

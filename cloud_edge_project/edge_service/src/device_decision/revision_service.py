@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import replace
 
 from core.diagnosis_contracts import DeviceDecisionStatus, RoundClosureReason
+from core.consistency_engine import ConsistencyPolicy
 from result_lifecycle import BearingResultRepository
 
 from .aggregator import aggregate_device_round
@@ -17,9 +18,11 @@ class DeviceDecisionRevisionService:
         self,
         round_repository: DeviceDecisionRoundRepository,
         bearing_repository: BearingResultRepository,
+        consistency_policy: ConsistencyPolicy | None = None,
     ) -> None:
         self._rounds = round_repository
         self._bearings = bearing_repository
+        self._consistency_policy = consistency_policy
 
     def correct_closed_round(
         self,
@@ -53,6 +56,7 @@ class DeviceDecisionRevisionService:
             expected_bearing_ids=round_state["expected_bearing_ids"],
             closure_reason=RoundClosureReason(round_state["closure_reason"]),
             closed_at_ns=now_ns,
+            consistency_policy=self._consistency_policy,
         )
         current = self._rounds.get_current_result(
             device_id,

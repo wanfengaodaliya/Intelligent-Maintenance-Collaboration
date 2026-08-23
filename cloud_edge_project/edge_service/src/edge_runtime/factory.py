@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
+from core.consistency_engine import ConsistencyPolicy
 
 from common.control_auth import ControlAuthVerifier
 from cloud_review import CloudReviewStore
@@ -76,6 +77,7 @@ def build_edge_runtime(
     on_packet_route_error: Optional[Callable[[dict], None]] = None,
     enable_heartbeat: bool = True,
     control_auth_verifier: ControlAuthVerifier | None = None,
+    consistency_policy: ConsistencyPolicy | None = None,
 ) -> EdgeRuntimeAssembly:
     """把现有边缘计算模块装配为可启动的协议运行时。"""
     errors = config.validate()
@@ -244,6 +246,7 @@ def build_edge_runtime(
                 {**payload, "edge_node_id": config.edge_node_id}
             ),
             on_manual_review=on_packet_route_error,
+            consistency_policy=consistency_policy,
         )
     coordinator = EdgeRuntimeCoordinator(
         edge_node_id=config.edge_node_id,

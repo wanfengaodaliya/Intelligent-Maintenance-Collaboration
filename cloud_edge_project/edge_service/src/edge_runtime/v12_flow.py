@@ -14,6 +14,7 @@ from core.diagnosis_contracts import (
     EdgeBearingResult,
 )
 from core.bearing_actions import ACTION_TO_STATE, grade_for_action
+from core.consistency_engine import ConsistencyPolicy
 from dataclasses import replace
 from device_decision import (
     DeviceDecisionRevisionService,
@@ -39,6 +40,7 @@ class V12DecisionFlow:
         | None = None,
         on_device_conflict: Callable[[dict[str, Any]], None] | None = None,
         on_manual_review: Callable[[dict[str, Any]], None] | None = None,
+        consistency_policy: ConsistencyPolicy | None = None,
     ) -> None:
         if round_timeout_ns <= 0:
             raise ValueError("round_timeout_ns must be positive")
@@ -53,8 +55,11 @@ class V12DecisionFlow:
         self._on_bearing_result = on_bearing_result or (lambda _: None)
         self._on_device_conflict = on_device_conflict or (lambda _: None)
         self._on_manual_review = on_manual_review or (lambda _: None)
+        self._consistency_policy = consistency_policy
         self._revisions = DeviceDecisionRevisionService(
-            device_rounds, lifecycle.repository
+            device_rounds,
+            lifecycle.repository,
+            consistency_policy=consistency_policy,
         )
 
     def apply_edge_result(
@@ -203,6 +208,7 @@ class V12DecisionFlow:
                 expected_bearing_ids=round_state["expected_bearing_ids"],
                 closure_reason=RoundClosureReason.ROUND_TIMEOUT,
                 closed_at_ns=now_ns,
+                consistency_policy=self._consistency_policy,
             ),
             expected_version=round_state["version"],
             connection=connection,
@@ -255,6 +261,7 @@ class V12DecisionFlow:
                 expected_bearing_ids=round_state["expected_bearing_ids"],
                 closure_reason=closure_reason,
                 closed_at_ns=now_ns,
+                consistency_policy=self._consistency_policy,
             ),
             expected_version=round_state["version"],
             connection=connection,

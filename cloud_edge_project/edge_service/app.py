@@ -27,7 +27,11 @@ from common.control_auth import CONTROL_PATHS, ControlAuthVerifier
 from common.schemas import ContractError, error_response
 from edge_service.model import EDGE_NODE_ID
 from bootstrap.scenarios import build_edge_scenario_registry
-from core.scenario_plugin import EDGE_INFERENCE, EdgeInferenceRuntimeRequest
+from core.scenario_plugin import (
+    CONSISTENCY_POLICY,
+    EDGE_INFERENCE,
+    EdgeInferenceRuntimeRequest,
+)
 from core.scenario_registry import DEFAULT_SCENARIO_TYPE
 
 from edge_task_ingress import (  # noqa: E402
@@ -74,6 +78,10 @@ edge_scenario_id = os.getenv("EDGE_SCENARIO_ID", DEFAULT_SCENARIO_TYPE).strip()
 edge_inference_provider = scenario_registry.require_provider(
     edge_scenario_id,
     EDGE_INFERENCE,
+)
+consistency_policy = scenario_registry.require_provider(
+    edge_scenario_id,
+    CONSISTENCY_POLICY,
 )
 edge_inference_metadata = edge_inference_provider.metadata
 scenario_backend_id = edge_inference_metadata.backend_id
@@ -268,6 +276,7 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         on_packet_route_error=packet_route_error_recorder,
         enable_heartbeat=False,
         control_auth_verifier=control_auth_verifier,
+        consistency_policy=consistency_policy,
     )
 
 

@@ -42,6 +42,7 @@ from cloud_service.service import (
     get_moment_runner,
     preload_moment_runner,
 )
+from cloud_service.device_arbitration.service import DeviceArbitrationService
 from cloud_service.edge_status_registry import EdgeStatusRegistry, EdgeStatusValidationError
 from cloud_service.model import CLOUD_NODE_ID
 from cloud_service.raw_analysis import RawAnalysisSampleService, SignalAnalysisWorker
@@ -56,7 +57,12 @@ from common.schemas import (
     validate_edge_feature_summary_envelope,
 )
 from bootstrap.scenarios import build_cloud_scenario_registry
-from core.scenario_plugin import CLOUD_DIAGNOSIS, GLOBAL_ANALYSIS, MODEL_UPDATE
+from core.scenario_plugin import (
+    ARBITRATION_POLICY,
+    CLOUD_DIAGNOSIS,
+    GLOBAL_ANALYSIS,
+    MODEL_UPDATE,
+)
 from core.scenario_registry import (
     DEFAULT_SCENARIO_TYPE,
     MissingScenarioCapabilityError,
@@ -357,11 +363,15 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
             else None
         )
         settings = load_cloud_settings()
-        handler = get_scenario_handler(
-            (adapted or payload).get("scenario_type", DEFAULT_SCENARIO_TYPE),
-            database_path=settings.database_path,
+        request = adapted or payload
+        policy = _scenario_provider(
+            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            ARBITRATION_POLICY,
         )
-        result = handler.arbitrate_device_conflict(adapted or payload)
+        result = DeviceArbitrationService(
+            settings.database_path,
+            policy,
+        ).arbitrate(request)
         return attach_v12_identity(result, adapted) if adapted is not None else result
     except UnsupportedScenarioError as error:
         return JSONResponse(
@@ -381,11 +391,14 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
 @app.get("/cloud/device-arbitration/{conflict_id}", response_model=None)
 def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
     try:
-        handler = get_scenario_handler(
+        policy = _scenario_provider(
             DEFAULT_SCENARIO_TYPE,
-            database_path=load_cloud_settings().database_path,
+            ARBITRATION_POLICY,
         )
-        result = handler.get_device_arbitration(conflict_id)
+        result = DeviceArbitrationService(
+            load_cloud_settings().database_path,
+            policy,
+        ).get(conflict_id)
     except Exception as exc:
         LOGGER.exception("get device arbitration failed for %s: %s", conflict_id, exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})

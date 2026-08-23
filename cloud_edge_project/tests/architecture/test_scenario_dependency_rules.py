@@ -33,6 +33,12 @@ def test_core_does_not_import_bearing_plugin() -> None:
     assert offenders == []
 
 
+def test_generic_decision_engines_do_not_contain_bearing_vocabulary() -> None:
+    for filename in ("consistency_engine.py", "arbitration_engine.py"):
+        source = (PROJECT_ROOT / "core" / filename).read_text(encoding="utf-8")
+        assert "bearing" not in source.lower()
+
+
 def test_bootstrap_scenario_assembly_imports_bearing_plugin() -> None:
     bootstrap_files = list((PROJECT_ROOT / "bootstrap").glob("*.py"))
     importers = [path.name for path in bootstrap_files if _imports_bearing_plugin(path)]

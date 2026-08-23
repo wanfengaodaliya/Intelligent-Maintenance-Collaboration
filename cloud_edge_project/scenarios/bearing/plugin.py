@@ -6,6 +6,8 @@ from types import MappingProxyType
 from typing import Mapping
 
 from core.scenario_plugin import (
+    ARBITRATION_POLICY,
+    CONSISTENCY_POLICY,
     EDGE_INFERENCE,
     CLOUD_DIAGNOSIS,
     GLOBAL_ANALYSIS,
@@ -23,8 +25,8 @@ _IMPLEMENTATION_AREAS = {
     "edge_inference": "scenarios.bearing.edge",
     "cloud_diagnosis": "scenarios.bearing.cloud",
     "decision_policy": "edge_runtime.v12_flow",
-    "consistency_policy": "consistency_service",
-    "arbitration_policy": "scenarios.bearing.cloud.device_arbitration",
+    "consistency_policy": "scenarios.bearing.decision.BearingConsistencyPolicy",
+    "arbitration_policy": "scenarios.bearing.arbitration.BearingArbitrationPolicy",
     "global_analysis": "scenarios.bearing.cloud.global_analysis",
     "model_provider": "scenarios.bearing.edge_inference.BearingEdgeModelProvider",
     "storage_provider": "cloud_service.storage",
@@ -44,6 +46,8 @@ class BearingScenarioPlugin:
                 CLOUD_DIAGNOSIS,
                 GLOBAL_ANALYSIS,
                 MODEL_UPDATE,
+                CONSISTENCY_POLICY,
+                ARBITRATION_POLICY,
             })
             if resolved_capabilities is None
             else resolved_capabilities
@@ -82,6 +86,14 @@ class BearingScenarioPlugin:
             )
 
             resolved_providers[MODEL_UPDATE] = BearingModelUpdateProvider()
+        if CONSISTENCY_POLICY in requested:
+            from scenarios.bearing.decision import BearingConsistencyPolicy
+
+            resolved_providers[CONSISTENCY_POLICY] = BearingConsistencyPolicy()
+        if ARBITRATION_POLICY in requested:
+            from scenarios.bearing.arbitration import BearingArbitrationPolicy
+
+            resolved_providers[ARBITRATION_POLICY] = BearingArbitrationPolicy()
         self._capabilities = MappingProxyType(
             {
                 capability: (

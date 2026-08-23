@@ -21,7 +21,9 @@ from core.scenario_registry import (
     UnresolvedScenarioCapabilityError,
 )
 from core.scenario_plugin import (
+    ARBITRATION_POLICY,
     CLOUD_DIAGNOSIS,
+    CONSISTENCY_POLICY,
     EDGE_INFERENCE,
     GLOBAL_ANALYSIS,
     INPUT_ADAPTER,
@@ -90,6 +92,8 @@ def test_registry_registers_bearing_plugin_and_exposes_all_capabilities() -> Non
             CLOUD_DIAGNOSIS,
             GLOBAL_ANALYSIS,
             MODEL_UPDATE,
+            CONSISTENCY_POLICY,
+            ARBITRATION_POLICY,
         }:
             assert binding.resolved
             assert registry.require_provider("bearing", capability) is binding.provider
@@ -104,10 +108,15 @@ def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:
     cloud_registry = build_cloud_scenario_registry()
     sender_registry = build_sender_scenario_registry()
 
-    for capability in {EDGE_INFERENCE, MODEL_PROVIDER}:
+    for capability in {EDGE_INFERENCE, MODEL_PROVIDER, CONSISTENCY_POLICY}:
         assert edge_registry.get_capability("bearing", capability).resolved
         assert not cloud_registry.get_capability("bearing", capability).resolved
-    for capability in {CLOUD_DIAGNOSIS, GLOBAL_ANALYSIS, MODEL_UPDATE}:
+    for capability in {
+        CLOUD_DIAGNOSIS,
+        GLOBAL_ANALYSIS,
+        MODEL_UPDATE,
+        ARBITRATION_POLICY,
+    }:
         assert cloud_registry.get_capability("bearing", capability).resolved
         assert not edge_registry.get_capability("bearing", capability).resolved
     assert sender_registry.get_capability("bearing", INPUT_ADAPTER).resolved
@@ -117,6 +126,8 @@ def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:
         CLOUD_DIAGNOSIS,
         GLOBAL_ANALYSIS,
         MODEL_UPDATE,
+        CONSISTENCY_POLICY,
+        ARBITRATION_POLICY,
     }:
         assert not sender_registry.get_capability("bearing", capability).resolved
 
