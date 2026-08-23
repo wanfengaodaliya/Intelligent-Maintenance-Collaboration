@@ -334,9 +334,10 @@ def test_legacy_edge_h5_modules_are_thin_explicit_shims() -> None:
         ]
 
         assert assignments == ["__all__"]
+        assert tree.body and _is_module_docstring(tree.body[0])
         assert all(
-            isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
-            for node in tree.body
+            isinstance(node, (ast.ImportFrom, ast.Assign))
+            for node in tree.body[1:]
         )
         assert all(
             alias.name != "*"
