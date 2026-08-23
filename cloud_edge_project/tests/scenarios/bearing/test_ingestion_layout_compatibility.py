@@ -165,3 +165,150 @@ def test_mat_reader_preserves_fixed_errors(tmp_path: Path) -> None:
         assert str(structure_error.value) == (
             "MAT file does not contain the expected Paderborn structure"
         )
+
+
+def _fixed_packet_data() -> dict[str, object]:
+    return {
+        "vibration": {
+            "sample_rate_hz": 64000,
+            "sample_count": 1,
+            "values": [1.0],
+            "unit": "mm/s",
+        },
+        "phase_current_1_A": {
+            "sample_rate_hz": 64000,
+            "sample_count": 1,
+            "values": [2.0],
+            "unit": "A",
+        },
+        "phase_current_2_A": {
+            "sample_rate_hz": 64000,
+            "sample_count": 1,
+            "values": [3.0],
+            "unit": "A",
+        },
+        "shaft_speed_rpm": {
+            "sample_rate_hz": 4000,
+            "sample_count": 1,
+            "values": [4.0],
+        },
+        "load_torque_nm": {
+            "sample_rate_hz": 4000,
+            "sample_count": 1,
+            "values": [5.0],
+        },
+        "bearing_radial_load_n": {
+            "sample_rate_hz": 4000,
+            "sample_count": 1,
+            "values": [6.0],
+        },
+        "bearing_module_temperature_c": 25.0,
+    }
+
+
+def _fixed_packet_arguments() -> dict[str, object]:
+    return {
+        "device_id": " machine_01 ",
+        "task_id": "sd_01_tk_0001",
+        "bearing_id": "bearing_01",
+        "sender_id": "sender_01",
+        "sequence_number": 7,
+        "data": _fixed_packet_data(),
+        "end_generate_timestamp_ns": 123,
+    }
+
+
+def test_packet_builder_preserves_dictionary_and_serialized_bytes() -> None:
+    from sender.packet import build_sensor_packet as legacy_build
+    from sender.packet import serialize_packet as legacy_serialize
+    from scenarios.bearing.ingestion.packet import (
+        build_sensor_packet,
+        serialize_packet,
+    )
+
+    packet = build_sensor_packet(**_fixed_packet_arguments())
+    legacy_packet = legacy_build(**_fixed_packet_arguments())
+
+    assert packet == legacy_packet
+    assert packet == {
+        "device_id": "machine_01",
+        "task_id": "sd_01_tk_0001",
+        "bearing_id": "bearing_01",
+        "packet_id": "sd_01_tk_0001_bearing_01_pkt_007",
+        "sender_id": "sender_01",
+        "sequence_number": 7,
+        "end_generate_timestamp_ns": 123,
+        "data": _fixed_packet_data(),
+    }
+    expected_bytes = (
+        b'{"device_id":"machine_01","task_id":"sd_01_tk_0001",'
+        b'"bearing_id":"bearing_01","packet_id":'
+        b'"sd_01_tk_0001_bearing_01_pkt_007","sender_id":"sender_01",'
+        b'"sequence_number":7,"end_generate_timestamp_ns":123,"data":{'
+        b'"vibration":{"sample_rate_hz":64000,"sample_count":1,'
+        b'"values":[1.0],"unit":"mm/s"},"phase_current_1_A":{'
+        b'"sample_rate_hz":64000,"sample_count":1,"values":[2.0],'
+        b'"unit":"A"},"phase_current_2_A":{"sample_rate_hz":64000,'
+        b'"sample_count":1,"values":[3.0],"unit":"A"},'
+        b'"shaft_speed_rpm":{"sample_rate_hz":4000,"sample_count":1,'
+        b'"values":[4.0]},"load_torque_nm":{"sample_rate_hz":4000,'
+        b'"sample_count":1,"values":[5.0]},"bearing_radial_load_n":{'
+        b'"sample_rate_hz":4000,"sample_count":1,"values":[6.0]},'
+        b'"bearing_module_temperature_c":25.0}}'
+    )
+    assert serialize_packet(packet) == expected_bytes
+    assert legacy_serialize(legacy_packet) == expected_bytes
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"task_id": "bad"}, "task_id must match sd_<sender>_tk_<number>"),
+        ({"device_id": " "}, "device_id cannot be empty"),
+        ({"bearing_id": "bad"}, "bearing_id must match bearing_<number>"),
+        ({"sender_id": "bad"}, "sender_id must match sender_<number>"),
+        ({"sender_id": "sender_02"}, "task_id does not belong to sender_id"),
+        ({"sequence_number": 0}, "sequence_number must be between 1 and 999"),
+        (
+            {"end_generate_timestamp_ns": 0},
+            "end_generate_timestamp_ns must be positive",
+        ),
+        ({"data": {}}, "missing signal: vibration"),
+    ),
+)
+def test_packet_builder_preserves_validation_errors(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    from sender.packet import PacketValidationError as LegacyPacketValidationError
+    from sender.packet import build_sensor_packet as legacy_build
+    from scenarios.bearing.ingestion.packet import (
+        PacketValidationError,
+        build_sensor_packet,
+    )
+
+    arguments = _fixed_packet_arguments()
+    arguments.update(overrides)
+    for builder in (build_sensor_packet, legacy_build):
+        with pytest.raises(PacketValidationError) as error:
+            builder(**arguments)
+        assert isinstance(error.value, LegacyPacketValidationError)
+        assert str(error.value) == message
+
+
+def test_packet_serializer_preserves_validation_error() -> None:
+    from sender.packet import PacketValidationError as LegacyPacketValidationError
+    from sender.packet import serialize_packet as legacy_serialize
+    from scenarios.bearing.ingestion.packet import (
+        PacketValidationError,
+        serialize_packet,
+    )
+
+    for serializer in (serialize_packet, legacy_serialize):
+        with pytest.raises(PacketValidationError) as error:
+            serializer({"invalid": float("nan")})
+        assert isinstance(error.value, LegacyPacketValidationError)
+        assert str(error.value) == (
+            "packet cannot be serialized: "
+            "Out of range float values are not JSON compliant: nan"
+        )
