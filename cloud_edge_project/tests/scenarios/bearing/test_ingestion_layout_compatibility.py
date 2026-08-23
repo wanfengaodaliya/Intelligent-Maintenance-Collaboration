@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import pickle
 import sqlite3
 from pathlib import Path
 
@@ -68,7 +69,12 @@ def test_legacy_ingestion_exports_are_scenario_objects(
         assert getattr(legacy_module, public_name) is scenario_value
 
 
-def _write_fixed_paderborn_mat(path: Path) -> None:
+def _write_fixed_paderborn_mat(
+    path: Path,
+    *,
+    omitted_signal: str | None = None,
+    invalid_x_index_signal: str | None = None,
+) -> None:
     fast_times = np.arange(6400, dtype=float) / 64000
     slow_times = np.arange(400, dtype=float) / 4000
     temperature_times = np.array([0.0, 0.05, 0.1])
@@ -80,92 +86,156 @@ def _write_fixed_paderborn_mat(path: Path) -> None:
         ],
         dtype=object,
     )
-    signals = np.array(
-        [
-            {"Name": "vibration_1", "XIndex": 1, "Data": fast_times + 1},
-            {"Name": "phase_current_1", "XIndex": 1, "Data": fast_times + 2},
-            {"Name": "phase_current_2", "XIndex": 1, "Data": fast_times + 3},
-            {"Name": "speed", "XIndex": 2, "Data": slow_times + 4},
-            {"Name": "torque", "XIndex": 2, "Data": slow_times + 5},
-            {"Name": "force", "XIndex": 2, "Data": slow_times + 6},
-            {
-                "Name": "temp_2_bearing_module",
-                "XIndex": 3,
-                "Data": np.array([20.0, 21.0, 22.0]),
-            },
-        ],
-        dtype=object,
-    )
+    signal_items = [
+        {"Name": "vibration_1", "XIndex": 1, "Data": fast_times + 1},
+        {"Name": "phase_current_1", "XIndex": 1, "Data": fast_times + 2},
+        {"Name": "phase_current_2", "XIndex": 1, "Data": fast_times + 3},
+        {"Name": "speed", "XIndex": 2, "Data": slow_times + 4},
+        {"Name": "torque", "XIndex": 2, "Data": slow_times + 5},
+        {"Name": "force", "XIndex": 2, "Data": slow_times + 6},
+        {
+            "Name": "temp_2_bearing_module",
+            "XIndex": 3,
+            "Data": np.array([20.0, 21.0, 22.0]),
+        },
+    ]
+    signal_items = [
+        item for item in signal_items if item["Name"] != omitted_signal
+    ]
+    for item in signal_items:
+        if item["Name"] == invalid_x_index_signal:
+            item["XIndex"] = 4
+    signals = np.array(signal_items, dtype=object)
     savemat(path, {"measurement": {"X": x_axes, "Y": signals}})
 
 
 def test_mat_reader_preserves_fixed_record_and_window_outputs(tmp_path: Path) -> None:
-    from sender.mat_reader import load_mat_record as legacy_load
     from scenarios.bearing.ingestion.mat_reader import load_mat_record
 
     mat_path = tmp_path / "N09_M07_F10_KA01_1.mat"
     _write_fixed_paderborn_mat(mat_path)
 
     record = load_mat_record(mat_path)
-    legacy_record = legacy_load(mat_path)
     windows = list(record.windows(duration_ms=50, count=2))
-    legacy_windows = list(legacy_record.windows(duration_ms=50, count=2))
+    fast_times = np.arange(6400, dtype=float) / 64000
+    slow_times = np.arange(400, dtype=float) / 4000
+    expected_series = {
+        "vibration": (fast_times, fast_times + 1, 64000, "mm/s"),
+        "phase_current_1_A": (fast_times, fast_times + 2, 64000, "A"),
+        "phase_current_2_A": (fast_times, fast_times + 3, 64000, "A"),
+        "shaft_speed_rpm": (slow_times, slow_times + 4, 4000, None),
+        "load_torque_nm": (slow_times, slow_times + 5, 4000, None),
+        "bearing_radial_load_n": (slow_times, slow_times + 6, 4000, None),
+    }
 
     assert record.source_path == mat_path.resolve()
-    assert set(record.series) == {
-        "vibration",
-        "phase_current_1_A",
-        "phase_current_2_A",
-        "shaft_speed_rpm",
-        "load_torque_nm",
-        "bearing_radial_load_n",
-    }
-    assert {name: series.sample_rate_hz for name, series in record.series.items()} == {
-        "vibration": 64000,
-        "phase_current_1_A": 64000,
-        "phase_current_2_A": 64000,
-        "shaft_speed_rpm": 4000,
-        "load_torque_nm": 4000,
-        "bearing_radial_load_n": 4000,
-    }
-    assert windows == legacy_windows
-    assert [window.sequence_number for window in windows] == [1, 2]
-    assert [(window.start_index, window.end_index) for window in windows] == [
-        (0, 3200),
-        (3200, 6400),
-    ]
-    assert [window.data["vibration"]["sample_count"] for window in windows] == [
-        3200,
-        3200,
-    ]
-    assert windows[0].data["vibration"]["unit"] == "mm/s"
-    assert [window.data["bearing_module_temperature_c"] for window in windows] == [
-        21.0,
-        22.0,
-    ]
+    assert set(record.series) == set(expected_series)
+    np.testing.assert_array_equal(
+        record.temperature_times,
+        np.array([0.0, 0.05, 0.1]),
+    )
+    np.testing.assert_array_equal(
+        record.temperature_values,
+        np.array([20.0, 21.0, 22.0]),
+    )
+    for name, (times, values, rate, _) in expected_series.items():
+        series = record.series[name]
+        assert series.sample_rate_hz == rate
+        np.testing.assert_array_equal(series.times, times)
+        np.testing.assert_array_equal(series.values, values)
+
+    expected_window_metadata = (
+        (1, 0.0, 0.05, 0, 3200, 0, 21.0),
+        (2, 0.05, 0.1, 3200, 6400, 1, 22.0),
+    )
+    for window, metadata in zip(windows, expected_window_metadata, strict=True):
+        sequence, start, end, start_index, end_index, index, temperature = metadata
+        assert (
+            window.sequence_number,
+            window.start_seconds,
+            window.end_seconds,
+            window.start_index,
+            window.end_index,
+            window.window_index,
+        ) == (sequence, start, end, start_index, end_index, index)
+        expected_data: dict[str, object] = {}
+        for name, (_, values, rate, unit) in expected_series.items():
+            samples_per_window = 3200 if rate == 64000 else 200
+            first = index * samples_per_window
+            channel = {
+                "sample_rate_hz": rate,
+                "sample_count": samples_per_window,
+                "values": values[first : first + samples_per_window].tolist(),
+            }
+            if unit is not None:
+                channel["unit"] = unit
+            expected_data[name] = channel
+        expected_data["bearing_module_temperature_c"] = temperature
+        assert window.data == expected_data
 
 
 def test_mat_reader_preserves_fixed_errors(tmp_path: Path) -> None:
-    from sender.mat_reader import MatDataError as LegacyMatDataError
-    from sender.mat_reader import load_mat_record as legacy_load
     from scenarios.bearing.ingestion.mat_reader import MatDataError, load_mat_record
 
     missing_path = tmp_path / "missing.mat"
-    for loader in (load_mat_record, legacy_load):
-        with pytest.raises(MatDataError) as missing_error:
-            loader(missing_path)
-        assert str(missing_error.value) == (
-            f"MAT file does not exist: {missing_path.resolve()}"
-        )
+    with pytest.raises(MatDataError) as missing_error:
+        load_mat_record(missing_path)
+    assert str(missing_error.value) == (
+        f"MAT file does not exist: {missing_path.resolve()}"
+    )
 
     invalid_path = tmp_path / "invalid.mat"
     savemat(invalid_path, {"unexpected": np.array([1.0])})
-    for loader in (load_mat_record, legacy_load):
-        with pytest.raises(LegacyMatDataError) as structure_error:
-            loader(invalid_path)
-        assert str(structure_error.value) == (
-            "MAT file does not contain the expected Paderborn structure"
+    with pytest.raises(MatDataError) as structure_error:
+        load_mat_record(invalid_path)
+    assert str(structure_error.value) == (
+        "MAT file does not contain the expected Paderborn structure"
+    )
+
+    invalid_index_path = tmp_path / "invalid_index.mat"
+    _write_fixed_paderborn_mat(
+        invalid_index_path,
+        invalid_x_index_signal="vibration_1",
+    )
+    with pytest.raises(MatDataError) as index_error:
+        load_mat_record(invalid_index_path)
+    assert str(index_error.value) == "invalid XIndex for signal vibration_1"
+
+    missing_signal_path = tmp_path / "missing_signal.mat"
+    _write_fixed_paderborn_mat(missing_signal_path, omitted_signal="force")
+    with pytest.raises(MatDataError) as signal_error:
+        load_mat_record(missing_signal_path)
+    assert str(signal_error.value) == (
+        "missing required signals: bearing_radial_load_n"
+    )
+
+    missing_temperature_path = tmp_path / "missing_temperature.mat"
+    _write_fixed_paderborn_mat(
+        missing_temperature_path,
+        omitted_signal="temp_2_bearing_module",
+    )
+    with pytest.raises(MatDataError) as temperature_error:
+        load_mat_record(missing_temperature_path)
+    assert str(temperature_error.value) == "missing bearing module temperature"
+
+    malformed_path = tmp_path / "malformed.mat"
+    malformed_path.write_bytes(b"not a MAT file")
+    with pytest.raises(IndexError) as malformed_error:
+        load_mat_record(malformed_path)
+    assert str(malformed_error.value) == "index out of range"
+
+
+def test_legacy_pickle_globals_resolve_through_sender_shims() -> None:
+    from scenarios.bearing.ingestion.mat_reader import SignalWindow
+    from scenarios.bearing.ingestion.source_mapping import PacketSourceMappingStore
+
+    assert pickle.loads(b"csender.mat_reader\nSignalWindow\n.") is SignalWindow
+    assert (
+        pickle.loads(
+            b"csender.source_mapping\nPacketSourceMappingStore\n."
         )
+        is PacketSourceMappingStore
+    )
 
 
 def _fixed_packet_data() -> dict[str, object]:

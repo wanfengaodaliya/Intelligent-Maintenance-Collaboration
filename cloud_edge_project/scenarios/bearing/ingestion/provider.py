@@ -1,4 +1,4 @@
-"""Bearing MAT ingestion adapter around the existing sender implementation."""
+"""Bearing input adapter backed by scenario-owned ingestion implementations."""
 
 from __future__ import annotations
 
