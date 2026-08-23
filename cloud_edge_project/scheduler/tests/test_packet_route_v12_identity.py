@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from scheduler import packet_router as packet_router_module
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from scheduler.deferred_cloud_repository import DeferredCloudRepository
 from scheduler.deferred_dispatcher import DeferredCloudDispatcher
@@ -192,3 +193,22 @@ def test_packet_service_returns_same_legacy_decision_for_generic_input(tmp_path)
     )
 
     assert legacy_service.route(legacy_request) == generic_service.route(generic_request)
+
+
+def test_p1_policy_receives_generic_unit_identity(monkeypatch) -> None:
+    captured: dict = {}
+
+    def choose(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(route="cloud", reason_codes=("P1_TEST",))
+
+    monkeypatch.setattr(packet_router_module, "_p1_choose_route", choose)
+
+    decision = _router().decide(_packet_route_request())
+
+    assert captured["task"] == {
+        "task_id": "task_001",
+        "source_node": "machine_01",
+        "unit_id": "bearing_02",
+    }
+    assert decision["route"] == "CLOUD_NOW"

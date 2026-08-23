@@ -193,7 +193,7 @@ class PacketRouter:
         task = {
             "task_id": result["task_id"],
             "source_node": result["device_id"],
-            "bearing_id": result["bearing_id"],
+            "unit_id": result["unit_id"],
         }
         edge_result = {"confidence": confidence}
         network_state = self._p1_network_state(cloud, link)
