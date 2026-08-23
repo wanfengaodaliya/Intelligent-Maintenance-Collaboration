@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import importlib
 import os
-import pickle
 import subprocess
 import sys
 import threading
@@ -333,30 +332,12 @@ def test_distilled_h5_evidence_and_errors_match_frozen_goldens() -> None:
         model.run(task, cancel_event=cancelled)
 
 
-@pytest.mark.parametrize(
-    "imports",
-    (
-        (
-            "edge_diagnosis.h5_features",
-            "edge_diagnosis.h5_network",
-            "edge_diagnosis.distilled_h5_model",
-        ),
-        (
-            "scenarios.bearing.edge_inference.h5.features",
-            "scenarios.bearing.edge_inference.h5.network",
-            "scenarios.bearing.edge_inference.h5.distilled_h5_model",
-        ),
-        ("compatibility.bearing_v12.edge_h5_exports",),
-    ),
-)
-def test_h5_modules_support_cold_import_orders(imports: tuple[str, ...]) -> None:
-    code = "; ".join(f"import {module_name}" for module_name in imports)
+def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(
         (str(PROJECT_ROOT), str(EDGE_SERVICE_SRC))
     )
-
-    completed = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-c", code],
         cwd=PROJECT_ROOT,
         env=environment,
@@ -365,25 +346,82 @@ def test_h5_modules_support_cold_import_orders(imports: tuple[str, ...]) -> None
         check=False,
     )
 
+
+@pytest.mark.parametrize(
+    "entry_import",
+    (
+        "edge_diagnosis.h5_features",
+        "edge_diagnosis.h5_network",
+        "edge_diagnosis.distilled_h5_model",
+        "scenarios.bearing.edge_inference.h5.features",
+        "scenarios.bearing.edge_inference.h5.network",
+        "scenarios.bearing.edge_inference.h5.distilled_h5_model",
+        "compatibility.bearing_v12.edge_h5_exports",
+    ),
+)
+def test_h5_modules_support_cold_import_orders(entry_import: str) -> None:
+    code = f"""
+import importlib
+import sys
+
+assert "scenarios.bearing.edge_inference.h5.distilled_h5_model" not in sys.modules
+importlib.import_module({entry_import!r})
+compatibility = importlib.import_module("compatibility.bearing_v12.edge_h5_exports")
+for scenario_name, legacy_name, public_names in {MODULE_EXPORTS!r}:
+    scenario = importlib.import_module(
+        "scenarios.bearing.edge_inference.h5." + scenario_name
+    )
+    legacy = importlib.import_module("edge_diagnosis." + legacy_name)
+    assert tuple(legacy.__all__) == public_names
+    for public_name in public_names:
+        expected = getattr(scenario, public_name)
+        assert getattr(compatibility, public_name) is expected
+        assert getattr(legacy, public_name) is expected
+"""
+
+    completed = _run_isolated(code)
+
     assert completed.returncode == 0, completed.stderr
 
 
-def test_legacy_h5_pickle_globals_resolve_to_scenario_classes() -> None:
-    scenario_network = importlib.import_module(
-        "scenarios.bearing.edge_inference.h5.network"
-    )
-    scenario_model = importlib.import_module(
-        "scenarios.bearing.edge_inference.h5.distilled_h5_model"
+def test_legacy_h5_pickle_globals_resolve_without_scenario_preimport() -> None:
+    code = """
+import importlib
+import pickle
+import sys
+
+assert "scenarios.bearing.edge_inference.h5.network" not in sys.modules
+assert "scenarios.bearing.edge_inference.h5.distilled_h5_model" not in sys.modules
+network_class = pickle.loads(
+    b"cedge_diagnosis.h5_network\\nPhysicalFusionModel\\n."
+)
+model_class = pickle.loads(
+    b"cedge_diagnosis.distilled_h5_model\\nDistilledH5DiagnosticModel\\n."
+)
+scenario_network = importlib.import_module(
+    "scenarios.bearing.edge_inference.h5.network"
+)
+scenario_model = importlib.import_module(
+    "scenarios.bearing.edge_inference.h5.distilled_h5_model"
+)
+assert network_class is scenario_network.PhysicalFusionModel
+assert model_class is scenario_model.DistilledH5DiagnosticModel
+"""
+
+    completed = _run_isolated(code)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_local_h5_client_loads_scenario_model_through_legacy_path() -> None:
+    from edge_model.local_h5_client import LocalH5ModelClient
+    from scenarios.bearing.edge_inference.h5.distilled_h5_model import (
+        DistilledH5DiagnosticModel,
     )
 
-    assert (
-        pickle.loads(b"cedge_diagnosis.h5_network\nPhysicalFusionModel\n.")
-        is scenario_network.PhysicalFusionModel
+    model = LocalH5ModelClient._load_distilled_h5(
+        model_dir=MODEL_DIR,
+        model_version=MODEL_VERSION,
     )
-    assert (
-        pickle.loads(
-            b"cedge_diagnosis.distilled_h5_model\n"
-            b"DistilledH5DiagnosticModel\n."
-        )
-        is scenario_model.DistilledH5DiagnosticModel
-    )
+
+    assert type(model) is DistilledH5DiagnosticModel
