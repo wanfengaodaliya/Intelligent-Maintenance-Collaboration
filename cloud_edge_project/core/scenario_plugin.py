@@ -12,6 +12,7 @@ from core.scenario_contracts import (
 )
 from core.consistency_engine import ConsistencyPolicy
 from core.arbitration_contracts import ScenarioArbitrationAdapter as ArbitrationPolicy
+from core.model_lifecycle import ModelCatalog
 
 
 INPUT_ADAPTER = "input_adapter"
@@ -189,6 +190,8 @@ class ModelUpdateRuntime(Protocol):
 
 class ModelUpdateProvider(Protocol):
     scenario_id: str
+
+    def model_catalog(self) -> ModelCatalog: ...
 
     def build_service(self, settings: object) -> ModelUpdateRuntime: ...
 

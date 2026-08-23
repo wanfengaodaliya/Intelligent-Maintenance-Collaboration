@@ -14,10 +14,7 @@ from cloud_service.model_update.label_confirmation import (
     CloudReferenceProvider,
     LabelConfirmationResolver,
 )
-from cloud_service.model_update.model_types import (
-    MODEL_TYPE_SPECS,
-    ActiveModelVersionStore,
-)
+from cloud_service.model_update.model_types import ActiveModelVersionStore
 from cloud_service.model_update.service import ModelUpdateService
 from cloud_service.model_update.training import (
     CloudMomentTrainer,
@@ -26,6 +23,7 @@ from cloud_service.model_update.training import (
     RawTrainingSampleLoader,
 )
 from cloud_service.service import activate_moment_candidate, activate_moment_version
+from core.model_lifecycle import ModelCatalog
 from scenarios.bearing.cloud.model_update.config import load_label_mapping
 from scenarios.bearing.cloud.model_update.dataset_label_provider import (
     DatasetLabelProvider,
@@ -33,6 +31,7 @@ from scenarios.bearing.cloud.model_update.dataset_label_provider import (
 from scenarios.bearing.cloud.model_update.human_review_provider import (
     HumanReviewProvider,
 )
+from scenarios.bearing.cloud.model_update.model_catalog import BEARING_MODEL_CATALOG
 from scenarios.bearing.cloud.model_update.training_data_source import (
     BearingTrainingDataSource,
 )
@@ -43,6 +42,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 class BearingModelUpdateProvider:
     scenario_id = "bearing"
+
+    def model_catalog(self) -> ModelCatalog:
+        return BEARING_MODEL_CATALOG
 
     def build_service(self, settings: CloudSettings) -> ModelUpdateService:
         source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
@@ -78,6 +80,7 @@ class BearingModelUpdateProvider:
                 source_repository,
                 raw_data_root,
             ),
+            model_catalog=self.model_catalog(),
         )
 
     def _build_offline_trainer(
@@ -92,7 +95,7 @@ class BearingModelUpdateProvider:
         )
         edge_version = (
             ActiveModelVersionStore(settings.database_path).get("distilled_h5")
-            or MODEL_TYPE_SPECS["distilled_h5"].default_version
+            or self.model_catalog().require("distilled_h5").default_version
         )
         edge_version_dir = edge_model_root / "distilled_h5" / edge_version
         return OfflineTrainingRunner(

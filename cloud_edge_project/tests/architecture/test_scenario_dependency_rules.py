@@ -50,6 +50,20 @@ def test_generic_decision_engines_do_not_contain_bearing_vocabulary() -> None:
         assert imported_roots.isdisjoint(forbidden_roots)
 
 
+def test_model_lifecycle_core_is_scenario_neutral() -> None:
+    path = PROJECT_ROOT / "core" / "model_lifecycle.py"
+    source = path.read_text(encoding="utf-8")
+    lowered = source.lower()
+    assert all(word not in lowered for word in ("bearing", "moment", "h5"))
+    assert not _imports_bearing_plugin(path)
+
+
+def test_common_schemas_uses_compatibility_boundary() -> None:
+    path = PROJECT_ROOT / "common" / "schemas.py"
+
+    assert not _imports_bearing_plugin(path)
+
+
 def test_bootstrap_scenario_assembly_imports_bearing_plugin() -> None:
     bootstrap_files = list((PROJECT_ROOT / "bootstrap").glob("*.py"))
     importers = [path.name for path in bootstrap_files if _imports_bearing_plugin(path)]
