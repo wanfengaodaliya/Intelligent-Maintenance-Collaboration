@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -164,9 +165,9 @@ def test_legacy_condition_vector_and_policy_match_frozen_goldens() -> None:
         "medium",
         "scheduled_inspection",
     )
-    with pytest.raises(KeyError, match="^'unsupported'$" ):
+    with pytest.raises(KeyError, match="^'unsupported'$"):
         policy.decide("unsupported")
-    with pytest.raises(KeyError, match="^'shaft_speed_rpm'$" ):
+    with pytest.raises(KeyError, match="^'shaft_speed_rpm'$"):
         build_condition_vector({})
 
 
@@ -214,6 +215,25 @@ def test_legacy_backbone_loader_matches_frozen_contract() -> None:
     assert loaded is FakePipeline.model
     assert loaded.initialized is True
     assert caught == []
+
+    class BackboneFailure(RuntimeError):
+        pass
+
+    class RaisingPipeline:
+        @classmethod
+        def from_pretrained(
+            cls,
+            pretrained_path: str,
+            model_kwargs: dict[str, object],
+        ) -> object:
+            raise BackboneFailure(f"cannot load {pretrained_path}")
+
+    with pytest.raises(BackboneFailure, match="^cannot load P:/broken$"):
+        load_moment_backbone(
+            "P:/broken",
+            3,
+            pipeline_class=RaisingPipeline,
+        )
 
 
 def test_legacy_workspace_resolution_matches_frozen_contract(tmp_path: Path) -> None:
@@ -336,6 +356,158 @@ def test_legacy_runner_state_device_and_prediction_match_frozen_goldens() -> Non
         }
     )
     assert prediction.model_version == EXPECTED_MODEL_VERSION
+
+
+class _LoadCuda:
+    @staticmethod
+    def is_available() -> bool:
+        return False
+
+
+class _LoadTorch:
+    cuda = _LoadCuda()
+
+    def __init__(self) -> None:
+        self.load_calls: list[tuple[Path, object]] = []
+
+    @staticmethod
+    def device(value: str) -> str:
+        return value
+
+    def load(self, path: Path, *, map_location: object) -> dict[str, object]:
+        self.load_calls.append((path, map_location))
+        return {"model_state_dict": {"weight": [1.0, 2.0]}}
+
+
+def test_runner_loads_dynamic_model_and_normalization_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scenarios.bearing.cloud_diagnosis.moment_backbone import (
+        load_moment_backbone,
+    )
+    from scenarios.bearing.cloud_diagnosis.moment_light_adapt import (
+        MomentLightAdaptRunner,
+    )
+
+    workspace = tmp_path / "workspace"
+    (workspace / "experiments").mkdir(parents=True)
+    pretrained_path = workspace / "pretrained" / "MOMENT-1-small"
+    pretrained_path.mkdir(parents=True)
+    deployment_dir = workspace / "deployment"
+    deployment_dir.mkdir()
+    (deployment_dir / "moment_model.py").write_text(
+        """
+class BuiltModel:
+    def __init__(self, pretrained_path, num_classes, condition_dropout):
+        self.pretrained_path = pretrained_path
+        self.num_classes = num_classes
+        self.condition_dropout = condition_dropout
+        self.loaded_state = None
+        self.device = None
+        self.evaluated = False
+
+    def load_state_dict(self, state):
+        self.loaded_state = state
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def eval(self):
+        self.evaluated = True
+        return self
+
+def build_model(pretrained_path, num_classes, condition_dropout):
+    return BuiltModel(pretrained_path, num_classes, condition_dropout)
+""",
+        encoding="utf-8",
+    )
+    checkpoint_path = workspace / "checkpoint.pt"
+    checkpoint_path.write_bytes(b"fake checkpoint")
+    condition_norm_path = workspace / "condition_norm.json"
+    condition_norm_path.write_text(
+        json.dumps(
+            {
+                "mean": list(range(13)),
+                "std": list(range(1, 14)),
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        moment_device="auto",
+        moment_pretrained_path=pretrained_path,
+        moment_deployment_dir=deployment_dir,
+        moment_checkpoint_path=checkpoint_path,
+        moment_condition_norm_path=condition_norm_path,
+    )
+    fake_torch = _LoadTorch()
+    adapter_name = "experiments.diagnosis_models.moment.adapter"
+    dynamic_name = "_cloud_moment_light_adapt_model"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.delitem(sys.modules, adapter_name, raising=False)
+    monkeypatch.delitem(sys.modules, dynamic_name, raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    runner = MomentLightAdaptRunner(settings)
+
+    runner.load()
+    loaded_model = runner._model
+
+    assert runner.loaded is True
+    assert fake_torch.load_calls == [(checkpoint_path, "cpu")]
+    assert loaded_model.__class__.__module__ == dynamic_name
+    assert loaded_model.pretrained_path == str(pretrained_path)
+    assert loaded_model.num_classes == 3
+    assert loaded_model.condition_dropout == 0.0
+    assert loaded_model.loaded_state == {"weight": [1.0, 2.0]}
+    assert loaded_model.device == "cpu"
+    assert loaded_model.evaluated is True
+    np.testing.assert_array_equal(
+        runner._condition_mean,
+        np.arange(13, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        runner._condition_std,
+        np.arange(1, 14, dtype=np.float32),
+    )
+    assert runner._condition_mean.dtype == np.float32
+    assert runner._condition_std.dtype == np.float32
+    assert sys.modules[adapter_name].load_moment_backbone is load_moment_backbone
+    assert sys.modules[dynamic_name].build_model is not None
+
+    runner.load()
+
+    assert runner._model is loaded_model
+    assert fake_torch.load_calls == [(checkpoint_path, "cpu")]
+
+
+def test_runner_model_builder_preserves_exact_missing_loader_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_module = importlib.import_module(
+        "scenarios.bearing.cloud_diagnosis.moment_light_adapt"
+    )
+    deployment_dir = tmp_path / "deployment"
+    settings = SimpleNamespace(
+        moment_pretrained_path=tmp_path / "pretrained",
+        moment_deployment_dir=deployment_dir,
+    )
+    runner = runtime_module.MomentLightAdaptRunner(settings)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(
+        runtime_module.importlib.util,
+        "spec_from_file_location",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(ImportError) as error:
+        runner._load_model_builder()
+
+    assert str(error.value) == (
+        f"cannot load MOMENT model definition: {deployment_dir / 'moment_model.py'}"
+    )
 
 
 def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:

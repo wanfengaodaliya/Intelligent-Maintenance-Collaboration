@@ -79,7 +79,7 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def _defined_names(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     return {
         node.name
         for node in tree.body
@@ -526,26 +526,19 @@ def test_cloud_moment_compatibility_exports_are_explicit() -> None:
 
 def test_bearing_cloud_moment_business_definitions_have_exactly_one_owner() -> None:
     scenario_root = PROJECT_ROOT / "scenarios" / "bearing" / "cloud_diagnosis"
-    compatibility_path = (
-        PROJECT_ROOT
-        / "compatibility"
-        / "bearing_v12"
-        / "cloud_moment_exports.py"
-    )
-    legacy_root = PROJECT_ROOT / "cloud_service"
-    expected_paths = [
-        *(scenario_root / filename for filename, _names in CLOUD_MOMENT_MODULES.values()),
-        compatibility_path,
-        *(legacy_root / filename for filename in CLOUD_MOMENT_MODULES),
+    excluded_parts = {"__pycache__", "tests", "verification", ".cache", ".venv"}
+    production_paths = [
+        path
+        for path in PROJECT_ROOT.rglob("*.py")
+        if excluded_parts.isdisjoint(path.relative_to(PROJECT_ROOT).parts)
     ]
 
-    assert all(path.is_file() for path in expected_paths)
     for scenario_filename, business_names in CLOUD_MOMENT_MODULES.values():
         expected_owner = scenario_root / scenario_filename
         for business_name in business_names:
             owners = [
                 path
-                for path in expected_paths
+                for path in production_paths
                 if business_name in _defined_names(path)
             ]
             assert owners == [expected_owner]
