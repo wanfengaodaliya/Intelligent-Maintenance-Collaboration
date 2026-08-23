@@ -43,6 +43,7 @@
   "puback_warning_timeout_ms": 500,
   "packet_delivery_timeout_ms": 1000,
   "max_publish_retries": 2,
+  "recovery_window_seconds": 5.0,
   "pending_queue_max_packets": 80,
   "task_duration_ms": 4000,
   "packet_interval_ms": 50,

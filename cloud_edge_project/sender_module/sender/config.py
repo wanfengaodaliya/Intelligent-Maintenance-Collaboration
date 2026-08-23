@@ -40,6 +40,7 @@ class SenderConfig:
     expected_packet_count: int
     log_dir: Path
     state_dir: Path
+    recovery_window_seconds: float = 5.0
 
 
 REQUIRED_FIELDS = tuple(SenderConfig.__dataclass_fields__)
@@ -135,6 +136,7 @@ def load_config(path: Path | str) -> SenderConfig:
             puback_warning_timeout_ms=int(raw["puback_warning_timeout_ms"]),
             packet_delivery_timeout_ms=int(raw["packet_delivery_timeout_ms"]),
             max_publish_retries=int(raw["max_publish_retries"]),
+            recovery_window_seconds=float(raw["recovery_window_seconds"]),
             pending_queue_max_packets=int(raw["pending_queue_max_packets"]),
             task_duration_ms=int(raw["task_duration_ms"]),
             packet_interval_ms=int(raw["packet_interval_ms"]),
@@ -155,6 +157,8 @@ def load_config(path: Path | str) -> SenderConfig:
         raise ConfigError("puback warning timeout must be positive")
     if config.packet_delivery_timeout_ms <= config.puback_warning_timeout_ms:
         raise ConfigError("delivery timeout must exceed PUBACK warning timeout")
+    if config.recovery_window_seconds <= 0:
+        raise ConfigError("recovery window must be positive")
     if config.packet_interval_ms <= 0 or config.task_duration_ms <= 0:
         raise ConfigError("task and packet durations must be positive")
     if (
