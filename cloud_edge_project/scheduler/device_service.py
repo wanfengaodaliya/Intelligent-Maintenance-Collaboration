@@ -5,6 +5,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from compatibility.bearing_v12.scheduler_mapper import (
+    device_payload_to_legacy,
+    device_request_to_domain,
+)
+
 try:
     from .deferred_device_repository import (
         DAY_NS,
@@ -26,7 +31,7 @@ class DeviceArbitrationService:
         self.repository = repository
 
     def route(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        decision = self.router.decide(request)
+        decision = self.router.decide(device_request_to_domain(request))
         if decision["needs_cloud_arbitration"]:
             task = {
                 "decision_id": decision["decision_id"],
@@ -53,16 +58,16 @@ class DeviceArbitrationService:
                         "conflict_id": decision["conflict_id"],
                         "decision_round_id": decision["decision_round_id"],
                         "device_result_revision": decision["device_result_revision"],
-                        "bearing_result_ids": decision["bearing_result_ids"],
-                        "bearing_results": decision["bearing_results"],
+                        "unit_result_ids": decision["unit_result_ids"],
+                        "unit_results": decision["unit_results"],
                         "comparison": decision["comparison"],
                         "local_arbitration_supported": decision[
                             "local_arbitration_supported"
                         ],
                     }
                 )
-            self.repository.create(task)
-        return decision
+            self.repository.create(device_payload_to_legacy(task))
+        return device_payload_to_legacy(decision)
 
     def save_arbitration_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.repository.save_arbitration_result(request)

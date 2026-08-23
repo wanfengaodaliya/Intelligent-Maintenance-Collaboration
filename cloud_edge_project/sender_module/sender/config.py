@@ -5,21 +5,57 @@ from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from compatibility.bearing_v12 import resolve_unit_id
+
 
 class ConfigError(ValueError):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SenderNodeConfig:
     sender_id: str
-    bearing_id: str
+    unit_id: str
     scheduler_url: str
     mqtt_host: str
     mqtt_port: int
     # 阶段 4：目标 Edge 节点 ID → MQTT 代理端口映射（网络模拟按链路分端口）。
     # 为空时所有目标都使用 mqtt_port。
     edge_mqtt_proxy_ports: Mapping[str, int] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        sender_id: str,
+        unit_id: str | None = None,
+        scheduler_url: str = "",
+        mqtt_host: str = "",
+        mqtt_port: int = 0,
+        edge_mqtt_proxy_ports: Mapping[str, int] | None = None,
+        *,
+        bearing_id: str | None = None,
+    ) -> None:
+        if unit_id is None and bearing_id is None:
+            raise ValueError("unit_id or bearing_id is required")
+        if unit_id is not None and bearing_id is not None and unit_id != bearing_id:
+            raise ValueError("unit_id and bearing_id must match")
+        resolved = unit_id if unit_id is not None else bearing_id
+        assert resolved is not None
+        object.__setattr__(self, "sender_id", sender_id)
+        object.__setattr__(self, "unit_id", resolved)
+        object.__setattr__(self, "scheduler_url", scheduler_url)
+        object.__setattr__(self, "mqtt_host", mqtt_host)
+        object.__setattr__(self, "mqtt_port", mqtt_port)
+        object.__setattr__(
+            self,
+            "edge_mqtt_proxy_ports",
+            edge_mqtt_proxy_ports or {},
+        )
+
+    @property
+    def bearing_id(self) -> str:
+        """Legacy bearing identity view retained for external contracts."""
+
+        return self.unit_id
 
 
 @dataclass(frozen=True)
@@ -47,7 +83,9 @@ REQUIRED_FIELDS = tuple(SenderConfig.__dataclass_fields__)
 SENDER_REQUIRED_FIELDS = tuple(
     name
     for name, member in SenderNodeConfig.__dataclass_fields__.items()
-    if member.default is MISSING and member.default_factory is MISSING
+    if name != "unit_id"
+    and member.default is MISSING
+    and member.default_factory is MISSING
 )
 
 
@@ -65,7 +103,10 @@ def _load_sender(raw: Any, index: int) -> SenderNodeConfig:
         raise ConfigError(f"senders[{index}] missing fields: {', '.join(missing)}")
 
     sender_id = _non_empty_text(raw["sender_id"], f"senders[{index}].sender_id")
-    bearing_id = _non_empty_text(raw["bearing_id"], f"senders[{index}].bearing_id")
+    try:
+        unit_id = resolve_unit_id(raw, f"senders[{index}]")
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     scheduler_url = _non_empty_text(raw["scheduler_url"], f"senders[{index}].scheduler_url")
     mqtt_host = _non_empty_text(raw["mqtt_host"], f"senders[{index}].mqtt_host")
     if not scheduler_url.startswith(("http://", "https://")):
@@ -99,7 +140,12 @@ def _load_sender(raw: Any, index: int) -> SenderNodeConfig:
         edge_mqtt_proxy_ports[edge_id] = proxy_port
 
     return SenderNodeConfig(
-        sender_id, bearing_id, scheduler_url, mqtt_host, mqtt_port, edge_mqtt_proxy_ports
+        sender_id=sender_id,
+        unit_id=unit_id,
+        scheduler_url=scheduler_url,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
+        edge_mqtt_proxy_ports=edge_mqtt_proxy_ports,
     )
 
 
@@ -118,11 +164,16 @@ def load_config(path: Path | str) -> SenderConfig:
         raise ConfigError("senders must contain exactly three sender configurations")
     senders = tuple(_load_sender(item, index) for index, item in enumerate(raw_senders))
     sender_ids = [item.sender_id for item in senders]
-    bearing_ids = [item.bearing_id for item in senders]
+    unit_ids = [item.unit_id for item in senders]
     if len(set(sender_ids)) != len(sender_ids):
         raise ConfigError("sender_id values must be unique")
-    if len(set(bearing_ids)) != len(bearing_ids):
-        raise ConfigError("bearing_id values must be unique")
+    if len(set(unit_ids)) != len(unit_ids):
+        legacy_only = all(
+            "bearing_id" in item and "unit_id" not in item
+            for item in raw_senders
+        )
+        field = "bearing_id" if legacy_only else "unit_id"
+        raise ConfigError(f"{field} values must be unique")
 
     try:
         config = SenderConfig(

@@ -174,3 +174,21 @@ def test_deferred_packet_route_rechecks_network_and_recovers_identity(tmp_path) 
     assert recovered is not None and recovered["state"] == "WAITING_RESULT"
     assert client.payloads[0]["decision_round_id"] == decision["decision_round_id"]
     assert client.payloads[0]["diagnosis_window_id"] == decision["diagnosis_window_id"]
+
+
+def test_packet_service_returns_same_legacy_decision_for_generic_input(tmp_path) -> None:
+    legacy_request = _packet_route_request()
+    generic_request = dict(legacy_request)
+    generic_request["unit_id"] = generic_request.pop("bearing_id")
+    generic_request["input_ref"] = dict(generic_request["input_ref"])
+    generic_request["input_ref"]["unit_id"] = generic_request["input_ref"].pop(
+        "bearing_id"
+    )
+    legacy_service = PacketRoutingService(
+        _router(), DeferredCloudRepository(tmp_path / "legacy.db")
+    )
+    generic_service = PacketRoutingService(
+        _router(), DeferredCloudRepository(tmp_path / "generic.db")
+    )
+
+    assert legacy_service.route(legacy_request) == generic_service.route(generic_request)

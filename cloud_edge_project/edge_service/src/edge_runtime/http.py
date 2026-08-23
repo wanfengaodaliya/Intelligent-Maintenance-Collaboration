@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -19,6 +20,7 @@ from .json_utils import json_bytes
 
 CONTROL_MAX_BODY_BYTES = 64 * 1024
 CONTROL_READ_TIMEOUT_SECONDS = 5.0
+CONTROL_REJECT_DRAIN_TIMEOUT_SECONDS = 0.1
 CONTROL_MAX_WORKERS = 16
 CONTROL_WAITING_CAPACITY = 32
 
@@ -238,20 +240,15 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             + body
         )
         try:
-            # Drain only bytes already in the socket buffer. On Windows, closing
-            # with unread request bytes turns the response into a TCP reset.
-            request.setblocking(False)
+            request.sendall(response)
+            request.shutdown(socket.SHUT_WR)
+            request.settimeout(CONTROL_REJECT_DRAIN_TIMEOUT_SECONDS)
             remaining = CONTROL_MAX_BODY_BYTES
             while remaining > 0:
-                try:
-                    chunk = request.recv(min(8192, remaining))
-                except (BlockingIOError, InterruptedError):
-                    break
+                chunk = request.recv(min(8192, remaining))
                 if not chunk:
                     break
                 remaining -= len(chunk)
-            request.setblocking(True)
-            request.sendall(response)
         except OSError:
             pass
         finally:
@@ -296,6 +293,25 @@ def make_control_server(
                             "control request body exceeds the configured limit",
                         ),
                     )
+                    self.wfile.flush()
+                    try:
+                        self.connection.shutdown(socket.SHUT_WR)
+                        deadline = (
+                            time.monotonic()
+                            + CONTROL_REJECT_DRAIN_TIMEOUT_SECONDS
+                        )
+                        remaining = length
+                        while remaining > 0:
+                            timeout = deadline - time.monotonic()
+                            if timeout <= 0:
+                                break
+                            self.connection.settimeout(timeout)
+                            chunk = self.rfile.read(min(8192, remaining))
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                    except OSError:
+                        pass
                     return
                 raw_body = self.rfile.read(length)
                 target = urlsplit(self.path)

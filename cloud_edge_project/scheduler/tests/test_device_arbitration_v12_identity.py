@@ -221,3 +221,37 @@ def test_deferred_device_arbitration_recovers_after_scheduler_restart(tmp_path) 
     assert recovered["state"] == "PENDING"
     assert recovered["last_reason_code"] == "SCHEDULER_RESTART"
     assert recovered["decision_round_id"] == "round_machine_01_task_001_0001"
+
+
+def test_device_service_returns_same_legacy_decision_for_generic_input(tmp_path) -> None:
+    legacy_request = _request()
+    generic_request = dict(legacy_request)
+    generic_request["expected_unit_count"] = generic_request.pop(
+        "expected_bearing_count"
+    )
+    generic_request["received_unit_count"] = generic_request.pop(
+        "received_bearing_count"
+    )
+    generic_request["unit_result_ids"] = generic_request.pop("bearing_result_ids")
+    generic_request["unit_results"] = []
+    for result in generic_request.pop("bearing_results"):
+        generic_result = dict(result)
+        generic_result["unit_id"] = generic_result.pop("bearing_id")
+        generic_result["unit_result_id"] = generic_result.pop("bearing_result_id")
+        generic_request["unit_results"].append(generic_result)
+    generic_request["comparison"] = dict(generic_request["comparison"])
+    generic_request["comparison"]["low_confidence_unit_count"] = generic_request[
+        "comparison"
+    ].pop("low_confidence_bearing_count")
+    generic_request["comparison"]["provisional_unit_count"] = generic_request[
+        "comparison"
+    ].pop("provisional_bearing_count")
+
+    legacy_path = tmp_path / "legacy"
+    generic_path = tmp_path / "generic"
+    legacy_path.mkdir()
+    generic_path.mkdir()
+
+    assert _service(legacy_path).route(legacy_request) == _service(
+        generic_path
+    ).route(generic_request)

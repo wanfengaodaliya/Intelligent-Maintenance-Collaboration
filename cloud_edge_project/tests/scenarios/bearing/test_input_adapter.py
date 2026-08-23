@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from sender.mat_reader import SignalWindow
+from sender.packet import build_sensor_packet, serialize_packet
+from sender.source_mapping import PacketSourceMappingStore
+from scenarios.bearing.ingestion import BearingInputAdapter
+from scenarios.bearing.ingestion import provider as ingestion_module
+
+
+def _window() -> SignalWindow:
+    signals = {
+        name: {"sample_rate_hz": rate, "sample_count": 1, "values": [1.0]}
+        for name, rate in {
+            "vibration": 64000,
+            "phase_current_1_A": 64000,
+            "phase_current_2_A": 64000,
+            "shaft_speed_rpm": 4000,
+            "load_torque_nm": 4000,
+            "bearing_radial_load_n": 4000,
+        }.items()
+    }
+    signals["vibration"]["unit"] = "mm/s"
+    signals["phase_current_1_A"]["unit"] = "A"
+    signals["phase_current_2_A"]["unit"] = "A"
+    signals["bearing_module_temperature_c"] = 25.0
+    return SignalWindow(1, 0.0, 0.05, 0, 3200, 0, signals)
+
+
+def test_bearing_input_adapter_preserves_packet_bytes_and_source_mapping(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_path = tmp_path / "N09_M07_F10_KA01_1.mat"
+    window = _window()
+    monkeypatch.setattr(
+        ingestion_module,
+        "load_mat_record",
+        lambda path: SimpleNamespace(
+            source_path=source_path,
+            windows=lambda **kwargs: iter([window]),
+        ),
+    )
+    store = PacketSourceMappingStore(tmp_path / "mapping.db")
+    adapter = BearingInputAdapter(store)
+    prepared = adapter.prepare(
+        source_path,
+        unit_id="bearing_01",
+        duration_ms=50,
+        count=1,
+    )
+
+    packet = adapter.build_packet(
+        device_id="machine_01",
+        task_id="sd_01_tk_0001",
+        unit_id="bearing_01",
+        sender_id="sender_01",
+        sequence_number=1,
+        window=prepared.first_window,
+        end_generate_timestamp_ns=1,
+    )
+    legacy_packet = build_sensor_packet(
+        device_id="machine_01",
+        task_id="sd_01_tk_0001",
+        bearing_id="bearing_01",
+        sender_id="sender_01",
+        sequence_number=1,
+        data=window.data,
+        end_generate_timestamp_ns=1,
+    )
+    adapter.persist_source(
+        packet=packet,
+        task_id="sd_01_tk_0001",
+        unit_id="bearing_01",
+        source_path=prepared.source_path,
+        window=prepared.first_window,
+    )
+
+    assert packet == legacy_packet
+    assert adapter.serialize_packet(packet) == serialize_packet(legacy_packet)
+    assert [item.sequence_number for item in prepared.windows] == [1]
+    assert store.get(packet["packet_id"])["source_bearing_code"] == "KA01"
+
+
+def test_bearing_input_adapter_preserves_window_validation_errors(
+    tmp_path: Path,
+) -> None:
+    adapter = BearingInputAdapter(PacketSourceMappingStore(tmp_path / "mapping.db"))
+    prepared = SimpleNamespace(windows=iter([]))
+
+    with pytest.raises(
+        RuntimeError,
+        match="MAT record ended before packet 2: bearing_01",
+    ):
+        adapter.next_window(
+            prepared,
+            unit_id="bearing_01",
+            expected_sequence=2,
+        )
+
+    mismatched = SimpleNamespace(windows=iter([_window()]))
+    with pytest.raises(
+        RuntimeError,
+        match="bearing window sequence mismatch: bearing_01",
+    ):
+        adapter.next_window(
+            mismatched,
+            unit_id="bearing_01",
+            expected_sequence=2,
+        )

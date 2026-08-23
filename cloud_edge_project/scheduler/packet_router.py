@@ -12,6 +12,10 @@ from typing import Any, Callable, Mapping
 
 from core.diagnosis_contracts import PacketRoute
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
+from compatibility.bearing_v12.scheduler_mapper import (
+    assignment_row_to_domain,
+    packet_result_to_domain,
+)
 
 try:
     from .cloud_registry import CloudNodeRegistry, CloudNodeSnapshot, EdgeCloudLinkSnapshot
@@ -198,7 +202,7 @@ class PacketRouter:
             "decision_id": decision_id,
             "device_id": result["device_id"],
             "task_id": result["task_id"],
-            "bearing_id": result["bearing_id"],
+            "unit_id": result["unit_id"],
             "packet_id": input_ref["packet_id"],
             "sequence_number": input_ref["sequence_number"],
             "route": _shared_route(route).value,
@@ -247,25 +251,25 @@ def cloud_task_id(decision_id: str) -> str:
 
 def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     try:
-        item = _mapping(payload, "packet result")
+        item = packet_result_to_domain(_mapping(payload, "packet result"))
         required_top = {
-            "device_id", "task_id", "bearing_id", "edge_node_id", "error",
+            "device_id", "task_id", "unit_id", "edge_node_id", "error",
             "input_ref", "status", "started_at_ns", "finished_at_ns",
         }
         missing = required_top - set(item)
         if missing:
             raise ValueError("missing fields: " + ", ".join(sorted(missing)))
         input_ref = _mapping(item["input_ref"], "input_ref")
-        if set(input_ref) != {"device_id", "bearing_id", "sender_id", "packet_id", "sequence_number"}:
+        if set(input_ref) != {"device_id", "unit_id", "sender_id", "packet_id", "sequence_number"}:
             raise ValueError("input_ref fields do not match the contract")
         result: dict[str, Any] = {
             "device_id": _text(item["device_id"], "device_id"),
             "task_id": _text(item["task_id"], "task_id"),
-            "bearing_id": _text(item["bearing_id"], "bearing_id"),
+            "unit_id": _text(item["unit_id"], "unit_id"),
             "edge_node_id": _text(item["edge_node_id"], "edge_node_id"),
             "input_ref": {
                 "device_id": _text(input_ref["device_id"], "input_ref.device_id"),
-                "bearing_id": _text(input_ref["bearing_id"], "input_ref.bearing_id"),
+                "unit_id": _text(input_ref["unit_id"], "input_ref.unit_id"),
                 "sender_id": _text(input_ref["sender_id"], "input_ref.sender_id"),
                 "packet_id": _text(input_ref["packet_id"], "input_ref.packet_id"),
                 "sequence_number": _bounded_int(input_ref["sequence_number"], "sequence_number", 1, 80),
@@ -276,7 +280,7 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         }
         if result["finished_at_ns"] < result["started_at_ns"]:
             raise ValueError("finished_at_ns cannot precede started_at_ns")
-        if result["device_id"] != result["input_ref"]["device_id"] or result["bearing_id"] != result["input_ref"]["bearing_id"]:
+        if result["device_id"] != result["input_ref"]["device_id"] or result["unit_id"] != result["input_ref"]["unit_id"]:
             raise ValueError("top-level and input_ref identity must match")
         _copy_v12_identity(item, result)
 
@@ -314,16 +318,17 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_assignment_identity(result: Mapping[str, Any], assignment: Mapping[str, Any] | None) -> None:
     if assignment is None:
         raise PacketRouteError("PACKET_ASSIGNMENT_CONFLICT", "task_id is not assigned", 409)
+    domain_assignment = assignment_row_to_domain(assignment)
     expected = {
         "task_id": result["task_id"],
         "device_id": result["device_id"],
         "sender_id": result["input_ref"]["sender_id"],
-        "bearing_id": result["bearing_id"],
+        "unit_id": result["unit_id"],
         "edge_node_id": result["edge_node_id"],
         "assignment_status": "ASSIGNED",
     }
     for field, value in expected.items():
-        if assignment.get(field) != value:
+        if domain_assignment.get(field) != value:
             raise PacketRouteError(
                 "PACKET_ASSIGNMENT_CONFLICT",
                 f"packet result does not match assigned {field}",
@@ -335,7 +340,7 @@ def _decision_id(result: Mapping[str, Any]) -> str:
     identity = {
         "device_id": result["device_id"],
         "task_id": result["task_id"],
-        "bearing_id": result["bearing_id"],
+        "bearing_id": result["unit_id"],
         "packet_id": result["input_ref"]["packet_id"],
         "sequence_number": result["input_ref"]["sequence_number"],
     }
@@ -416,7 +421,7 @@ def _copy_v12_identity(item: Mapping[str, Any], result: dict[str, Any]) -> None:
     expected_window = build_diagnosis_window_id(
         device_id=result["device_id"],
         task_id=result["task_id"],
-        bearing_id=result["bearing_id"],
+        bearing_id=result["unit_id"],
         sender_id=sender_id,
         window_start_sequence=start,
         window_end_sequence=end,

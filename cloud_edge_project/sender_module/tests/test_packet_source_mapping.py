@@ -77,7 +77,10 @@ def test_sender_task_saves_source_proof_when_it_creates_packet(
             ]
         ),
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     class Publisher:
         reconnect_count = 0
@@ -168,7 +171,10 @@ def test_sender_packet_timestamps_follow_the_sampling_interval(
             ]
         ),
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     class Publisher:
         reconnect_count = 0

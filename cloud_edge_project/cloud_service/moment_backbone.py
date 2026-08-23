@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 
@@ -25,5 +26,11 @@ def load_moment_backbone(
             "num_class": num_classes,
         },
     )
-    model.init()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Only reconstruction head is pre-trained.*",
+            category=UserWarning,
+        )
+        model.init()
     return model

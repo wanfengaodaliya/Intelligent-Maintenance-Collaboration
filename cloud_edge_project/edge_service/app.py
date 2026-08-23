@@ -24,8 +24,11 @@ for import_root in (PROJECT_ROOT, EDGE_RUNTIME_SRC):
 
 from common.config import load_config
 from common.control_auth import CONTROL_PATHS, ControlAuthVerifier
-from common.schemas import ContractError, error_response, is_v01_task_request
-from edge_service.model import EDGE_NODE_ID, infer_edge, infer_edge_v01
+from common.schemas import ContractError, error_response
+from edge_service.model import EDGE_NODE_ID
+from bootstrap.scenarios import build_edge_scenario_registry
+from core.scenario_plugin import EDGE_INFERENCE, EdgeInferenceRuntimeRequest
+from core.scenario_registry import DEFAULT_SCENARIO_TYPE
 
 from edge_task_ingress import (  # noqa: E402
     EdgeTaskIngress,
@@ -36,15 +39,9 @@ from edge_validation_cache import (  # noqa: E402
     ValidationCacheConfig,
 )
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
-from edge_model.local_h5_client import (  # noqa: E402
-    H5_RUNTIME_MODEL_VERSION,
-    LocalH5ClientConfig,
-    LocalH5ModelClient,
-)
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.model_store import (  # noqa: E402
     ModelStoreBootstrapError,
-    initialize_model_store,
     validate_model_update_mode,
 )
 from edge_model.perception_evidence import PerceptionEvidenceBuilder  # noqa: E402
@@ -72,6 +69,14 @@ from edge_runtime.body_limit import RequestBodyLimitMiddleware  # noqa: E402
 LOGGER = logging.getLogger(__name__)
 config = load_config()
 control_auth_verifier = ControlAuthVerifier.from_env()
+scenario_registry = build_edge_scenario_registry()
+edge_scenario_id = os.getenv("EDGE_SCENARIO_ID", DEFAULT_SCENARIO_TYPE).strip()
+edge_inference_provider = scenario_registry.require_provider(
+    edge_scenario_id,
+    EDGE_INFERENCE,
+)
+edge_inference_metadata = edge_inference_provider.metadata
+scenario_backend_id = edge_inference_metadata.backend_id
 # 正式边缘诊断路线（阶段 8 起）：
 #   - local_h5：蒸馏模型 H5 三通道并行（CNN/物理特征/工况）加权融合，本地推理；
 #   - official：宿主机/远端正式模型服务（HTTP /infer），供对照与故障演练矩阵。
@@ -79,12 +84,13 @@ control_auth_verifier = ControlAuthVerifier.from_env()
 diagnostic_backend = os.getenv("EDGE_DIAGNOSTIC_BACKEND", "") or str(
     config["model"]["edge_backend"]
 )
-if diagnostic_backend not in ("local_h5", "official"):
+if diagnostic_backend not in (scenario_backend_id, "official"):
     raise ValueError(
         "unsupported edge diagnostic backend: %s (allowed: 'local_h5' | 'official')"
         % diagnostic_backend
     )
 pinned_model_version = (os.getenv("EDGE_MODEL_VERSION") or "").strip() or None
+scenario_backend_active = diagnostic_backend == scenario_backend_id
 poller_enabled = (
     os.getenv("EDGE_MODEL_UPDATE_POLLER_ENABLED", "false").strip().lower()
     == "true"
@@ -107,7 +113,8 @@ except ModelStoreBootstrapError as exc:
     raise SystemExit(78) from exc
 # 模型版本以部署时显式声明为准；local_h5 未声明时使用 H5 制品版本。
 runtime_model_version = pinned_model_version or (
-    H5_RUNTIME_MODEL_VERSION if diagnostic_backend == "local_h5"
+    edge_inference_metadata.default_model_version
+    if scenario_backend_active
     else "official-model-unpinned"
 )
 edge_status_integration = build_edge_status_integration(
@@ -118,7 +125,8 @@ runtime_assembly = None
 cloud_review_cleanup = None
 # local_h5 复用 H5 自带的单包证据合同；official 路线用独立的 numpy 证据构建器。
 EDGE_FEATURE_EXTRACTOR_VERSION = (
-    H5_RUNTIME_MODEL_VERSION if diagnostic_backend == "local_h5"
+    edge_inference_metadata.feature_extractor_version
+    if scenario_backend_active
     else PerceptionEvidenceBuilder.version
 )
 
@@ -212,27 +220,21 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
     # 设置后模型路线（本地 H5 或模型服务）上报版本不一致 → readiness 不通过。
-    if diagnostic_backend == "local_h5":
+    if scenario_backend_active:
         # 正式路线：蒸馏模型 H5 三通道并行本地推理，与模型服务路线共用
         # 有界队列/超时预算/熔断/就绪探针；降级语义仍为"诊断不可用"。
-        model_config.diagnostic_backend = "local_h5"
-        selection = initialize_model_store(
+        scenario_runtime = edge_inference_provider.build_runtime(
+            EdgeInferenceRuntimeRequest(
             model_root=runtime_config.model_update.model_root,
             bundled_model_root=Path(__file__).resolve().parent / "models",
-            baseline_version=H5_RUNTIME_MODEL_VERSION,
-            pinned_version=pinned_model_version,
-        )
-        model_client = LocalH5ModelClient(
-            LocalH5ClientConfig(
-                model_root=selection.model_root,
-                initial_version=selection.version,
-                expected_version=pinned_model_version,
+                pinned_model_version=pinned_model_version,
+                observation_window_ms=runtime_config.v12.diagnosis_window_ms,
+                lifecycle_enabled=runtime_config.v12.enabled,
             )
         )
-        initial_readiness = model_client.readiness()
-        if not initial_readiness.ok:
-            raise RuntimeError(initial_readiness.detail)
-        evidence_builder = model_client.build_evidence
+        model_config.diagnostic_backend = scenario_runtime.pipeline_backend
+        model_client = scenario_runtime.model_client
+        evidence_builder = scenario_runtime.evidence_builder
     else:
         model_config.diagnostic_backend = "http"
         model_client = ModelClient(
@@ -251,18 +253,6 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         on_packet_result=lambda _: None,
         evidence_builder=evidence_builder,
     )
-    if (
-        diagnostic_backend == "local_h5"
-        and runtime_config.v12.enabled
-        and runtime_config.v12.diagnosis_window_ms != 50
-    ):
-        # H5 蒸馏模型输入冻结为 50 ms（振动 3200 点 @64kHz，硬校验）；
-        # 非 50 ms 窗口合并后超出输入尺寸，H5 校验失败会导致整窗
-        # "诊断不可用"降级。启动即失败，而不是运行中静默降级。
-        raise ValueError(
-            "local_h5 requires v12.diagnosis_window_ms=50, got %d"
-            % runtime_config.v12.diagnosis_window_ms
-        )
     packet_route_error_recorder = PacketRouteErrorRecorder(
         os.getenv(
             "EDGE_PACKET_ROUTE_ERROR_LOG",
@@ -460,7 +450,8 @@ def health() -> dict[str, object]:
         "model_version": displayed_version,
         "model_version_pinned": runtime_model_version if os.getenv("EDGE_MODEL_VERSION") else None,
         "model_deployment_status": (
-            "local_distilled_h5" if diagnostic_backend == "local_h5"
+            edge_inference_metadata.deployment_status
+            if scenario_backend_active
             else "official_model_service"
         ),
         "model_update": {
@@ -479,7 +470,7 @@ def health() -> dict[str, object]:
         # local_h5 路线 base_url 为空（模型在进程内）。
         "model_service": {
             "base_url": (
-                None if diagnostic_backend == "local_h5"
+                None if scenario_backend_active
                 else os.getenv("EDGE_MODEL_BASE_URL", "http://127.0.0.1:8012")
             ),
             **probe,
@@ -544,11 +535,15 @@ def health() -> dict[str, object]:
     }
 
 
+def infer_edge(payload: Any) -> dict[str, Any]:
+    """Compatibility seam that delegates inference to the scenario provider."""
+
+    return edge_inference_provider.infer_compatible(payload)
+
+
 @app.post("/edge/infer", response_model=None)
 def edge_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     try:
-        if is_v01_task_request(payload):
-            return infer_edge_v01(payload)
         return infer_edge(payload)
     except ContractError as error:
         return JSONResponse(status_code=400, content=error_response(error))

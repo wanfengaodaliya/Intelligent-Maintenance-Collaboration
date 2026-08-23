@@ -1,20 +1,33 @@
 from __future__ import annotations
 
-import itertools
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sender.config import SenderConfig, SenderNodeConfig
+from sender.input_adapter import (
+    SenderInputAdapter,
+    SenderInputAdapterProvider,
+)
 from sender.ids import TaskIdStore
 from sender.local_logs import LocalLogSink
-from sender.mat_reader import load_mat_record
 from sender.mqtt_publisher import MqttPublisher
-from sender.packet import build_sensor_packet, serialize_packet
 from sender.scheduler_client import SchedulerClient, SchedulerError
-from sender.source_mapping import PacketSourceMappingStore
+from bootstrap.scenarios import build_sender_scenario_registry
+from core.scenario_plugin import INPUT_ADAPTER
+from core.scenario_registry import DEFAULT_SCENARIO_TYPE
+
+
+scenario_registry = build_sender_scenario_registry()
+input_adapter_provider = cast(
+    SenderInputAdapterProvider,
+    scenario_registry.require_provider(
+        DEFAULT_SCENARIO_TYPE,
+        INPUT_ADAPTER,
+    ),
+)
 
 
 class SenderTaskError(RuntimeError):
@@ -110,7 +123,8 @@ def run_sender_task(
     publisher: Any | None = None,
     log_sink: LocalLogSink | None = None,
     task_ids: TaskIdStore | None = None,
-    source_mapping_store: PacketSourceMappingStore | None = None,
+    source_mapping_store: object | None = None,
+    input_adapter: SenderInputAdapter | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -124,28 +138,26 @@ def run_sender_task(
     )
 
     task_id = id_store.next_task_id()
-    source_store = source_mapping_store or PacketSourceMappingStore(
-        config.state_dir / "packet_source_mapping.db"
+    adapter = input_adapter or input_adapter_provider.build_adapter(
+        config.state_dir,
+        source_mapping_store,
     )
     started_ns = time.time_ns()
-    record = load_mat_record(source_path)
-    windows = record.windows(
+    prepared_input = adapter.prepare(
+        source_path,
+        unit_id=node.unit_id,
         duration_ms=config.packet_interval_ms,
         count=config.expected_packet_count,
     )
-    try:
-        first_window = next(windows)
-    except StopIteration as exc:
-        raise RuntimeError(f"MAT record produced no data windows: {node.bearing_id}") from exc
-    windows = itertools.chain([first_window], windows)
+    first_window = prepared_input.first_window
 
-    preview_packet = build_sensor_packet(
+    preview_packet = adapter.build_packet(
         device_id=config.device_id,
         task_id=task_id,
-        bearing_id=node.bearing_id,
+        unit_id=node.unit_id,
         sender_id=node.sender_id,
         sequence_number=first_window.sequence_number,
-        data=first_window.data,
+        window=first_window,
         end_generate_timestamp_ns=started_ns,
     )
     schedule_request = {
@@ -153,7 +165,7 @@ def run_sender_task(
         "sender_id": node.sender_id,
         "task_id": task_id,
         "bearing_id": node.bearing_id,
-        "packet_size_bytes": len(serialize_packet(preview_packet)),
+        "packet_size_bytes": len(adapter.serialize_packet(preview_packet)),
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
         "created_timestamp_ns": started_ns,
@@ -208,36 +220,35 @@ def run_sender_task(
                 remaining = due - time.monotonic()
                 if remaining > 0:
                     time.sleep(remaining)
-            try:
-                window = next(windows)
-            except StopIteration as exc:
-                raise RuntimeError(
-                    f"MAT record ended before packet {sequence_number}: {node.bearing_id}"
-                ) from exc
-            if window.sequence_number != sequence_number:
-                raise RuntimeError(f"bearing window sequence mismatch: {node.bearing_id}")
-            packet = build_sensor_packet(
+            window = adapter.next_window(
+                prepared_input,
+                unit_id=node.unit_id,
+                expected_sequence=sequence_number,
+            )
+            packet = adapter.build_packet(
                 device_id=config.device_id,
                 task_id=task_id,
-                bearing_id=node.bearing_id,
+                unit_id=node.unit_id,
                 sender_id=node.sender_id,
                 sequence_number=sequence_number,
-                data=window.data,
+                window=window,
                 end_generate_timestamp_ns=(
                     started_ns
                     + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
                 ),
             )
-            source_store.save(
-                packet_id=packet["packet_id"],
+            adapter.persist_source(
+                packet=packet,
                 task_id=task_id,
-                bearing_id=node.bearing_id,
-                source_path=record.source_path,
-                start_index=window.start_index,
-                end_index=window.end_index,
-                window_index=window.window_index,
+                unit_id=node.unit_id,
+                source_path=prepared_input.source_path,
+                window=window,
             )
-            mqtt_publisher.publish(packet, serialize_packet(packet), assignment.target_topic)
+            mqtt_publisher.publish(
+                packet,
+                adapter.serialize_packet(packet),
+                assignment.target_topic,
+            )
 
         mqtt_publisher.wait_until_settled(config.recovery_window_seconds)
     except Exception as exc:

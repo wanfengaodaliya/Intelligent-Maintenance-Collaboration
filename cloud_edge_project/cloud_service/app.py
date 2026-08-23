@@ -25,31 +25,9 @@ from cloud_service.config import CloudSettings, load_cloud_settings
 from cloud_service.global_analysis.contracts import DEFAULT_TASK_LIMIT
 from cloud_service.global_analysis.periodic import run_all as run_periodic_global_analysis
 from cloud_service.global_analysis.service import GlobalAnalysisService
-from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
+from cloud_service.model_update.service import ModelUpdateError
 from cloud_service.model_update.dataset_repository import (
     LabelConfirmationRepository,
-    PacketSourceRepository,
-)
-from cloud_service.model_update.label_confirmation import (
-    CloudReferenceProvider,
-    LabelConfirmationResolver,
-)
-from cloud_service.model_update.model_types import MODEL_TYPE_SPECS
-from cloud_service.model_update.training import (
-    CloudMomentTrainer,
-    EdgeH5Trainer,
-    OfflineTrainingRunner,
-    RawTrainingSampleLoader,
-)
-from scenarios.bearing.cloud.model_update.config import load_label_mapping
-from scenarios.bearing.cloud.model_update.dataset_label_provider import (
-    DatasetLabelProvider,
-)
-from scenarios.bearing.cloud.model_update.human_review_provider import (
-    HumanReviewProvider,
-)
-from scenarios.bearing.cloud.model_update.training_data_source import (
-    BearingTrainingDataSource,
 )
 from cloud_service.task_results import TaskResultService
 from cloud_service.device_arbitration.v12_contract import (
@@ -61,8 +39,6 @@ from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.runtime_status import CloudRuntimeState
 from cloud_service.errors import CloudServiceError
 from cloud_service.service import (
-    activate_moment_candidate,
-    activate_moment_version,
     get_moment_runner,
     preload_moment_runner,
 )
@@ -79,26 +55,56 @@ from common.schemas import (
     validate_edge_feature_summary,
     validate_edge_feature_summary_envelope,
 )
+from bootstrap.scenarios import build_cloud_scenario_registry
+from core.scenario_plugin import CLOUD_DIAGNOSIS, GLOBAL_ANALYSIS, MODEL_UPDATE
 from core.scenario_registry import (
     DEFAULT_SCENARIO_TYPE,
-    get_scenario_handler,
+    MissingScenarioCapabilityError,
+    ScenarioNotFoundError,
+    UnresolvedScenarioCapabilityError,
+    normalize_scenario_type,
     register_handler,
 )
-from scenarios.bearing.cloud.handler import BearingCloudHandler
 from core.scenario_errors import UnsupportedScenarioError
 from core.arbitration_contracts import ArbitrationValidationError
-from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import analyze_bearing_risk
-from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import analyze_bearing_aggregation
-from scenarios.bearing.cloud.global_analysis.analyzer import build_bearing_maintenance_recommendations
 
 
 config = load_config()
 edge_status_registry = EdgeStatusRegistry()
 cloud_runtime_state = CloudRuntimeState()
+scenario_registry = build_cloud_scenario_registry()
 
-# Register the default bearing scenario handler at module level.
-# This ensures get_scenario_handler() works without core importing scenarios.
-register_handler("bearing", BearingCloudHandler)
+
+def _scenario_provider(scenario_type: object, capability: str) -> object:
+    normalized = normalize_scenario_type(scenario_type)
+    try:
+        return scenario_registry.require_provider(normalized, capability)
+    except (
+        ScenarioNotFoundError,
+        MissingScenarioCapabilityError,
+        UnresolvedScenarioCapabilityError,
+    ) as exc:
+        raise UnsupportedScenarioError(normalized) from exc
+
+
+def get_scenario_handler(scenario_type: object, *, database_path: Path):
+    """Compatibility seam backed by the new scenario plugin registry."""
+
+    provider = _scenario_provider(scenario_type, CLOUD_DIAGNOSIS)
+    return provider.build_handler(database_path)
+
+
+class _RegistryBackedDefaultScenarioHandler:
+    """Keep the legacy core handler lookup backed by the plugin registry."""
+
+    def __new__(cls, database_path: Path):
+        return get_scenario_handler(
+            DEFAULT_SCENARIO_TYPE,
+            database_path=database_path,
+        )
+
+
+register_handler(DEFAULT_SCENARIO_TYPE, _RegistryBackedDefaultScenarioHandler)
 
 
 def build_cloud_status_reporter() -> CloudNodeStatusReporter:
@@ -132,34 +138,6 @@ def build_cloud_status_reporter() -> CloudNodeStatusReporter:
 status_reporter = build_cloud_status_reporter()
 
 
-def _build_bearing_global_analyzers() -> dict[str, Any]:
-    """Build scenario-specific analyzers for the bearing scenario.
-
-    Each wrapper extracts the relevant data slice from the full data dict
-    that GlobalAnalysisService passes to all injected analyzers (data, config).
-    """
-    def _bearing_risk_wrapper(data: dict[str, Any], config: Any) -> dict[str, Any]:
-        rows = data.get("bearing_tasks", [])
-        return analyze_bearing_risk(rows, config)
-
-    def _bearing_review_wrapper(data: dict[str, Any], config: Any) -> dict[str, Any]:
-        rows = data.get("bearing_review_pairs", [])
-        if not rows:
-            return {"status": "not_available", "bearing_review_count": 0}
-        return analyze_bearing_aggregation(rows, config)
-
-    def _maintenance_wrapper(device_health: dict[str, Any], bearing_risk: dict[str, Any]) -> list[str]:
-        if bearing_risk is None:
-            return []
-        return build_bearing_maintenance_recommendations(device_health, bearing_risk)
-
-    return {
-        "analyze_bearing_risk": _bearing_risk_wrapper,
-        "analyze_cloud_bearing_review": _bearing_review_wrapper,
-        "maintenance_recommendations": _maintenance_wrapper,
-    }
-
-
 async def _run_background_workers() -> None:
     while True:
         try:
@@ -174,10 +152,12 @@ async def _run_background_workers() -> None:
 
 
 def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
-    """Run global analysis for every known bearing device in a single pass."""
-    analyzers = _build_bearing_global_analyzers()
+    """Run global analysis for every known default-scenario subject."""
+    provider = _scenario_provider(DEFAULT_SCENARIO_TYPE, GLOBAL_ANALYSIS)
     return run_periodic_global_analysis(
-        database_path, scenario_type="bearing", analyzers=analyzers
+        database_path,
+        scenario_type=provider.scenario_id,
+        analyzers=dict(provider.build_analyzers()),
     )
 
 
@@ -425,12 +405,12 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
         )
     try:
         scenario_type = payload.get("scenario_type", DEFAULT_SCENARIO_TYPE)
-        analyzers = _build_bearing_global_analyzers() if scenario_type == "bearing" else None
+        provider = _scenario_provider(scenario_type, GLOBAL_ANALYSIS)
         result = GlobalAnalysisService(
             load_cloud_settings().database_path,
-            scenario_analyzers=analyzers,
+            scenario_analyzers=dict(provider.build_analyzers()),
         ).analyze(
-            scenario_type,
+            provider.scenario_id,
             payload.get("subject_id"),
             payload.get("task_limit", DEFAULT_TASK_LIMIT),
         )
@@ -472,84 +452,12 @@ def get_latest_global_analysis(
     return {"success": True, "result": result}
 
 
-def _build_offline_trainer(
-    settings: CloudSettings,
-    source_repository: PacketSourceRepository,
-    raw_data_root: Path,
-) -> OfflineTrainingRunner:
-    """Assemble the dual-family offline trainer from the active baselines.
-
-    The edge H5 trainer fine-tunes from the currently active edge version
-    directory; the cloud MOMENT trainer fine-tunes from the deployed LIGHT_ADAPT
-    checkpoint. Raw windows are resolved through the packet source mappings.
-    """
-
-    from cloud_service.model_update.model_types import ActiveModelVersionStore
-
-    loader = RawTrainingSampleLoader(source_repository, raw_data_root)
-    edge_model_root = Path(
-        os.getenv(
-            "EDGE_MODEL_ROOT",
-            str(Path(__file__).resolve().parents[1] / "edge_service" / "models"),
-        )
-    )
-    edge_version = (
-        ActiveModelVersionStore(settings.database_path).get("distilled_h5")
-        or MODEL_TYPE_SPECS["distilled_h5"].default_version
-    )
-    edge_version_dir = edge_model_root / "distilled_h5" / edge_version
-    edge_trainer = EdgeH5Trainer(
-        loader=loader,
-        baseline_checkpoint=edge_version_dir / "best_model.pt",
-        baseline_dir=edge_version_dir,
-    )
-    cloud_trainer = CloudMomentTrainer(
-        loader=loader,
-        baseline_checkpoint=settings.moment_checkpoint_path,
-        pretrained_path=settings.moment_pretrained_path,
-        model_module_path=settings.moment_deployment_dir / "moment_model.py",
-        condition_norm_path=settings.moment_condition_norm_path,
-    )
-    return OfflineTrainingRunner(edge_trainer=edge_trainer, cloud_trainer=cloud_trainer)
+def _model_update_service():
+    return _model_update_provider().build_service(load_cloud_settings())
 
 
-def _model_update_service() -> ModelUpdateService:
-    settings = load_cloud_settings()
-    source_database = os.getenv("PACKET_SOURCE_DATABASE_PATH")
-    label_mapping_path = os.getenv("PADERBORN_LABEL_MAPPING_PATH")
-    data_root = os.getenv("MODEL_UPDATE_DATA_ROOT")
-    raw_data_root = os.getenv(
-        "PADERBORN_DATA_ROOT",
-        str(Path(__file__).resolve().parents[1] / "data" / "paderborn"),
-    )
-    database_path = settings.database_path
-    source_repository = PacketSourceRepository(
-        Path(source_database) if source_database else database_path
-    )
-    label_repository = LabelConfirmationRepository(database_path)
-    label_mapping = load_label_mapping(
-        Path(label_mapping_path) if label_mapping_path else None
-    )
-    return ModelUpdateService(
-        database_path,
-        data_root=Path(data_root) if data_root else None,
-        packet_source_database_path=(
-            Path(source_database) if source_database else None
-        ),
-        training_data_source=BearingTrainingDataSource(
-            database_path, source_repository
-        ),
-        label_provider=LabelConfirmationResolver(
-            [
-                DatasetLabelProvider(source_repository, label_mapping),
-                HumanReviewProvider(label_repository),
-                CloudReferenceProvider(),
-            ]
-        ),
-        trainer=_build_offline_trainer(
-            settings, source_repository, Path(raw_data_root)
-        ),
-    )
+def _model_update_provider():
+    return _scenario_provider(DEFAULT_SCENARIO_TYPE, MODEL_UPDATE)
 
 
 def _model_update_error_response(error: ModelUpdateError) -> JSONResponse:
@@ -677,11 +585,10 @@ def reject_model_update(update_id: str, payload: Any = Body(None)) -> dict | JSO
 @app.post("/cloud/model-update/{update_id}/handoff-distribution", response_model=None)
 def handoff_model_update_distribution(update_id: str) -> dict | JSONResponse:
     try:
-        settings = load_cloud_settings()
         return _model_update_service().handoff_distribution(
             update_id,
-            local_cloud_activator=lambda artifact, version: activate_moment_candidate(
-                settings, artifact, version
+            local_cloud_activator=lambda artifact, version: _model_update_provider().activate_candidate(
+                load_cloud_settings(), artifact, version
             ),
         )
     except ModelUpdateError as error:
@@ -790,12 +697,11 @@ def execute_model_update_rollback(
 ) -> dict | JSONResponse:
     try:
         executed_by = payload.get("executed_by") if isinstance(payload, dict) else None
-        settings = load_cloud_settings()
         return _model_update_service().execute_rollback(
             update_id,
             executed_by=executed_by,
-            local_cloud_activator=lambda version: activate_moment_version(
-                settings, version
+            local_cloud_activator=lambda version: _model_update_provider().activate_version(
+                load_cloud_settings(), version
             ),
         )
     except ModelUpdateError as error:
