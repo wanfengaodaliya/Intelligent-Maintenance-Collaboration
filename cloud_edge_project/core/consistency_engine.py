@@ -51,4 +51,3 @@ class ConsistencyEngine:
 
     def evaluate(self, request: ConsistencyRequest) -> ConsistencyDecision:
         return self._policy.evaluate(request)
-

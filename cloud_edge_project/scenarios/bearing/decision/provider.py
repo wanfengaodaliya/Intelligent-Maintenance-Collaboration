@@ -50,4 +50,3 @@ class BearingConsistencyPolicy:
             conflict_reasons=("DEVICE_ACTION_GRADE_CONFLICT",) if conflict else (),
             degraded=status != "FINAL",
         )
-

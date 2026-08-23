@@ -43,4 +43,3 @@ def test_consistency_engine_delegates_the_complete_request_to_policy() -> None:
 
     assert actual is expected
     assert policy.received is request
-

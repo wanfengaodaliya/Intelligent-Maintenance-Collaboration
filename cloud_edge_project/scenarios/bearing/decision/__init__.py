@@ -3,4 +3,3 @@
 from scenarios.bearing.decision.provider import BearingConsistencyPolicy
 
 __all__ = ["BearingConsistencyPolicy"]
-

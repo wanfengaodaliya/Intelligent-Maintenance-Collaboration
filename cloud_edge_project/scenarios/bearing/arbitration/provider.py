@@ -7,4 +7,3 @@ from scenarios.bearing.cloud.device_arbitration.adapter import (
 
 class BearingArbitrationPolicy(BearingDeviceArbitrationAdapter):
     """Expose the existing bearing adapter as an arbitration capability."""
-

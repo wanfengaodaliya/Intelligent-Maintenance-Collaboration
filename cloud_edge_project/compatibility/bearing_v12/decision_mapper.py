@@ -79,4 +79,3 @@ def _shared_field(results: tuple[BearingDecisionResult, ...], field: str) -> str
     if len(values) != 1:
         raise ValueError(f"bearing results do not share {field}")
     return values.pop()
-

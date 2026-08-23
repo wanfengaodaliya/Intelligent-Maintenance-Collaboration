@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 
 import pytest
 
 from cloud_service.device_arbitration.service import DeviceArbitrationService
+import cloud_service.device_arbitration.service as service_module
 from scenarios.bearing.arbitration import BearingArbitrationPolicy
 
 
@@ -54,20 +56,39 @@ def _request(conflict_id: str, units: list[dict]) -> dict:
             ],
             {
                 "status": "resolved",
+                "final_state": "fault",
                 "resolution_method": "scenario_rule",
                 "final_action": "shutdown",
+                "confidence": 0.95,
                 "dominant_unit_id": "bearing-a",
-                "triggered_rule_id": "HIGH_RISK_ABNORMAL",
+                "action_scores": {"shutdown": 1.0},
+                "scenario_result": {
+                    "device_id": "machine-1",
+                    "dominant_bearing_id": "bearing-a",
+                    "triggered_rule_id": "HIGH_RISK_ABNORMAL",
+                    "reason": "bearing-a is fault with high risk",
+                    "rule_version": "bearing-arbitration-v1",
+                },
             },
         ),
         (
             [_unit("bearing-a"), _unit("bearing-b", confidence=0.8)],
             {
                 "status": "resolved",
+                "final_state": "normal",
                 "resolution_method": "weighted_fusion",
                 "final_action": "continue_operation",
+                "confidence": 1.0,
                 "dominant_unit_id": "bearing-a",
-                "triggered_rule_id": None,
+                "action_scores": {"continue_operation": 1.0},
+                "decision_margin": 1.0,
+                "scenario_result": {
+                    "device_id": "machine-1",
+                    "dominant_bearing_id": "bearing-a",
+                    "triggered_rule_id": None,
+                    "reason": "weighted action fusion selected the highest supported action",
+                    "rule_version": "bearing-arbitration-v1",
+                },
             },
         ),
         (
@@ -88,31 +109,52 @@ def _request(conflict_id: str, units: list[dict]) -> dict:
             ],
             {
                 "status": "manual_review",
+                "final_state": "unknown",
                 "resolution_method": "weighted_fusion",
                 "final_action": None,
+                "confidence": 1.0 / 3.0,
                 "dominant_unit_id": None,
-                "triggered_rule_id": None,
+                "action_scores": {
+                    "continue_operation": 1.0 / 3.0,
+                    "enhanced_monitoring": 1.0 / 3.0,
+                    "scheduled_inspection": 1.0 / 3.0,
+                },
+                "decision_margin": 0.0,
+                "scenario_result": {
+                    "device_id": "machine-1",
+                    "dominant_bearing_id": None,
+                    "triggered_rule_id": None,
+                    "reason": "weighted action scores do not meet the decision threshold",
+                    "rule_version": "bearing-arbitration-v1",
+                },
             },
         ),
     ],
 )
 def test_real_bearing_policy_preserves_rule_fusion_and_manual_review_paths(
     tmp_path,
+    monkeypatch,
     units,
     expected,
 ) -> None:
     request = _request(f"conflict-{len(units)}-{expected['status']}", units)
+    monkeypatch.setattr(service_module.uuid, "uuid4", lambda: uuid.UUID(int=1))
+    monkeypatch.setattr(service_module.time, "time_ns", lambda: 123)
 
     result = DeviceArbitrationService(
         tmp_path / "cloud.db",
         BearingArbitrationPolicy(),
     ).arbitrate(request)
 
-    for field, value in expected.items():
-        if field == "triggered_rule_id":
-            assert result["scenario_result"][field] == value
-        else:
-            assert result[field] == value
+    assert result == {
+        "arbitration_id": "arbitration_00000000000000000000000000000001",
+        "scenario_type": "bearing",
+        "conflict_id": request["conflict_id"],
+        "subject_id": "machine-1",
+        "task_id": "task-1",
+        "created_at_ns": 123,
+        **expected,
+    }
 
 
 def test_duplicate_conflict_returns_the_exact_persisted_result_and_json(tmp_path) -> None:

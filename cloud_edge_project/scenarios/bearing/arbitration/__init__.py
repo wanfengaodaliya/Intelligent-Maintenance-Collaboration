@@ -3,4 +3,3 @@
 from scenarios.bearing.arbitration.provider import BearingArbitrationPolicy
 
 __all__ = ["BearingArbitrationPolicy"]
-

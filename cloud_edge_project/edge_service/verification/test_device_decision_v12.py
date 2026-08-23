@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -247,7 +248,7 @@ def test_closed_provisional_round_can_create_historical_correction_but_timeout_c
         expected_version=opened["version"], closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL,
         closed_at_ns=10,
     )
-    round_repository.save_revision(aggregate_device_round(
+    initial = round_repository.save_revision(aggregate_device_round(
         (first, second), expected_bearing_ids=("bearing_a", "bearing_b"),
         closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL, closed_at_ns=10,
     ))
@@ -257,9 +258,21 @@ def test_closed_provisional_round_can_create_historical_correction_but_timeout_c
     )
 
     assert correction is not None
-    assert correction.status == "CORRECTED"
-    assert correction.affects_realtime_action is False
-    assert correction.revision == 2
+    expected_correction = replace(
+        _legacy_aggregate(
+            (first, second),
+            expected_bearing_ids=("bearing_a", "bearing_b"),
+            closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL,
+            closed_at_ns=20,
+        ),
+        result_id="device_round_01_r2",
+        revision=2,
+        replaces_result_id=initial.result_id,
+        status=DeviceDecisionStatus.CORRECTED,
+        decision_source="HISTORICAL_CORRECTION",
+        affects_realtime_action=False,
+    )
+    assert correction == expected_correction
 
     timeout_round = round_repository.register_round(
         device_id="machine_01", task_id="task_001", decision_round_id="round_timeout",
