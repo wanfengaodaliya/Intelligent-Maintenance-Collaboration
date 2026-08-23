@@ -340,6 +340,12 @@ def _set_packet_value(
     (
         (("data",), None, "prepare", "raw packet data must be an object"),
         (
+            ("data", "vibration", "sample_rate_hz"),
+            16_000,
+            "prepare",
+            "vibration must be 64000 Hz / 3200 samples",
+        ),
+        (
             ("data", "vibration", "sample_count"),
             3_199,
             "prepare",
@@ -393,6 +399,7 @@ def _set_packet_value(
     ),
     ids=(
         "data-object",
+        "vibration-rate",
         "vibration-count",
         "vibration-shape",
         "vibration-non-finite",
@@ -497,6 +504,16 @@ def test_distilled_h5_manifest_errors_match_frozen_contract(tmp_path: Path) -> N
         "MODEL_MANIFEST_VERSION_MISMATCH: expected=unexpected-version "
         f"got={MODEL_VERSION}"
     )
+
+    inconsistent_dir = tmp_path / MODEL_VERSION
+    shutil.copytree(MODEL_DIR, inconsistent_dir)
+    (inconsistent_dir / "README.md").write_text("tampered", encoding="utf-8")
+    with pytest.raises(H5ModelArtifactError) as hash_error:
+        DistilledH5DiagnosticModel(
+            inconsistent_dir,
+            model_version=MODEL_VERSION,
+        )
+    assert str(hash_error.value) == "MODEL_MANIFEST_SHA256_MISMATCH=README.md"
 
 
 def test_distilled_h5_normalization_error_matches_frozen_contract(

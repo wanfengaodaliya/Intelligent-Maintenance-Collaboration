@@ -71,6 +71,14 @@ def _defined_names(path: Path) -> set[str]:
     }
 
 
+def _is_module_docstring(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
 def test_core_does_not_import_bearing_plugin() -> None:
     offenders = [
         path.relative_to(PROJECT_ROOT).as_posix()
@@ -234,9 +242,10 @@ def test_legacy_bearing_ingestion_modules_are_thin_explicit_shims() -> None:
         ]
 
         assert assignments == ["__all__"]
+        assert tree.body and _is_module_docstring(tree.body[0])
         assert all(
-            isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
-            for node in tree.body
+            isinstance(node, (ast.ImportFrom, ast.Assign))
+            for node in tree.body[1:]
         )
         assert all(
             alias.name != "*"
@@ -349,9 +358,10 @@ def test_edge_h5_compatibility_exports_are_explicit() -> None:
     ]
 
     assert assignments == ["__all__"]
+    assert tree.body and _is_module_docstring(tree.body[0])
     assert all(
-        isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
-        for node in tree.body
+        isinstance(node, (ast.ImportFrom, ast.Assign))
+        for node in tree.body[1:]
     )
     assert all(
         alias.name != "*"
