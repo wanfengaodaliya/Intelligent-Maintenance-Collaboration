@@ -319,12 +319,32 @@ html, body {
 
 .hero .kpi .sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
-/* 多彩配色（蓝 / 红 / 青 / 橙，浅彩渐变底 + 彩色数字） */
-.hero .kpi.c-blue  { --kpi-color: #2563eb; --kpi-border: rgba(37, 99, 235, 0.18);  --kpi-shadow: rgba(37, 99, 235, 0.12);  --kpi-grad: linear-gradient(160deg, #eff6ff, #ffffff 70%); }
-.hero .kpi.c-danger{ --kpi-color: #dc2626; --kpi-border: rgba(220, 38, 38, 0.18); --kpi-shadow: rgba(220, 38, 38, 0.1);  --kpi-grad: linear-gradient(160deg, #fef2f2, #ffffff 70%); }
-.hero .kpi.c-teal  { --kpi-color: #0d9488; --kpi-border: rgba(13, 148, 136, 0.2); --kpi-shadow: rgba(13, 148, 136, 0.12); --kpi-grad: linear-gradient(160deg, #f0fdfa, #ffffff 70%); }
-.hero .kpi.c-gold  { --kpi-color: #d97706; --kpi-border: rgba(217, 119, 6, 0.2);  --kpi-shadow: rgba(217, 119, 6, 0.12);  --kpi-grad: linear-gradient(160deg, #fff7ed, #ffffff 70%); }
-.hero .kpi.c-green { --kpi-color: #16a34a; --kpi-border: rgba(22, 163, 74, 0.2);  --kpi-shadow: rgba(22, 163, 74, 0.12);  --kpi-grad: linear-gradient(160deg, #f0fdf4, #ffffff 70%); }
+/* 多彩配色（6 列：蓝/红/绿/橙/青/紫） */
+.hero .kpi.c-blue   { --kpi-color: #2563eb; --kpi-border: rgba(37, 99, 235, 0.18);  --kpi-shadow: rgba(37, 99, 235, 0.12);  --kpi-grad: linear-gradient(160deg, #eff6ff, #ffffff 70%); }
+.hero .kpi.c-danger { --kpi-color: #dc2626; --kpi-border: rgba(220, 38, 38, 0.18); --kpi-shadow: rgba(220, 38, 38, 0.1);   --kpi-grad: linear-gradient(160deg, #fef2f2, #ffffff 70%); }
+.hero .kpi.c-green  { --kpi-color: #16a34a; --kpi-border: rgba(22, 163, 74, 0.2);  --kpi-shadow: rgba(22, 163, 74, 0.12);  --kpi-grad: linear-gradient(160deg, #f0fdf4, #ffffff 70%); }
+.hero .kpi.c-gold   { --kpi-color: #d97706; --kpi-border: rgba(217, 119, 6, 0.2);  --kpi-shadow: rgba(217, 119, 6, 0.12);  --kpi-grad: linear-gradient(160deg, #fff7ed, #ffffff 70%); }
+.hero .kpi.c-teal   { --kpi-color: #0d9488; --kpi-border: rgba(13, 148, 136, 0.2); --kpi-shadow: rgba(13, 148, 136, 0.12); --kpi-grad: linear-gradient(160deg, #f0fdfa, #ffffff 70%); }
+.hero .kpi.c-violet { --kpi-color: #7c3aed; --kpi-border: rgba(124, 58, 237, 0.2); --kpi-shadow: rgba(124, 58, 237, 0.12); --kpi-grad: linear-gradient(160deg, #f5f3ff, #ffffff 70%); }
+
+/* 6 列网格适配 */
+.hero.hero-6 { grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.hero.hero-6 .kpi { padding: 14px 14px 10px; }
+.hero.hero-6 .kpi .value { font-size: 28px; }
+.hero.hero-6 .kpi .label { font-size: 11px; }
+@media (max-width: 1400px) { .hero.hero-6 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 760px)  { .hero.hero-6 { grid-template-columns: repeat(2, 1fr); } }
+
+/* 流卡片说明文字 */
+.stream-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
 
 @media (max-width: 1200px) { .hero { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
@@ -648,6 +668,71 @@ details.json pre {
   background: var(--accent-soft);
   border-radius: 999px;
   padding: 1px 9px;
+}
+
+/* ---------- 使用说明卡片 ---------- */
+
+.usage-tip {
+  background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 50%, #f0fdfa 100%);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 18px;
+}
+
+.usage-tip .usage-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent-deep);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usage-tip .usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.usage-tip .usage-grid b {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.usage-tip .hl-green { color: var(--ok); font-weight: 700; }
+.usage-tip .hl-blue { color: var(--accent-deep); font-weight: 700; }
+.usage-tip .hl-red { color: var(--danger); font-weight: 700; }
+
+.usage-tip .usage-grid > div {
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+@media (max-width: 760px) {
+  .usage-tip .usage-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- 调试面板 ---------- */
+
+.debug-panel {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+
+.debug-panel .card-title::before {
+  background: linear-gradient(180deg, #d97706, #b45309);
+}
+
+.debug-panel .btn.ghost {
+  font-size: 12px;
 }
 
 /* ---------- KPI 值变化微动画 ---------- */

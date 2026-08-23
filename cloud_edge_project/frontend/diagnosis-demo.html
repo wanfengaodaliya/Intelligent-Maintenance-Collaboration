@@ -23,6 +23,17 @@
       </div>
     </div>
 
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 这个页面是干什么的？</div>
+      <div class="usage-grid">
+        <div><b>📊 页面用途</b><br>测试单个数据包的<b>完整诊断流程</b>：从构造数据→边缘推理→得到结论，适合演示和调试</div>
+        <div><b>🔧 怎么用</b><br>① 选"正常工况"或"故障工况"<br>② 点"开始诊断"按钮<br>③ 查看左边感知输出 + 右边推理结果</div>
+        <div><b>📖 结果怎么看</b><br><b>诊断结论</b>：正常/故障<br><b>置信度</b>：越高越准（0.9以上很好）<br><b>是否需云端复核</b>：需要=不太确定</div>
+        <div><b>🎯 波形说明</b><br>上方波形图是模拟的振动信号：<br>蓝色=正常（小幅平稳）<br>红色=故障（大幅冲击）</div>
+      </div>
+    </div>
+
     <!-- 步骤条 -->
     <div class="steps" id="steps">
       <div class="step" data-step="1"><div class="idx">①</div>构造数据包</div>
@@ -34,7 +45,16 @@
     <div class="card">
       <div class="card-title">数据包构造</div>
       <div class="form-row">
-        <label class="field">设备 ID<input type="text" id="deviceId" value="K001"></label>
+        <label class="field">设备 ID
+          <input type="text" id="deviceId" list="deviceList" value="machine_01">
+          <datalist id="deviceList">
+            <option value="machine_01">
+            <option value="machine_02">
+            <option value="machine_03">
+            <option value="bearing_line_a">
+            <option value="bearing_line_b">
+          </datalist>
+        </label>
         <label class="field">数据类型
           <select id="packetType">
             <option value="normal">正常工况（低幅值振动）</option>
@@ -121,8 +141,8 @@ function buildPacket() {
   const nowNs = BigInt(Date.now()) * 1000000n;
   return {
     packet_id: "demo_" + String(seq).padStart(6, "0"),
-    device_id: el("deviceId").value.trim() || "K001",
-    sensor_id: "sensor_" + (el("deviceId").value.trim() || "K001"),
+    device_id: el("deviceId").value.trim() || "machine_01",
+    sensor_id: "sensor_" + (el("deviceId").value.trim() || "machine_01"),
     sequence_number: seq,
     start_timestamp_ns: Number(nowNs),
     end_timestamp_ns: Number(nowNs + 50000000n),

@@ -17,6 +17,17 @@
       </div>
     </div>
 
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 这个页面是干什么的？</div>
+      <div class="usage-grid">
+        <div><b>📊 页面用途</b><br>显示系统各节点的<b>连接关系和运行状态</b>，可以直观看到数据流向和服务健康情况</div>
+        <div><b>🔧 怎么看拓扑图</b><br>• <b class="hl-green">绿色流动线</b> = 数据正常传输中<br>• <b class="hl-red">红色线</b> = 该链路不通<br>• 节点边框颜色 = 该节点状态</div>
+        <div><b>📖 节点说明</b><br>• <b>Sender</b>：数据发送端<br>• <b>edge_01/02</b>：边缘计算节点<br>• <b>Scheduler</b>：调度器<br>• <b>Cloud</b>：云端分析</div>
+        <div><b>⚠️ 异常排查</b><br>如果某节点是红色边框 → 点击下方"边缘节点"页查看详情<br>如果链路断了 → 说明对应的服务没启动</div>
+      </div>
+    </div>
+
     <!-- 拓扑图 -->
     <div class="card">
       <div class="card-title">系统拓扑 <span class="hint">链路颜色：绿=正常流动 红=不可达</span></div>

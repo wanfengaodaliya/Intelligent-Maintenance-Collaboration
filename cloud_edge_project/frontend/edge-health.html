@@ -26,6 +26,17 @@
       </div>
     </div>
 
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 这个页面是干什么的？</div>
+      <div class="usage-grid">
+        <div><b>📊 页面用途</b><br>显示边缘计算节点的<b>实时运行状态</b>，包括模型推理、队列积压、MQTT连接等关键指标</div>
+        <div><b>🔧 怎么用</b><br>① 右上角切换 edge_01 / edge_02<br>② 勾选"自动刷新"会每5秒更新一次<br>③ 红色/黄色卡片=需要关注的问题</div>
+        <div><b>📖 怎么看数据</b><br><b>运行状态</b>：ok=正常运行<br><b>存活线程</b>：6/6=全部线程正常<br><b>MQTT队列</b>：深度为0=无积压</div>
+        <div><b>⚠️ 异常处理</b><br>如果显示"不可达"：说明Edge服务没启动<br>如果"存活线程"不全：说明某个工作线程挂了</div>
+      </div>
+    </div>
+
     <div id="content"><div class="empty">加载中…</div></div>
   </main>
 </div>
@@ -39,19 +50,23 @@ let poller = null;
 // ---------- 渲染 ----------
 
 function metric(label, value, sub, cls) {
+  const safeVal = (value === null || value === undefined || value === "") ? "-" : value;
+  const safeSub = (sub === null || sub === undefined || sub === "") ? "" : String(sub);
   return '<div class="metric ' + (cls || "") + '"><div class="label">' + label +
-    '</div><div class="value small">' + (value === null || value === undefined || value === "" ? "-" : value) +
-    "</div>" + (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+    '</div><div class="value small">' + safeVal +
+    "</div>" + (safeSub ? '<div class="sub">' + safeSub + "</div>" : "") + "</div>";
 }
 
 function section(title, hint, inner) {
+  const safeHint = (hint === null || hint === undefined || hint === "") ? "" : String(hint);
   return '<div class="card"><div class="card-title">' + title +
-    (hint ? ' <span class="hint">' + hint + "</span>" : "") + "</div>" + inner + "</div>";
+    (safeHint ? ' <span class="hint">' + safeHint + "</span>" : "") + "</div>" + inner + "</div>";
 }
 
 function kvRows(pairs) {
   return '<div class="kv">' + pairs.map(
-    ([k, v]) => '<div class="k">' + k + '</div><div class="v">' + (v === null || v === undefined ? "-" : v) + "</div>"
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v">' + 
+      (v === null || v === undefined || v === "" ? "-" : v) + "</div>"
   ).join("") + "</div>";
 }
 
