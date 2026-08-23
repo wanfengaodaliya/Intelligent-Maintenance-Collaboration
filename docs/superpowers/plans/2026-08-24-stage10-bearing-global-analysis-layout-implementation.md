@@ -380,4 +380,3 @@ Python executable:
 ```text
 D:\codex\edge_status_reporter\.cache\stage0-py312\Scripts\python.exe
 ```
-
