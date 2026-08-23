@@ -14,7 +14,9 @@ from core.diagnosis_contracts import PacketRoute
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from compatibility.bearing_v12.scheduler_mapper import (
     assignment_row_to_domain,
+    legacy_scheduler_error_message,
     packet_result_to_domain,
+    uses_generic_scheduler_fields,
 )
 
 try:
@@ -354,6 +356,7 @@ def cloud_task_id(decision_id: str) -> str:
 
 
 def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
+    legacy_vocabulary = not uses_generic_scheduler_fields(payload)
     try:
         item = packet_result_to_domain(_mapping(payload, "packet result"))
         required_top = {
@@ -416,13 +419,23 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     except PacketRouteError:
         raise
     except (KeyError, TypeError, ValueError) as error:
-        raise PacketRouteError("INVALID_PACKET_RESULT", str(error)) from error
+        message = str(error)
+        if legacy_vocabulary:
+            message = legacy_scheduler_error_message(message)
+        raise PacketRouteError("INVALID_PACKET_RESULT", message) from error
 
 
 def _validate_assignment_identity(result: Mapping[str, Any], assignment: Mapping[str, Any] | None) -> None:
     if assignment is None:
         raise PacketRouteError("PACKET_ASSIGNMENT_CONFLICT", "task_id is not assigned", 409)
-    domain_assignment = assignment_row_to_domain(assignment)
+    try:
+        domain_assignment = assignment_row_to_domain(assignment)
+    except ValueError as error:
+        raise PacketRouteError(
+            "PACKET_ASSIGNMENT_CONFLICT",
+            f"invalid assignment identity: {error}",
+            409,
+        ) from error
     expected = {
         "task_id": result["task_id"],
         "device_id": result["device_id"],

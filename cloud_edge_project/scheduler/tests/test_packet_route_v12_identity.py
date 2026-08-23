@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from scheduler import packet_router as packet_router_module
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from scheduler.deferred_cloud_repository import DeferredCloudRepository
 from scheduler.deferred_dispatcher import DeferredCloudDispatcher
-from scheduler.packet_router import PacketRouter
+from scheduler.packet_router import PacketRouteError, PacketRouter
 from scheduler.packet_service import PacketRoutingService
 
 
@@ -212,3 +214,44 @@ def test_p1_policy_receives_generic_unit_identity(monkeypatch) -> None:
         "unit_id": "bearing_02",
     }
     assert decision["route"] == "CLOUD_NOW"
+
+
+def test_packet_service_translates_alias_conflict_to_route_error(tmp_path) -> None:
+    request = _packet_route_request() | {
+        "unit_id": "different_unit",
+    }
+    service = PacketRoutingService(
+        _router(), DeferredCloudRepository(tmp_path / "scheduler.db")
+    )
+
+    with pytest.raises(PacketRouteError) as captured:
+        service.route(request)
+
+    assert captured.value.code == "INVALID_PACKET_RESULT"
+    assert captured.value.status_code == 400
+
+
+def test_packet_legacy_invalid_identity_keeps_legacy_error_message() -> None:
+    request = _packet_route_request()
+    request["bearing_id"] = ""
+    request["input_ref"]["bearing_id"] = ""
+
+    with pytest.raises(PacketRouteError, match="bearing_id must be"):
+        _router().decide(request)
+
+
+def test_malformed_assignment_aliases_are_reported_as_assignment_conflict() -> None:
+    router = PacketRouter(
+        assignment_lookup=lambda _task_id: {
+            "unit_id": "bearing_01",
+            "bearing_id": "bearing_02",
+        },
+        cloud_registry=_ReadyRegistry(),
+        clock_ns=lambda: 3,
+    )
+
+    with pytest.raises(PacketRouteError) as captured:
+        router.decide(_packet_route_request())
+
+    assert captured.value.code == "PACKET_ASSIGNMENT_CONFLICT"
+    assert captured.value.status_code == 409

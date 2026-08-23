@@ -27,6 +27,8 @@ from compatibility.bearing_v12.scheduler_mapper import (
     assignment_to_domain,
     assignment_to_legacy,
     capability_to_legacy,
+    legacy_scheduler_error_message,
+    uses_generic_scheduler_fields,
 )
 
 try:
@@ -670,10 +672,14 @@ def _append_rejection(
 def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise AssignmentError("INVALID_REQUEST", "request must be an object")
+    generic_vocabulary = uses_generic_scheduler_fields(payload)
     try:
         domain_payload = assignment_to_domain(payload)
     except ValueError as exc:
-        raise AssignmentError("INVALID_REQUEST", str(exc)) from exc
+        message = str(exc)
+        if not generic_vocabulary:
+            message = legacy_scheduler_error_message(message)
+        raise AssignmentError("INVALID_REQUEST", message) from exc
     if set(domain_payload) != ASSIGNMENT_REQUEST_FIELDS:
         missing = sorted(ASSIGNMENT_REQUEST_FIELDS - set(domain_payload))
         unexpected = sorted(set(domain_payload) - ASSIGNMENT_REQUEST_FIELDS)
@@ -715,7 +721,10 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         "device_id": device_id,
         "sender_id": sender_id,
         "task_id": task_id,
-        "unit_id": _non_empty_text(domain_payload.get("unit_id"), "unit_id"),
+        "unit_id": _non_empty_text(
+            domain_payload.get("unit_id"),
+            "unit_id" if generic_vocabulary else "bearing_id",
+        ),
         "packet_size_bytes": _positive_int(
             domain_payload.get("packet_size_bytes"), "packet_size_bytes"
         ),

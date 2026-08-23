@@ -10,7 +10,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from compatibility.bearing_v12.scheduler_mapper import device_request_to_domain
+from compatibility.bearing_v12.scheduler_mapper import (
+    device_request_to_domain,
+    legacy_scheduler_error_message,
+    uses_generic_scheduler_fields,
+)
 
 try:
     from .cloud_registry import (
@@ -250,6 +254,7 @@ def _validate_device_request(
     payload: Mapping[str, Any],
     default_summary_module_id: str,
 ) -> dict[str, Any]:
+    legacy_vocabulary = not uses_generic_scheduler_fields(payload)
     try:
         item = device_request_to_domain(
             _mapping(payload, "device arbitration request")
@@ -347,7 +352,13 @@ def _validate_device_request(
     except DeviceArbitrationRouteError:
         raise
     except (KeyError, TypeError, ValueError) as error:
-        raise DeviceArbitrationRouteError("INVALID_DEVICE_ARBITRATION_REQUEST", str(error)) from error
+        message = str(error)
+        if legacy_vocabulary:
+            message = legacy_scheduler_error_message(message)
+        raise DeviceArbitrationRouteError(
+            "INVALID_DEVICE_ARBITRATION_REQUEST",
+            message,
+        ) from error
 
 
 def _validate_unit_result(value: Any) -> dict[str, Any]:

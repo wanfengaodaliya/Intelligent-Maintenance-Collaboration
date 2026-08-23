@@ -8,9 +8,39 @@ from typing import Any, Mapping
 EDGE_INFERENCE = "edge_inference"
 LEGACY_EDGE_INFERENCE = "BEARING_EDGE_INFERENCE"
 
+_FIELD_ALIASES = (
+    ("low_confidence_unit_count", "low_confidence_bearing_count"),
+    ("provisional_unit_count", "provisional_bearing_count"),
+    ("expected_unit_count", "expected_bearing_count"),
+    ("received_unit_count", "received_bearing_count"),
+    ("unit_result_ids", "bearing_result_ids"),
+    ("unit_result_id", "bearing_result_id"),
+    ("unit_results", "bearing_results"),
+    ("unit_id", "bearing_id"),
+)
+_GENERIC_FIELDS = frozenset(generic for generic, _legacy in _FIELD_ALIASES)
+
 
 class SchedulerMappingError(ValueError):
     pass
+
+
+def uses_generic_scheduler_fields(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return bool(_GENERIC_FIELDS.intersection(value)) or any(
+            uses_generic_scheduler_fields(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(uses_generic_scheduler_fields(item) for item in value)
+    return False
+
+
+def legacy_scheduler_error_message(message: str) -> str:
+    result = message
+    for generic, legacy in _FIELD_ALIASES:
+        result = result.replace(generic, legacy)
+        result = result.replace(f"{legacy} or {legacy}", legacy)
+    return result
 
 
 def _domain_alias(
@@ -97,18 +127,43 @@ def _unit_result_to_legacy(payload: Mapping[str, Any]) -> dict[str, Any]:
     return _legacy_alias(result, "unit_result_id", "bearing_result_id")
 
 
+def _unit_results_to_domain(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return [
+        _unit_result_to_domain(item) if isinstance(item, Mapping) else item
+        for item in value
+    ]
+
+
 def device_request_to_domain(payload: Mapping[str, Any]) -> dict[str, Any]:
-    result = _replace_alias(payload, "unit_results", "bearing_results")
+    has_generic_results = "unit_results" in payload
+    has_legacy_results = "bearing_results" in payload
+    if not has_generic_results and not has_legacy_results:
+        raise SchedulerMappingError("missing fields: unit_results or bearing_results")
+    generic_results = (
+        _unit_results_to_domain(payload["unit_results"])
+        if has_generic_results
+        else None
+    )
+    legacy_results = (
+        _unit_results_to_domain(payload["bearing_results"])
+        if has_legacy_results
+        else None
+    )
+    if (
+        has_generic_results
+        and has_legacy_results
+        and generic_results != legacy_results
+    ):
+        raise SchedulerMappingError("unit_results and bearing_results must match")
+    result = dict(payload)
+    result["unit_results"] = generic_results if has_generic_results else legacy_results
+    result.pop("bearing_results", None)
     result = _replace_alias(result, "expected_unit_count", "expected_bearing_count")
     result = _replace_alias(result, "received_unit_count", "received_bearing_count")
     if "bearing_result_ids" in result or "unit_result_ids" in result:
         result = _replace_alias(result, "unit_result_ids", "bearing_result_ids")
-    unit_results = result.get("unit_results")
-    if isinstance(unit_results, list):
-        result["unit_results"] = [
-            _unit_result_to_domain(item) if isinstance(item, Mapping) else item
-            for item in unit_results
-        ]
     comparison = result.get("comparison")
     if isinstance(comparison, Mapping):
         domain_comparison = _replace_alias(

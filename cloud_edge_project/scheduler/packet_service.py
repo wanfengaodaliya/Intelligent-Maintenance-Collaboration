@@ -29,9 +29,9 @@ class PacketRoutingService:
         self.repository = repository
 
     def route(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        decision = self.router.decide(request)
         domain_request = packet_result_to_domain(request)
         legacy_request = packet_result_to_legacy(domain_request)
-        decision = self.router.decide(domain_request)
         if decision["needs_cloud_review"]:
             persisted = self.repository.routing_decision(
                 decision["decision_id"],

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from scheduler.deferred_device_dispatcher import DeferredDeviceArbitrationDispatcher
 from scheduler.deferred_device_repository import DeferredDeviceArbitrationRepository
-from scheduler.device_router import DeviceArbitrationRouter
+from scheduler.device_router import DeviceArbitrationRouteError, DeviceArbitrationRouter
 from scheduler.device_service import DeviceArbitrationService
 
 
@@ -255,3 +257,27 @@ def test_device_service_returns_same_legacy_decision_for_generic_input(tmp_path)
     assert _service(legacy_path).route(legacy_request) == _service(
         generic_path
     ).route(generic_request)
+
+
+def test_device_service_translates_alias_conflict_to_route_error(tmp_path) -> None:
+    request = _request() | {"expected_unit_count": 3}
+    service = _service(tmp_path)
+
+    with pytest.raises(DeviceArbitrationRouteError) as captured:
+        service.route(request)
+
+    assert captured.value.code == "INVALID_DEVICE_ARBITRATION_REQUEST"
+    assert captured.value.status_code == 400
+
+
+def test_device_legacy_invalid_count_keeps_legacy_error_message() -> None:
+    request = _request() | {"expected_bearing_count": 0}
+
+    with pytest.raises(
+        DeviceArbitrationRouteError,
+        match="expected_bearing_count must be",
+    ):
+        DeviceArbitrationRouter(
+            cloud_registry=_ReadyRegistry(),
+            clock_ns=lambda: 3,
+        ).decide(request)

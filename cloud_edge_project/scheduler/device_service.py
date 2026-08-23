@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 from compatibility.bearing_v12.scheduler_mapper import (
     device_payload_to_legacy,
-    device_request_to_domain,
 )
 
 try:
@@ -31,7 +30,7 @@ class DeviceArbitrationService:
         self.repository = repository
 
     def route(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        decision = self.router.decide(device_request_to_domain(request))
+        decision = self.router.decide(request)
         if decision["needs_cloud_arbitration"]:
             task = {
                 "decision_id": decision["decision_id"],
