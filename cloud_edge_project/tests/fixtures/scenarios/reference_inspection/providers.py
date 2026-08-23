@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +23,7 @@ from core.scenario_plugin import (
     EdgeInferenceRuntimeRequest,
     StorageRegistrar,
 )
+from sender.input_adapter import PreparedScenarioInput
 
 
 SCENARIO_ID = "reference_inspection"
@@ -31,17 +33,97 @@ CLOUD_MODEL_ID = "reference_cloud_fixed"
 CLOUD_MODEL_VERSION = "reference-cloud-test-1"
 
 
+@dataclass(frozen=True)
+class ReferenceInputWindow:
+    sequence_number: int
+    start_index: int
+    end_index: int
+    window_index: int
+    data: dict[str, object]
+
+
 class ReferenceInputAdapter:
-    def read(self) -> ScenarioInferenceRequest:
-        return ScenarioInferenceRequest(
-            scenario_id=SCENARIO_ID,
-            task_id="inspection-task-1",
-            unit_id="panel-1",
-            device_id="camera-1",
-            capability="edge_inference",
-            observation_window_id="frame-1",
-            evidence={"defect_score": 0.85, "source": "fixed-fixture"},
+    def __init__(self) -> None:
+        self.persisted_packet_ids: list[str] = []
+
+    def prepare(
+        self,
+        source_path: Path | str,
+        *,
+        unit_id: str,
+        duration_ms: int,
+        count: int,
+    ) -> PreparedScenarioInput:
+        if not unit_id or duration_ms <= 0 or count <= 0:
+            raise ValueError("INVALID_REFERENCE_INPUT")
+        windows = tuple(
+            ReferenceInputWindow(
+                sequence_number=index,
+                start_index=index - 1,
+                end_index=index,
+                window_index=index - 1,
+                data={"defect_score": 0.85, "source": "fixed-fixture"},
+            )
+            for index in range(1, count + 1)
         )
+        return PreparedScenarioInput(
+            source_path=Path(source_path),
+            first_window=windows[0],
+            windows=iter(windows),
+        )
+
+    def build_packet(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        unit_id: str,
+        sender_id: str,
+        sequence_number: int,
+        window: ReferenceInputWindow,
+        end_generate_timestamp_ns: int,
+    ) -> dict[str, Any]:
+        return {
+            "packet_id": f"{task_id}:{sequence_number}",
+            "scenario_id": SCENARIO_ID,
+            "task_id": task_id,
+            "unit_id": unit_id,
+            "device_id": device_id,
+            "source_id": sender_id,
+            "capability": "edge_inference",
+            "observation_window_id": f"frame-{window.window_index + 1}",
+            "created_at_ns": end_generate_timestamp_ns,
+            "evidence": dict(window.data),
+        }
+
+    def next_window(
+        self,
+        prepared_input: PreparedScenarioInput,
+        *,
+        unit_id: str,
+        expected_sequence: int,
+    ) -> ReferenceInputWindow:
+        try:
+            window = next(prepared_input.windows)
+        except StopIteration as error:
+            raise RuntimeError("REFERENCE_INPUT_EXHAUSTED") from error
+        if window.sequence_number != expected_sequence:
+            raise RuntimeError("REFERENCE_INPUT_SEQUENCE_MISMATCH")
+        return window
+
+    def persist_source(
+        self,
+        *,
+        packet: dict[str, Any],
+        task_id: str,
+        unit_id: str,
+        source_path: Path,
+        window: ReferenceInputWindow,
+    ) -> None:
+        self.persisted_packet_ids.append(packet["packet_id"])
+
+    def serialize_packet(self, packet: dict[str, Any]) -> bytes:
+        return json.dumps(packet, sort_keys=True).encode("utf-8")
 
 
 class ReferenceInputAdapterProvider:
@@ -263,14 +345,17 @@ def _coerce_request(payload: Any) -> ScenarioInferenceRequest:
         request = payload
     elif isinstance(payload, dict):
         try:
+            evidence = payload["evidence"]
+            if not isinstance(evidence, Mapping):
+                raise ValueError("INVALID_REFERENCE_REQUEST")
             request = ScenarioInferenceRequest(
                 scenario_id=payload["scenario_id"],
                 task_id=payload["task_id"],
                 unit_id=payload["unit_id"],
                 device_id=payload["device_id"],
-                capability=payload.get("capability", "cloud_diagnosis"),
+                capability=payload["capability"],
                 observation_window_id=payload["observation_window_id"],
-                evidence=payload["evidence"],
+                evidence=evidence,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("INVALID_REFERENCE_REQUEST") from error

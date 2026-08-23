@@ -15,15 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = (
     PROJECT_ROOT / "tests" / "fixtures" / "scenarios" / "reference_inspection"
 )
-PRODUCTION_ROOTS = (
-    "bootstrap",
-    "core",
-    "scheduler",
-    "edge_service",
-    "cloud_service",
-)
-
-
 def _import_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: set[str] = set()
@@ -50,10 +41,19 @@ def test_reference_fixture_does_not_import_bearing_code() -> None:
 
 
 def test_reference_vocabulary_does_not_leak_into_production_modules() -> None:
+    production_files = list(PROJECT_ROOT.glob("*.py"))
+    production_files.extend(
+        path
+        for directory in PROJECT_ROOT.iterdir()
+        if directory.is_dir()
+        and directory.name != "tests"
+        and not directory.name.startswith(".")
+        and directory.name != "__pycache__"
+        for path in directory.rglob("*.py")
+    )
     offenders = [
         path.relative_to(PROJECT_ROOT).as_posix()
-        for root in PRODUCTION_ROOTS
-        for path in (PROJECT_ROOT / root).rglob("*.py")
+        for path in production_files
         if "reference_inspection" in path.read_text(encoding="utf-8").lower()
     ]
 
@@ -72,19 +72,9 @@ def test_production_registry_builders_do_not_load_reference_fixture() -> None:
 
 
 def test_reference_fixture_contains_no_bearing_domain_vocabulary() -> None:
-    forbidden = (
-        "bearing_id",
-        "bearing_results",
-        "expected_bearing_count",
-        "outer_ring_damage",
-        "inner_ring_damage",
-        "radial_load",
-        "bearing_temperature",
-        "bearing_edge_inference",
-    )
     source = "\n".join(
         path.read_text(encoding="utf-8").lower()
         for path in FIXTURE_ROOT.glob("*.py")
     )
 
-    assert all(word not in source for word in forbidden)
+    assert "bearing" not in source

@@ -1,4 +1,4 @@
-from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -32,42 +32,103 @@ def _registry() -> ScenarioRegistry:
 
 
 def _payload(request) -> dict:
-    return {
-        "scenario_id": request.scenario_id,
-        "task_id": request.task_id,
-        "unit_id": request.unit_id,
-        "device_id": request.device_id,
-        "capability": "cloud_diagnosis",
-        "observation_window_id": request.observation_window_id,
-        "evidence": dict(request.evidence),
-    }
+    return {**request, "capability": "cloud_diagnosis"}
+
+
+def _prepared_packet(registry: ScenarioRegistry, tmp_path: Path):
+    adapter_provider = registry.require_provider("reference_inspection", INPUT_ADAPTER)
+    adapter = adapter_provider.build_adapter(tmp_path)
+    prepared = adapter.prepare(
+        tmp_path / "fixed-inspection.input",
+        unit_id="panel-1",
+        duration_ms=50,
+        count=1,
+    )
+    preview = adapter.build_packet(
+        device_id="camera-1",
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        sender_id="inspection-sender-1",
+        sequence_number=1,
+        window=prepared.first_window,
+        end_generate_timestamp_ns=1,
+    )
+    window = adapter.next_window(
+        prepared,
+        unit_id="panel-1",
+        expected_sequence=1,
+    )
+    packet = adapter.build_packet(
+        device_id="camera-1",
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        sender_id="inspection-sender-1",
+        sequence_number=1,
+        window=window,
+        end_generate_timestamp_ns=1,
+    )
+    adapter.persist_source(
+        packet=packet,
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        source_path=prepared.source_path,
+        window=window,
+    )
+    assert packet == preview
+    assert json.loads(adapter.serialize_packet(packet)) == packet
+    assert adapter.persisted_packet_ids == [packet["packet_id"]]
+    return packet
 
 
 def test_reference_input_runs_through_edge_and_cloud_providers(tmp_path: Path) -> None:
     registry = _registry()
-    adapter_provider = registry.require_provider("reference_inspection", INPUT_ADAPTER)
     edge_provider = registry.require_provider("reference_inspection", EDGE_INFERENCE)
     cloud_provider = registry.require_provider("reference_inspection", CLOUD_DIAGNOSIS)
-    request = adapter_provider.build_adapter(tmp_path).read()
+    request = _prepared_packet(registry, tmp_path)
 
     edge = ScenarioDiagnosis(**edge_provider.infer_compatible(request))
     cloud = ScenarioDiagnosis(**cloud_provider.build_handler(tmp_path).infer(_payload(request)))
 
-    assert request.scenario_id == "reference_inspection"
-    assert edge.state == cloud.state == "defect_detected"
-    assert edge.confidence == 0.85
-    assert cloud.confidence == 0.9
-    assert edge.model_id == "reference_edge_fixed"
-    assert cloud.model_id == "reference_cloud_fixed"
+    assert edge == ScenarioDiagnosis(
+        scenario_id="reference_inspection",
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        state="defect_detected",
+        confidence=0.85,
+        risk_level="high",
+        action_level=3,
+        model_id="reference_edge_fixed",
+        model_version="reference-edge-test-1",
+        evidence={
+            "observation_window_id": "frame-1",
+            "source": "edge",
+            "defect_score": 0.85,
+        },
+    )
+    assert cloud == ScenarioDiagnosis(
+        scenario_id="reference_inspection",
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        state="defect_detected",
+        confidence=0.9,
+        risk_level="high",
+        action_level=3,
+        model_id="reference_cloud_fixed",
+        model_version="reference-cloud-test-1",
+        evidence={
+            "observation_window_id": "frame-1",
+            "source": "cloud",
+            "defect_score": 0.9,
+        },
+    )
     assert "bearing_id" not in _payload(request)
     assert "bearing" not in repr(edge).lower()
 
 
 def test_reference_edge_provider_builds_complete_test_runtime(tmp_path: Path) -> None:
     registry = _registry()
-    adapter_provider = registry.require_provider("reference_inspection", INPUT_ADAPTER)
     edge_provider = registry.require_provider("reference_inspection", EDGE_INFERENCE)
-    request = adapter_provider.build_adapter(tmp_path).read()
+    request = _prepared_packet(registry, tmp_path)
     runtime = edge_provider.build_runtime(
         EdgeInferenceRuntimeRequest(
             model_root=tmp_path,
@@ -88,13 +149,15 @@ def test_reference_edge_provider_builds_complete_test_runtime(tmp_path: Path) ->
     [
         ({"scenario_id": "reference_inspection"}, "INVALID_REFERENCE_REQUEST"),
         (
-            replace(
-                ReferenceInspectionPlugin()
-                .capabilities[INPUT_ADAPTER]
-                .provider.build_adapter(Path("."))
-                .read(),
-                scenario_id="other",
-            ),
+            {
+                "scenario_id": "other",
+                "task_id": "task",
+                "unit_id": "unit",
+                "device_id": "device",
+                "capability": "edge_inference",
+                "observation_window_id": "window",
+                "evidence": {"defect_score": 0.5},
+            },
             "INVALID_REFERENCE_SCENARIO",
         ),
     ],
@@ -106,16 +169,41 @@ def test_reference_edge_provider_rejects_invalid_requests(payload, error: str) -
         edge_provider.infer_compatible(payload)
 
 
+@pytest.mark.parametrize(
+    ("changes", "remove_capability"),
+    [
+        ({"evidence": None}, False),
+        ({"evidence": []}, False),
+        ({}, True),
+    ],
+)
+def test_reference_edge_and_cloud_reject_malformed_evidence_or_capability(
+    tmp_path: Path,
+    changes: dict,
+    remove_capability: bool,
+) -> None:
+    registry = _registry()
+    packet = {**_prepared_packet(registry, tmp_path), **changes}
+    if remove_capability:
+        packet.pop("capability")
+    edge_provider = registry.require_provider("reference_inspection", EDGE_INFERENCE)
+    cloud_handler = registry.require_provider(
+        "reference_inspection", CLOUD_DIAGNOSIS
+    ).build_handler(tmp_path)
+
+    with pytest.raises(ValueError, match="INVALID_REFERENCE_REQUEST"):
+        edge_provider.infer_compatible(packet)
+    with pytest.raises(ValueError, match="INVALID_REFERENCE_REQUEST"):
+        cloud_handler.infer(packet)
+
+
 def test_reference_results_run_through_generic_consistency_engine(
     tmp_path: Path,
 ) -> None:
     registry = _registry()
-    adapter = registry.require_provider(
-        "reference_inspection", INPUT_ADAPTER
-    ).build_adapter(tmp_path)
     edge_provider = registry.require_provider("reference_inspection", EDGE_INFERENCE)
     cloud_provider = registry.require_provider("reference_inspection", CLOUD_DIAGNOSIS)
-    request = adapter.read()
+    request = _prepared_packet(registry, tmp_path)
     edge = ScenarioDiagnosis(**edge_provider.infer_compatible(request))
     cloud = ScenarioDiagnosis(**cloud_provider.build_handler(tmp_path).infer(_payload(request)))
     policy = registry.require_provider("reference_inspection", CONSISTENCY_POLICY)
@@ -132,9 +220,15 @@ def test_reference_results_run_through_generic_consistency_engine(
     )
 
     assert decision.status == "FINAL"
+    assert decision.received_unit_ids == ("edge-result", "cloud-result")
+    assert decision.missing_unit_ids == ()
     assert decision.final_state == "defect_detected"
+    assert decision.final_action_level == 3
     assert decision.final_action == "stop_and_inspect"
+    assert decision.confidence == 0.85
     assert decision.has_conflict is False
+    assert decision.degraded is False
+    assert decision.decision_source == "REFERENCE_POLICY"
 
 
 def test_reference_consistency_reports_state_conflict() -> None:
