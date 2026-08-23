@@ -53,11 +53,19 @@ MIN_RESERVATION_TTL_SECONDS = 30.0
 
 
 class AssignmentError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 400,
+        *,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True)
@@ -227,6 +235,7 @@ class AssignmentScheduler:
             )
 
         retry_constraints = self.repository.retry_constraints(validated["task_id"])
+        candidate_rejections: list[dict[str, Any]] = []
         node = self._select_and_reserve(
             validated,
             deadline=deadline,
@@ -234,6 +243,7 @@ class AssignmentScheduler:
                 retry_constraints["rejected_edge_node_ids"]
             ),
             pinned_edge_node_id=retry_constraints["pinned_edge_node_id"],
+            rejection_sink=candidate_rejections,
         )
         if time.monotonic() >= deadline:
             self.release_reservation(validated["task_id"])
@@ -265,6 +275,11 @@ class AssignmentScheduler:
                 "NO_AVAILABLE_EDGE_NODE",
                 "no edge node can accept this task",
                 503,
+                details={
+                    "retryable": True,
+                    "retry_after_ms": 500,
+                    "candidate_rejections": candidate_rejections,
+                },
             )
 
         keep_reservation = False
@@ -406,6 +421,7 @@ class AssignmentScheduler:
         deadline: float,
         excluded_edge_node_ids: frozenset[str],
         pinned_edge_node_id: str | None,
+        rejection_sink: list[dict[str, Any]] | None = None,
     ) -> EdgeNodeState | None:
         with self._allocation_lock:
             reservation_counts = self._active_reservation_counts()
@@ -415,6 +431,7 @@ class AssignmentScheduler:
                 reservation_counts=reservation_counts,
                 excluded_edge_node_ids=excluded_edge_node_ids,
                 pinned_edge_node_id=pinned_edge_node_id,
+                rejection_sink=rejection_sink,
             )
             if not candidates:
                 return None
@@ -480,17 +497,27 @@ class AssignmentScheduler:
         reservation_counts: Mapping[str, int] | None = None,
         excluded_edge_node_ids: frozenset[str] = frozenset(),
         pinned_edge_node_id: str | None = None,
+        rejection_sink: list[dict[str, Any]] | None = None,
     ) -> list[RankedNode]:
         required_mbps = _required_throughput_mbps(request)
         active_reservations = reservation_counts or {}
         ranked: list[RankedNode] = []
-        for node in self.registry.online_nodes():
+        for node in self.registry.registered_nodes():
             if time.monotonic() >= deadline:
                 break
             if pinned_edge_node_id is not None:
                 if node.config.edge_node_id != pinned_edge_node_id:
                     continue
             elif node.config.edge_node_id in excluded_edge_node_ids:
+                continue
+            if node.status != "ONLINE" or node.report is None:
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "NODE_OFFLINE",
+                    "edge node is offline or has no current status report",
+                    {"status": node.status},
+                )
                 continue
             resources = node.report["resources"] if node.report else {}
             # EDGE-2: 采集状态不可信（FAILED）时保守排除，
@@ -502,8 +529,23 @@ class AssignmentScheduler:
                     node.config.edge_node_id,
                     gate_reason,
                 )
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "MEASUREMENT_FAILED",
+                    "required resource measurement is not trustworthy",
+                    {"measurement": gate_reason},
+                )
                 continue
-            if float(resources.get("cpu_utilization_percent", 100.0)) > 90.0:
+            cpu_utilization = float(resources.get("cpu_utilization_percent", 100.0))
+            if cpu_utilization > 90.0:
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "CPU_OVERLOADED",
+                    "CPU utilization exceeds the scheduling limit",
+                    {"cpu_utilization_percent": cpu_utilization, "maximum_percent": 90.0},
+                )
                 continue
             # EDGE-3: 只有 memory status 为 OK（或字段缺失，等同旧行为）才执行
             # 512MB 硬门控；DEGRADED 时 0MiB 是遥测 fallback，不是真实低内存，
@@ -512,6 +554,16 @@ class AssignmentScheduler:
                 resources.get("memory_measurement_status", "OK") == "OK"
                 and float(resources.get("memory_available_mb", 0.0)) < 512.0
             ):
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "INSUFFICIENT_MEMORY",
+                    "available memory is below the scheduling minimum",
+                    {
+                        "available_memory_mb": float(resources.get("memory_available_mb", 0.0)),
+                        "minimum_memory_mb": 512.0,
+                    },
+                )
                 continue
             reported_queue_length = int(resources.get("queue_length", 999))
             reservation_count = active_reservations.get(
@@ -519,14 +571,43 @@ class AssignmentScheduler:
             )
             effective_queue_length = reported_queue_length + reservation_count
             if effective_queue_length >= MAX_EFFECTIVE_QUEUE_LENGTH:
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "QUEUE_CAPACITY_EXCEEDED",
+                    "effective queue length reached the scheduling limit",
+                    {
+                        "reported_queue_length": reported_queue_length,
+                        "reservation_count": reservation_count,
+                        "effective_queue_length": effective_queue_length,
+                        "queue_limit": MAX_EFFECTIVE_QUEUE_LENGTH,
+                    },
+                )
                 continue
             if not _has_loaded_model(node):
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "MODEL_NOT_LOADED",
+                    "edge node has no loaded diagnosis model",
+                    {},
+                )
                 continue
 
             link = self.registry.link_snapshot(
                 request["sender_id"], node.config.edge_node_id
             )
             if link and link.available_throughput_mbps < required_mbps:
+                _append_rejection(
+                    rejection_sink,
+                    node,
+                    "INSUFFICIENT_BANDWIDTH",
+                    "available throughput is below task requirement",
+                    {
+                        "required_mbps": round(required_mbps, 4),
+                        "available_mbps": round(link.available_throughput_mbps, 4),
+                    },
+                )
                 continue
             network_score = _network_score(link, required_mbps)
             stability_score = self.repository.stability_score(node.config.edge_node_id)
@@ -554,6 +635,25 @@ class AssignmentScheduler:
             ranked,
             key=lambda item: (-item.total_score, item.state.config.edge_node_id),
         )
+
+
+def _append_rejection(
+    sink: list[dict[str, Any]] | None,
+    node: EdgeNodeState,
+    reason_code: str,
+    reason_message: str,
+    metrics: Mapping[str, Any],
+) -> None:
+    if sink is None:
+        return
+    sink.append(
+        {
+            "edge_node_id": node.config.edge_node_id,
+            "reason_code": reason_code,
+            "reason_message": reason_message,
+            "metrics": dict(metrics),
+        }
+    )
 
 
 def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:

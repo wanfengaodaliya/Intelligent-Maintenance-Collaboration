@@ -87,7 +87,7 @@ class SchedulerClient:
             try:
                 response = self.session.post(self.url, json=request, timeout=self.timeout_seconds)
                 if not 200 <= response.status_code < 300:
-                    last_error = f"scheduler returned HTTP {response.status_code}"
+                    last_error = _format_scheduler_error(response)
                 else:
                     try:
                         return validate_assignment(
@@ -107,3 +107,43 @@ class SchedulerClient:
                 time.sleep(self.retry_delay_seconds * (2 ** attempt))
 
         raise SchedulerError(last_error, self.max_retries)
+
+
+def _format_scheduler_error(response: Any) -> str:
+    prefix = f"scheduler returned HTTP {response.status_code}"
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return prefix
+    if not isinstance(payload, dict):
+        return prefix
+
+    summary: list[str] = []
+    error_code = payload.get("error_code")
+    message = payload.get("message")
+    if isinstance(error_code, str) and error_code:
+        summary.append(error_code)
+    if isinstance(message, str) and message:
+        summary.append(message)
+
+    rejection_parts: list[str] = []
+    rejections = payload.get("candidate_rejections")
+    if isinstance(rejections, list):
+        for rejection in rejections:
+            if not isinstance(rejection, dict):
+                continue
+            edge_node_id = rejection.get("edge_node_id")
+            reason_code = rejection.get("reason_code")
+            if not isinstance(edge_node_id, str) or not isinstance(reason_code, str):
+                continue
+            item = f"{edge_node_id}={reason_code}"
+            metrics = rejection.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                metric_text = ", ".join(
+                    f"{key}={value}" for key, value in metrics.items()
+                )
+                item = f"{item} ({metric_text})"
+            rejection_parts.append(item)
+    if rejection_parts:
+        summary.append("candidate_rejections: " + "; ".join(rejection_parts))
+    return prefix if not summary else prefix + ": " + " - ".join(summary)

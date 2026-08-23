@@ -277,6 +277,13 @@ class NodeRegistry:
                 if state.status == "ONLINE" and state.report is not None
             ]
 
+    def registered_nodes(self, *, now_ns: int | None = None) -> list[EdgeNodeState]:
+        """Return every registered node so scheduling failures can explain offline nodes."""
+
+        self.refresh_liveness(now_ns=now_ns)
+        with self._lock:
+            return [copy.deepcopy(state) for state in self._nodes.values()]
+
     def link_snapshot(
         self,
         sender_id: str,

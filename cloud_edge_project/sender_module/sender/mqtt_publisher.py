@@ -45,6 +45,7 @@ class MqttPublisher:
         delivery_timeout_ms: int,
         max_retries: int,
         queue_max_packets: int,
+        recovery_retry_interval_ms: int,
         log_sink: PacketLogSink,
         client: Any | None = None,
     ) -> None:
@@ -58,6 +59,7 @@ class MqttPublisher:
         self.delivery_timeout_ns = delivery_timeout_ms * 1_000_000
         self.max_retries = max_retries
         self.queue_max_packets = queue_max_packets
+        self.recovery_retry_interval_ns = recovery_retry_interval_ms * 1_000_000
         self.log_sink = log_sink
 
         self.client = client or mqtt.Client(
@@ -81,6 +83,8 @@ class MqttPublisher:
         self._has_connected_once = False
         self._reconnect_count = 0
         self._publish_retry_total = 0
+        self._recovery_deadline_monotonic_ns: int | None = None
+        self._next_recovery_retry_monotonic_ns = 0
         self._status_counts = {"confirmed": 0, "failed": 0, "dropped": 0}
         self.warning_packet_ids: set[str] = set()
         self._logging_errors: list[str] = []
@@ -163,13 +167,22 @@ class MqttPublisher:
         if not self._attempt_publish(packet_id, is_retry=False):
             self._retry_after_explicit_failure(packet_id)
 
-    def _attempt_publish(self, packet_id: str, *, is_retry: bool) -> bool:
+    def _attempt_publish(
+        self,
+        packet_id: str,
+        *,
+        is_retry: bool,
+        allow_over_retry_limit: bool = False,
+    ) -> bool:
         with self._condition:
             pending = self._pending.get(packet_id)
             if pending is None:
                 return True
             if is_retry:
-                if pending.retry_count >= self.max_retries:
+                if (
+                    pending.retry_count >= self.max_retries
+                    and not allow_over_retry_limit
+                ):
                     return False
                 pending.retry_count += 1
                 self._publish_retry_total += 1
@@ -225,25 +238,20 @@ class MqttPublisher:
                 if pending is None:
                     return
                 age = time.monotonic_ns() - pending.first_publish_monotonic_ns
-                exhausted = (
-                    pending.retry_count >= self.max_retries
-                    or age >= self.delivery_timeout_ns
-                )
+                exhausted = pending.retry_count >= self.max_retries or age >= self.delivery_timeout_ns
                 if exhausted:
-                    record = self._finalize_locked(
-                        packet_id,
-                        status="failed",
-                        error_code="MQTT_NOT_CONNECTED",
-                        broker_ack_timestamp_ns=None,
-                    )
-                    break
+                    # 快速重试耗尽后仍保留待确认包；任务发送结束后由有限恢复期补发。
+                    return
             if self._attempt_publish(packet_id, is_retry=True):
                 return
-        self._write_packet_log(record)
 
     def wait_until_settled(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
+            if self._pending:
+                self._recovery_deadline_monotonic_ns = int(deadline * 1_000_000_000)
+                self._next_recovery_retry_monotonic_ns = time.monotonic_ns()
+                self._condition.notify_all()
             while self._pending:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -344,7 +352,9 @@ class MqttPublisher:
             now = time.monotonic_ns()
             expired_records: list[dict[str, Any]] = []
             retry_packet_ids: list[str] = []
+            recovery_retry_packet_id: str | None = None
             with self._condition:
+                recovery_deadline = self._recovery_deadline_monotonic_ns
                 for packet_id, pending in list(self._pending.items()):
                     age = now - pending.first_publish_monotonic_ns
                     attempt_age = now - pending.last_publish_monotonic_ns
@@ -358,7 +368,8 @@ class MqttPublisher:
                         retry_packet_ids.append(packet_id)
                     elif (
                         pending.retry_count >= self.max_retries
-                        and attempt_age >= self.delivery_timeout_ns
+                        and recovery_deadline is not None
+                        and now >= recovery_deadline
                     ):
                         error_code = (
                             "MQTT_NOT_CONNECTED"
@@ -373,8 +384,26 @@ class MqttPublisher:
                                 broker_ack_timestamp_ns=None,
                             )
                         )
+                    elif (
+                        recovery_retry_packet_id is None
+                        and pending.retry_count >= self.max_retries
+                        and recovery_deadline is not None
+                        and now >= self._next_recovery_retry_monotonic_ns
+                        and attempt_age >= self.warning_timeout_ns
+                        and self._connected.is_set()
+                    ):
+                        recovery_retry_packet_id = packet_id
+                        self._next_recovery_retry_monotonic_ns = (
+                            now + self.recovery_retry_interval_ns
+                        )
             for packet_id in retry_packet_ids:
                 self._attempt_publish(packet_id, is_retry=True)
+            if recovery_retry_packet_id is not None:
+                self._attempt_publish(
+                    recovery_retry_packet_id,
+                    is_retry=True,
+                    allow_over_retry_limit=True,
+                )
             for record in expired_records:
                 self._write_packet_log(record)
 

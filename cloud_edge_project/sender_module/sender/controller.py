@@ -194,6 +194,7 @@ def run_sender_task(
         delivery_timeout_ms=config.packet_delivery_timeout_ms,
         max_retries=config.max_publish_retries,
         queue_max_packets=config.pending_queue_max_packets,
+        recovery_retry_interval_ms=config.packet_interval_ms,
         log_sink=sink,
     )
 
@@ -238,14 +239,7 @@ def run_sender_task(
             )
             mqtt_publisher.publish(packet, serialize_packet(packet), assignment.target_topic)
 
-        mqtt_publisher.wait_until_settled(
-            (
-                config.packet_delivery_timeout_ms
-                + config.puback_warning_timeout_ms * config.max_publish_retries
-            )
-            / 1000.0
-            + 0.5
-        )
+        mqtt_publisher.wait_until_settled(config.recovery_window_seconds)
     except Exception as exc:
         try:
             mqtt_publisher.stop()
