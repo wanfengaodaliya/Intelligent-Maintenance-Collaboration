@@ -10,9 +10,9 @@ from sender.input_adapter import (
     InputWindow,
     PreparedScenarioInput,
 )
-from sender.mat_reader import load_mat_record
 from sender.packet import build_sensor_packet, serialize_packet
 from sender.source_mapping import PacketSourceMappingStore
+from scenarios.bearing.ingestion.mat_reader import load_mat_record
 
 
 class BearingSourceMappingStore(Protocol):

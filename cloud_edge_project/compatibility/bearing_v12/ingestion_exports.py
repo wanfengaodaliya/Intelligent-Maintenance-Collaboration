@@ -1,6 +1,6 @@
-"""Compatibility shim for the scenario-owned bearing MAT reader."""
+"""Legacy bearing-ingestion exports backed by scenario-owned implementations."""
 
-from compatibility.bearing_v12.ingestion_exports import (
+from scenarios.bearing.ingestion.mat_reader import (
     MatDataError,
     MatRecord,
     PACKET_UNITS,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_CORE_SHIMS = {
@@ -167,42 +169,44 @@ def test_sender_controller_uses_registry_instead_of_bearing_input_modules() -> N
     assert not _imports_bearing_plugin(controller_path)
 
 
-def test_legacy_bearing_ingestion_modules_use_compatibility_boundary() -> None:
+@pytest.mark.parametrize("filename", BEARING_INGESTION_MODULES)
+def test_legacy_bearing_ingestion_modules_use_compatibility_boundary(
+    filename: str,
+) -> None:
     sender_root = PROJECT_ROOT / "sender_module" / "sender"
-    for filename in BEARING_INGESTION_MODULES:
-        imported_modules = _imported_modules(sender_root / filename)
-        assert "compatibility.bearing_v12.ingestion_exports" in imported_modules
-        assert not any(
-            module.startswith("scenarios.bearing") for module in imported_modules
-        )
+    imported_modules = _imported_modules(sender_root / filename)
+
+    assert "compatibility.bearing_v12.ingestion_exports" in imported_modules
+    assert not any(
+        module.startswith("scenarios.bearing") for module in imported_modules
+    )
 
 
-def test_bearing_input_provider_uses_scenario_local_ingestion_modules() -> None:
+@pytest.mark.parametrize("filename", BEARING_INGESTION_MODULES)
+def test_bearing_input_provider_uses_scenario_local_ingestion_modules(
+    filename: str,
+) -> None:
     provider_path = (
         PROJECT_ROOT / "scenarios" / "bearing" / "ingestion" / "provider.py"
     )
     imported_modules = _imported_modules(provider_path)
+    module_name = Path(filename).stem
 
-    assert {
-        "scenarios.bearing.ingestion.mat_reader",
-        "scenarios.bearing.ingestion.packet",
-        "scenarios.bearing.ingestion.source_mapping",
-    }.issubset(imported_modules)
-    assert imported_modules.isdisjoint(
-        {
-            "sender.mat_reader",
-            "sender.packet",
-            "sender.source_mapping",
-        }
-    )
+    assert f"scenarios.bearing.ingestion.{module_name}" in imported_modules
+    assert f"sender.{module_name}" not in imported_modules
 
 
-def test_bearing_ingestion_business_definitions_have_one_owner() -> None:
+@pytest.mark.parametrize(
+    ("filename", "business_names"), BEARING_INGESTION_MODULES.items()
+)
+def test_bearing_ingestion_business_definitions_have_one_owner(
+    filename: str,
+    business_names: set[str],
+) -> None:
     scenario_root = PROJECT_ROOT / "scenarios" / "bearing" / "ingestion"
     sender_root = PROJECT_ROOT / "sender_module" / "sender"
+    scenario_path = scenario_root / filename
 
-    for filename, business_names in BEARING_INGESTION_MODULES.items():
-        scenario_path = scenario_root / filename
-        assert scenario_path.is_file()
-        assert business_names.issubset(_defined_names(scenario_path))
-        assert _defined_names(sender_root / filename).isdisjoint(business_names)
+    assert scenario_path.is_file()
+    assert business_names.issubset(_defined_names(scenario_path))
+    assert _defined_names(sender_root / filename).isdisjoint(business_names)
