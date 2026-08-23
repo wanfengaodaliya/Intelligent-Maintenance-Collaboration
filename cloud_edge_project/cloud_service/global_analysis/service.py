@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from compatibility.bearing_v12 import global_analysis_exports
 from cloud_service.global_analysis.arbitration_analyzer import analyze_device_arbitration
-from cloud_service.global_analysis import contracts as legacy_contracts
-from cloud_service.global_analysis import v12_data_source as legacy_data_source
 from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
 from cloud_service.global_analysis.packet_model_analyzer import analyze_packet_model
 from cloud_service.global_analysis.physical_evidence_analyzer import analyze_physical_evidence
@@ -23,6 +22,7 @@ from cloud_service.global_analysis.runtime_contracts import (
     DEFAULT_TASK_LIMIT,
     GlobalAnalysisRuntimeConfig,
 )
+from core.scenario_plugin import GlobalAnalysisRuntime
 
 
 class GlobalAnalysisService:
@@ -39,6 +39,7 @@ class GlobalAnalysisService:
         data_source: Any | None = None,
         config: GlobalAnalysisRuntimeConfig | None = None,
         *,
+        runtime: GlobalAnalysisRuntime | None = None,
         # Optional scenario-specific analysis callables.
         # Each receives (data, config) and returns a dict.
         # Defaults to None = skip that analysis step.
@@ -46,11 +47,16 @@ class GlobalAnalysisService:
     ) -> None:
         self.database_path = Path(database_path)
         self.repository = GlobalAnalysisResultRepository(self.database_path)
-        self.data_source = data_source or legacy_data_source.V12GlobalAnalysisDataSource(
-            self.database_path
+        selected_runtime = runtime or global_analysis_exports.build_legacy_global_analysis_runtime(
+            self.database_path,
+            data_source=data_source,
+            config=config,
+            scenario_analyzers=scenario_analyzers,
         )
-        self.config = config or legacy_contracts.GlobalAnalysisConfig()
-        self.scenario_analyzers = dict(scenario_analyzers or {})
+        self.data_source = selected_runtime.data_source
+        self.config = selected_runtime.config
+        self.analyze_scenario = selected_runtime.analyze_scenario
+        self.detect_scenario_candidates = selected_runtime.detect_scenario_candidates
 
     def analyze(self, scenario_type: str, subject_id: str, task_limit: int = DEFAULT_TASK_LIMIT) -> dict[str, Any]:
         scenario = _required_identifier(scenario_type, "scenario_type")
@@ -60,24 +66,34 @@ class GlobalAnalysisService:
         data = self.data_source.load(subject, task_limit)
         availability = data.get("availability", {})
         device_health = analyze_device_health(data["device_tasks"], self.config)
-        # Run scenario-specific analysis if a callable is registered
-        bearing_risk = self._run_analyzer("analyze_bearing_risk", data, self.config)
         packet_diagnosis = analyze_packet_model(
             data["packet_review_pairs"], self.config,
             available=availability.get("packet_review_pairs", True),
         )
-        cloud_bearing_review = self._run_analyzer("analyze_cloud_bearing_review", data, self.config)
         device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
         physical_evidence = analyze_physical_evidence(
             data.get("physical_evidence", []),
             edge_summary_count=len(data.get("edge_summaries", [])),
             available=availability.get("physical_evidence", False),
         )
+        common_results = {
+            "device_health_analysis": device_health,
+            "packet_diagnosis_analysis": packet_diagnosis,
+            "device_arbitration_analysis": device_arbitration,
+            "physical_evidence_analysis": physical_evidence,
+        }
+        scenario_results = self.analyze_scenario(
+            data,
+            common_results,
+            self.config,
+        )
         previous = self.repository.get_recent(scenario, subject, 3)
         candidates = detect_problem_candidates(
-            device_health=device_health, bearing_risk=bearing_risk,
-            packet_diagnosis=packet_diagnosis, cloud_bearing_review=cloud_bearing_review,
+            device_health=device_health,
+            packet_diagnosis=packet_diagnosis,
             device_arbitration=device_arbitration, previous_analysis=previous, config=self.config,
+            scenario_results=scenario_results,
+            detect_scenario_candidates=self.detect_scenario_candidates,
         )
         result: dict[str, Any] = {
             "schema_version": "global_analysis_result/2.0",
@@ -95,26 +111,9 @@ class GlobalAnalysisService:
             "problem_candidates": candidates,
             "created_at_ns": time.time_ns(),
         }
-        # Only add bearing-specific fields when the analyzer was provided
-        if bearing_risk is not None:
-            result["bearing_risk_analysis"] = bearing_risk
-        if cloud_bearing_review is not None:
-            result["cloud_bearing_review_analysis"] = {
-                **cloud_bearing_review,
-                "reviewed_bearing_count": cloud_bearing_review.get("bearing_review_count", 0),
-            }
-        # Run maintenance recommendations if registered
-        maintenance_fn = self.scenario_analyzers.get("maintenance_recommendations")
-        if maintenance_fn is not None:
-            result["maintenance_recommendations"] = maintenance_fn(device_health, bearing_risk)
+        result.update(scenario_results)
         self.repository.save_result(result)
         return result
-
-    def _run_analyzer(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        fn = self.scenario_analyzers.get(name)
-        if fn is None:
-            return None
-        return fn(*args, **kwargs)
 
 
 def _required_identifier(value: object, field_name: str) -> str:

@@ -156,10 +156,26 @@ class DecisionPolicy(Protocol):
     def decide(self, diagnosis: ScenarioDiagnosis) -> ScenarioDecision: ...
 
 
+@dataclass(frozen=True)
+class GlobalAnalysisRuntime:
+    data_source: object
+    config: object
+    analyze_scenario: Callable[
+        [dict[str, Any], Mapping[str, Any], object],
+        Mapping[str, Any],
+    ]
+    detect_scenario_candidates: Callable[
+        [Mapping[str, Any], list[dict[str, Any]], object],
+        list[dict[str, Any]],
+    ]
+
+
 class GlobalAnalysisProvider(Protocol):
     scenario_id: str
 
     def build_analyzers(self) -> Mapping[str, Callable[..., Any]]: ...
+
+    def build_runtime(self, database_path: Path) -> GlobalAnalysisRuntime: ...
 
 
 class ModelProvider(Protocol):
