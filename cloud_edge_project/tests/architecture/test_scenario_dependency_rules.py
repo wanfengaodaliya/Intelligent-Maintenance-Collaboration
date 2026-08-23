@@ -34,9 +34,20 @@ def test_core_does_not_import_bearing_plugin() -> None:
 
 
 def test_generic_decision_engines_do_not_contain_bearing_vocabulary() -> None:
+    forbidden_roots = {"cloud_service", "compatibility", "edge_service", "scenarios"}
     for filename in ("consistency_engine.py", "arbitration_engine.py"):
         source = (PROJECT_ROOT / "core" / filename).read_text(encoding="utf-8")
         assert "bearing" not in source.lower()
+        tree = ast.parse(source, filename=filename)
+        imported_roots: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_roots.update(
+                    alias.name.split(".", 1)[0] for alias in node.names
+                )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_roots.add(node.module.split(".", 1)[0])
+        assert imported_roots.isdisjoint(forbidden_roots)
 
 
 def test_bootstrap_scenario_assembly_imports_bearing_plugin() -> None:
