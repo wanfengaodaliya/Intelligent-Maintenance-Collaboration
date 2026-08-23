@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from cloud_service.global_analysis.runtime_contracts import DEFAULT_TASK_LIMIT
-from cloud_service.global_analysis.v12_data_source import (
-    V12GlobalAnalysisDataSource,
-)
 from scenarios.bearing.cloud.global_analysis.config import (
     DEFAULT_CONFIG,
     GlobalAnalysisConfig,
+)
+from scenarios.bearing.cloud.global_analysis.v12_data_source import (
+    V12GlobalAnalysisDataSource,
 )
 
 
