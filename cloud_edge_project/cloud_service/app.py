@@ -167,7 +167,9 @@ def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
     return run_periodic_global_analysis(
         database_path,
         scenario_type=provider.scenario_id,
-        analyzers=dict(provider.build_analyzers()),
+        runtime_factory=lambda runtime_database_path: provider.build_runtime(
+            runtime_database_path
+        ),
     )
 
 
@@ -427,9 +429,10 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
     try:
         scenario_type = payload.get("scenario_type", DEFAULT_SCENARIO_TYPE)
         provider = _scenario_provider(scenario_type, GLOBAL_ANALYSIS)
+        database_path = load_cloud_settings().database_path
         result = GlobalAnalysisService(
-            load_cloud_settings().database_path,
-            scenario_analyzers=dict(provider.build_analyzers()),
+            database_path,
+            runtime=provider.build_runtime(database_path),
         ).analyze(
             provider.scenario_id,
             payload.get("subject_id"),
