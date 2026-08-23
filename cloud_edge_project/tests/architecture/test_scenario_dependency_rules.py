@@ -29,6 +29,14 @@ BEARING_INGESTION_MODULES = {
         "PacketSourceMappingStore",
     },
 }
+EDGE_H5_MODULES = {
+    "h5_features.py": ("features.py", {"_compute_single", "normalize_features"}),
+    "h5_network.py": ("network.py", {"PhysicalFusionModel"}),
+    "distilled_h5_model.py": (
+        "distilled_h5_model.py",
+        {"H5ModelArtifactError", "DistilledH5DiagnosticModel"},
+    ),
+}
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
@@ -253,3 +261,97 @@ def test_bearing_ingestion_compatibility_exports_are_explicit() -> None:
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     )
+
+
+@pytest.mark.parametrize("legacy_filename", EDGE_H5_MODULES)
+def test_legacy_edge_h5_modules_use_compatibility_boundary(
+    legacy_filename: str,
+) -> None:
+    legacy_path = (
+        PROJECT_ROOT / "edge_service" / "src" / "edge_diagnosis" / legacy_filename
+    )
+    imported_modules = _imported_modules(legacy_path)
+
+    assert "compatibility.bearing_v12.edge_h5_exports" in imported_modules
+    assert not any(
+        module.startswith("scenarios.bearing") for module in imported_modules
+    )
+
+
+@pytest.mark.parametrize(
+    ("legacy_filename", "scenario_filename", "business_names"),
+    tuple(
+        (legacy_filename, scenario_filename, business_names)
+        for legacy_filename, (scenario_filename, business_names) in EDGE_H5_MODULES.items()
+    ),
+)
+def test_bearing_edge_h5_business_definitions_have_one_owner(
+    legacy_filename: str,
+    scenario_filename: str,
+    business_names: set[str],
+) -> None:
+    scenario_path = (
+        PROJECT_ROOT
+        / "scenarios"
+        / "bearing"
+        / "edge_inference"
+        / "h5"
+        / scenario_filename
+    )
+    legacy_path = (
+        PROJECT_ROOT / "edge_service" / "src" / "edge_diagnosis" / legacy_filename
+    )
+
+    assert scenario_path.is_file()
+    assert business_names.issubset(_defined_names(scenario_path))
+    assert _defined_names(legacy_path).isdisjoint(business_names)
+    assert not any(
+        module.startswith("edge_diagnosis.h5")
+        for module in _imported_modules(scenario_path)
+    )
+
+
+def test_legacy_edge_h5_modules_are_thin_explicit_shims() -> None:
+    legacy_root = PROJECT_ROOT / "edge_service" / "src" / "edge_diagnosis"
+    for legacy_filename in EDGE_H5_MODULES:
+        path = legacy_root / legacy_filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assignments = [
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
+
+        assert assignments == ["__all__"]
+        assert all(
+            isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
+            for node in tree.body
+        )
+        assert all(
+            alias.name != "*"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        )
+
+
+def test_edge_h5_compatibility_exports_are_explicit() -> None:
+    path = PROJECT_ROOT / "compatibility" / "bearing_v12" / "edge_h5_exports.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    assert all(
+        alias.name != "*"
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    )
+
+
+def test_edge_image_copies_compatibility_boundary() -> None:
+    dockerfile = (PROJECT_ROOT / "edge_service" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY compatibility ./compatibility" in dockerfile.splitlines()
