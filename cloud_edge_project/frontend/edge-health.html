@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>边缘节点健康 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>边缘节点健康</h1>
+        <div class="desc">Edge /health 快照，每 5 秒自动刷新</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <select id="nodeSel">
+          <option value="edge01">edge_01（端口 8001）</option>
+          <option value="edge02">edge_02（端口 8002）</option>
+        </select>
+        <label class="conn" id="aliveTag" style="gap:8px;">
+          <input type="checkbox" id="autoRefresh" checked> 自动刷新
+        </label>
+      </div>
+    </div>
+
+    <div id="content"><div class="empty">加载中…</div></div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+let currentNode = "edge01";
+let poller = null;
+
+// ---------- 渲染 ----------
+
+function metric(label, value, sub, cls) {
+  return '<div class="metric ' + (cls || "") + '"><div class="label">' + label +
+    '</div><div class="value small">' + (value === null || value === undefined || value === "" ? "-" : value) +
+    "</div>" + (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+}
+
+function section(title, hint, inner) {
+  return '<div class="card"><div class="card-title">' + title +
+    (hint ? ' <span class="hint">' + hint + "</span>" : "") + "</div>" + inner + "</div>";
+}
+
+function kvRows(pairs) {
+  return '<div class="kv">' + pairs.map(
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v">' + (v === null || v === undefined ? "-" : v) + "</div>"
+  ).join("") + "</div>";
+}
+
+function boolBadge(v, okText, badText) {
+  return v ? badge(okText || "正常", "ok") : badge(badText || "异常", "danger");
+}
+
+function render(h) {
+  const mq = h.mqtt_queue_depth;
+  const modelQ = h.model_queue || {};
+  const dispatch = h.completion_dispatch || {};
+  const suggWorker = h.suggestion_worker || {};
+  const devOutbox = h.device_result_outbox || {};
+  const suggOutbox = h.suggestion_outbox || {};
+  const upload = h.result_upload || {};
+  const statusRep = h.status_reporter || {};
+  const modelUp = h.model_update || {};
+  const maintenance = h.maintenance || {};
+  const routes = h.outbound_routes || {};
+
+  const html = [];
+
+  // 1. 基础状态
+  const live = h.liveness || {};
+  const aliveCount = ["maintenance_worker_alive", "mqtt_worker_alive", "model_worker_alive",
+    "completion_dispatcher_alive", "suggestion_worker_alive", "model_update_poller_alive"]
+    .filter((k) => live[k]).length;
+  const aliveTotal = Object.keys(live).length || 6;
+  html.push(section("基础状态", null,
+    '<div class="grid grid-4">' +
+    metric("运行状态", h.ready ? "运行中" : String(h.status || "-"), "status=" + (h.status || "-"), h.ready ? "ok" : "danger") +
+    metric("节点 ID", fmt.escape(h.node_id || "-"), "端口 " + (h.port || "-")) +
+    metric("MQTT 连接", h.mqtt_connected ? "已连接" : "断开", fmt.escape(h.mqtt_topic || ""), h.mqtt_connected ? "ok" : "danger") +
+    metric("存活线程", aliveCount + " / " + aliveTotal, "liveness 检查",
+      aliveCount === aliveTotal ? "ok" : "danger") +
+    "</div>"
+  ));
+
+  // 2. 模型
+  html.push(section("模型与推理",
+    '<div class="grid grid-4">' +
+    metric("模型后端", fmt.escape(h.model_backend || "-"), h.model_deployment_status ? "部署: " + fmt.escape(h.model_deployment_status) : "") +
+    metric("模型版本", fmt.escape(h.model_version || "-"),
+      h.model_service ? "探针: " + (h.model_service.ok ? "通过" : "失败") : "") +
+    metric("推理队列等待", modelQ.waiting ?? mq ?? 0,
+      "容量 " + (modelQ.capacity ?? "-") + " · 峰值 " + (modelQ.max_observed_queued ?? modelQ.peak ?? "-") +
+      " · 满载 " + (modelQ.queue_full_total ?? "-")) +
+    metric("模型更新轮询", modelUp.enabled ? "启用" : "关闭",
+      modelUp.last_error_code ? "错误: " + fmt.escape(modelUp.last_error_code) : (modelUp.poller || ""), modelUp.enabled && !modelUp.last_error_code ? "ok" : (modelUp.last_error_code ? "warn" : "")) +
+    "</div>"
+  ));
+
+  // 3. 队列与线程
+  const mqCap = h.mqtt_capacity || {};
+  const rawQ = h.raw_sample_queue || {};
+  html.push(section("队列与线程健康",
+    '<div class="grid grid-4">' +
+    metric("MQTT 队列深度", mq ?? "-",
+      "容量 " + (mqCap.queue_capacity ?? "-") + " · 拒绝 " + (mqCap.rejected_total ?? 0) +
+      (mqCap.oldest_task_age_ms !== null && mqCap.oldest_task_age_ms !== undefined ? " · 最老 " + fmt.ms(mqCap.oldest_task_age_ms) : "")) +
+    metric("分发线程队列", dispatch.queue_size ?? "-", (dispatch.alive !== undefined ? (dispatch.alive ? "线程存活" : "线程停止") : "") + (dispatch.overflow_total !== undefined ? " · 溢出 " + dispatch.overflow_total : ""), dispatch.alive === false ? "danger" : "") +
+    metric("建议线程队列", suggWorker.queue_size ?? "-", suggWorker.alive !== undefined ? (suggWorker.alive ? "线程存活" : "线程停止") : "", suggWorker.alive === false ? "danger" : "") +
+    metric("原始样本队列", rawQ.backlog ?? (typeof h.raw_sample_queue === "number" ? h.raw_sample_queue : "-"),
+      rawQ.DEAD_LETTER ? "死信 " + rawQ.DEAD_LETTER : "") +
+    "</div>"
+  ));
+
+  // 4. Outbox
+  html.push(section("Outbox 投递健康（积压 / 死信 / 最老记录年龄）",
+    '<div class="table-wrap"><table class="list"><thead><tr>' +
+    "<th>Outbox</th><th class=num>积压</th><th class=num>死信</th><th class=num>最老积压年龄</th><th>状态</th></tr>" +
+    "</thead><tbody>" +
+    outboxRow("设备结果发布", devOutbox) +
+    outboxRow("建议发布", suggOutbox) +
+    outboxRow("结果上传 Cloud", upload) +
+    "</tbody></table></div>"
+  ));
+
+  // 5. 维护与上报
+  html.push(section("维护与状态上报",
+    '<div class="grid grid-3">' +
+    metric("维护轮次", maintenance.maintenance_worker_running === false ? "已停止" : "运行中",
+      "累计 " + (maintenance.rounds_total ?? "-") + " 轮 · 错误 " + (maintenance.errors_total ?? 0),
+      maintenance.maintenance_worker_running === false ? "danger" : "ok") +
+    metric("状态上报器", fmt.escape(String(statusRep.status || "-")), statusRep.message ? fmt.escape(statusRep.message) : "",
+      String(statusRep.status).toLowerCase() === "ok" ? "ok" : (statusRep.status ? "danger" : "")) +
+    metric("网络链路", fmt.escape(h.network_link_id || routes.network_link_id || "-")) +
+    "</div>"
+  ));
+
+  // 6. 出站链路 + 原始 JSON
+  const routeRows = [
+    ["Scheduler 地址", routes.scheduler_base_url || routes.scheduler_url],
+    ["Cloud 地址", routes.cloud_node_urls ? JSON.stringify(routes.cloud_node_urls) : routes.cloud_url],
+    ["MQTT 地址", routes.mqtt_host ? routes.mqtt_host + ":" + routes.mqtt_port : null],
+    ["结果 Topic", routes.device_result_topic],
+    ["网络链路 ID", routes.network_link_id || h.network_link_id],
+  ].filter(([, v]) => v);
+  let routeHtml = routeRows.length ? kvRows(routeRows) : '<div class="empty">未提供出站路由信息</div>';
+  routeHtml += jsonDetails(h, "查看完整 /health JSON");
+  html.push(section("出站链路配置", null, routeHtml));
+
+  el("content").innerHTML = html.join("");
+}
+
+function outboxRow(name, o) {
+  if (!o || Object.keys(o).length === 0) {
+    return '<tr><td>' + name + '</td><td class="num" colspan="3">-</td><td>' + badge("未启用", "muted") + "</td></tr>";
+  }
+  const backlog = o.backlog ?? 0;
+  const dead = o.DEAD_LETTER ?? o.dead_letter ?? o.dead_letter_total ?? 0;
+  const age = o.oldest_backlog_age_ms;
+  const bad = dead > 0 || backlog > 50;
+  return (
+    "<tr><td>" + name + '</td><td class="num">' + backlog + '</td><td class="num">' + dead + "</td>" +
+    '<td class="num">' + (age === null || age === undefined ? "-" : fmt.ms(age)) + "</td>" +
+    "<td>" + (bad ? badge("需关注", "warn") : badge("正常", "ok")) + "</td></tr>"
+  );
+}
+
+// ---------- 加载与轮询 ----------
+
+async function load() {
+  try {
+    const h = await Api.get(currentNode + "/health");
+    render(h);
+  } catch (e) {
+    el("content").innerHTML =
+      '<div class="card"><div class="empty">' + currentNode + " 不可达：" + fmt.escape(e.message) +
+      "<br>请确认 Edge 服务已启动。</div></div>";
+  }
+}
+
+function startAuto() {
+  if (poller) poller.stop();
+  if (el("autoRefresh").checked) {
+    poller = startPolling(load, 5000);
+  }
+}
+
+el("nodeSel").addEventListener("change", () => {
+  currentNode = el("nodeSel").value;
+  load();
+});
+el("autoRefresh").addEventListener("change", startAuto);
+
+load();
+startAuto();
+</script>
+</body>
+</html>

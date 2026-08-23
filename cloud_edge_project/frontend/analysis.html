@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全局分析 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>全局分析</h1>
+        <div class="desc">基于云端汇聚的历史诊断数据，生成设备健康趋势与异常统计</div>
+      </div>
+    </div>
+
+    <!-- 触发分析 -->
+    <div class="card">
+      <div class="card-title">执行全局分析 <span class="hint">POST /cloud/global-analysis</span></div>
+      <div class="form-row">
+        <label class="field">分析场景
+          <select id="scenarioType">
+            <option value="bearing">bearing（轴承健康分析）</option>
+          </select>
+        </label>
+        <label class="field">分析对象（设备/场景 ID）
+          <input type="text" id="subjectId" placeholder="例如 K001" style="width:180px;">
+        </label>
+        <label class="field">任务数上限
+          <input type="number" id="taskLimit" value="200" min="1" max="5000" style="width:110px;">
+        </label>
+        <button class="btn" id="runBtn">▶ 执行分析</button>
+        <button class="btn ghost" id="latestBtn">读取最近一次结果</button>
+      </div>
+    </div>
+
+    <!-- 结果 -->
+    <div id="resultWrap" style="display:none;">
+      <div class="grid grid-4" id="summaryMetrics"></div>
+      <div class="card" style="margin-top:14px;">
+        <div class="card-title">分析摘要 <span class="hint" id="summaryMeta"></span></div>
+        <div id="summaryBox"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">明细</div>
+        <div id="detailBox"></div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+function kvRows(pairs) {
+  return '<div class="kv">' + pairs.map(
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v wrap">' + (v === null || v === undefined ? "-" : v) + "</div>"
+  ).join("") + "</div>";
+}
+
+function metric(label, value, sub, cls) {
+  return '<div class="metric ' + (cls || "") + '"><div class="label">' + label +
+    '</div><div class="value small">' + value + "</div>" +
+    (sub ? '<div class="sub">' + sub + "</div>" : "") + "</div>";
+}
+
+/** 把任意嵌套 JSON 渲染成折叠树 */
+function renderTree(obj) {
+  return jsonDetails(obj, "展开/收起完整分析 JSON");
+}
+
+/** 智能提取摘要指标（兼容不同分析器输出结构） */
+function extractMetrics(r) {
+  const m = [];
+  const scan = (node, depth) => {
+    if (!node || typeof node !== "object" || depth > 3) return;
+    Object.entries(node).forEach(([k, v]) => {
+      if (typeof v === "number" && /total|count|rate|fault|normal|warning|abnormal|conflict|score/i.test(k)) {
+        m.push([k, v]);
+      } else if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+        scan(v, depth + 1);
+      }
+    });
+  };
+  scan(r, 0);
+  return m.slice(0, 8);
+}
+
+function renderResult(data, metaText) {
+  const r = data.result || data;
+  el("resultWrap").style.display = "";
+  el("summaryMeta").textContent = metaText || "";
+
+  // 指标卡
+  const metrics = extractMetrics(r);
+  el("summaryMetrics").innerHTML = metrics.length
+    ? metrics.map(([k, v]) => {
+        const cls = /fault|abnormal|conflict/i.test(k) && v > 0 ? "danger" : "";
+        return metric(k, v, "", cls);
+      }).join("")
+    : metric("分析完成", "✓", "未识别到结构化指标，见下方 JSON");
+
+  // 顶层键值摘要
+  const topPairs = Object.entries(r)
+    .filter(([, v]) => v === null || typeof v !== "object")
+    .slice(0, 12)
+    .map(([k, v]) => [k, fmt.escape(String(v))]);
+  el("summaryBox").innerHTML = topPairs.length ? kvRows(topPairs) : '<div class="empty">结果为嵌套结构，请展开下方 JSON 查看</div>';
+
+  el("detailBox").innerHTML = renderTree(r);
+}
+
+async function runAnalysis() {
+  const body = {
+    scenario_type: el("scenarioType").value,
+    task_limit: parseInt(el("taskLimit").value, 10) || 200,
+  };
+  const sid = el("subjectId").value.trim();
+  if (sid) body.subject_id = sid;
+
+  const btn = el("runBtn");
+  btn.disabled = true;
+  btn.textContent = "分析中…";
+  try {
+    const data = await Api.post("cloud/cloud/global-analysis", body);
+    renderResult(data, "本次执行 · " + new Date().toLocaleString("zh-CN"));
+    toast("分析完成", "ok");
+  } catch (e) {
+    toast("分析失败：" + e.message, "danger");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "▶ 执行分析";
+  }
+}
+
+async function loadLatest() {
+  const sid = el("subjectId").value.trim();
+  if (!sid) { toast("请先填写分析对象（subject_id）", "warn"); return; }
+  const st = el("scenarioType").value;
+  try {
+    const data = await Api.get("cloud/cloud/global-analysis/" + st + "/" + encodeURIComponent(sid) + "/latest");
+    const r = data.result || data;
+    renderResult(data, "最近一次 · " + (r.created_at ? String(r.created_at).replace("T", " ").slice(0, 19) : ""));
+  } catch (e) {
+    toast(e.status === 404 ? "该对象暂无已保存的分析结果，请先执行分析" : "读取失败：" + e.message, "warn");
+  }
+}
+
+el("runBtn").addEventListener("click", runAnalysis);
+el("latestBtn").addEventListener("click", loadLatest);
+</script>
+</body>
+</html>

@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>总览大屏 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>总览大屏</h1>
+        <div class="desc">实时诊断结果 / 维护建议 / 数据包推送（MQTT），服务健康每 5 秒轮询</div>
+      </div>
+      <div class="conn" id="mqttConn"><span class="led"></span><span>MQTT 实时流</span></div>
+    </div>
+
+    <!-- 第一层：核心 KPI（大数字 + 迷你趋势 + 分钟环比） -->
+    <div class="hero" id="heroKpi"></div>
+
+    <!-- 第二层：吞吐趋势图 + 服务健康 -->
+    <div class="grid grid-main">
+      <div class="card">
+        <div class="card-title">实时吞吐趋势 <span class="hint">近 5 分钟 · 每 5 秒采样</span></div>
+        <div class="chart-box"><canvas id="trendChart"></canvas></div>
+        <div class="chart-legend">
+          <span class="lg"><i style="background:#d97706"></i>数据包</span>
+          <span class="lg"><i style="background:#2563eb"></i>诊断结果</span>
+          <span class="lg"><i style="background:#0d9488"></i>维护建议</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">服务健康 <span class="hint">每 5 秒轮询</span></div>
+        <div class="svc-list" id="serviceList"></div>
+      </div>
+    </div>
+
+    <!-- 第三层：实时明细流 -->
+    <div class="section-label">实时明细流 <span class="count">MQTT</span></div>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="card-title">实时诊断结果 <span class="hint">summary/device-results</span></div>
+        <div class="stream" id="resultStream"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">实时维护建议 <span class="hint">summary/suggestions</span></div>
+        <div class="stream" id="suggestionStream"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">实时数据包 <span class="hint">edge/+/input</span></div>
+        <div class="stream" id="packetStream"></div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+/* ================= 配色（与 main.css 令牌一致） ================= */
+
+const C = { blue: "#2563eb", teal: "#0d9488", gold: "#d97706", danger: "#dc2626", ok: "#16a34a" };
+
+/* ================= Hero KPI ================= */
+
+const KPIS = [
+  { id: "results",     label: "诊断结果",   unit: "条", cls: "c-blue",   color: C.blue },
+  { id: "faults",      label: "故障检出",   unit: "条", cls: "c-danger", color: C.danger },
+  { id: "suggestions", label: "维护建议",   unit: "条", cls: "c-teal",   color: C.teal },
+  { id: "packets",     label: "数据包接收", unit: "个", cls: "c-gold",   color: C.gold },
+];
+
+const stats = { results: 0, faults: 0, suggestions: 0, packets: 0 };
+
+/* ================= 5 秒分桶（sparkline + 趋势图数据源） ================= */
+
+const BUCKET_MS = 5000;
+const MAX_BUCKETS = 60; // 5 分钟
+const series = { packets: [], results: [], faults: [], suggestions: [] };
+const bucketTimes = [];
+let windowCount = { packets: 0, results: 0, faults: 0, suggestions: 0 };
+
+function renderHero() {
+  el("heroKpi").innerHTML = KPIS.map((k) =>
+    '<div class="kpi ' + k.cls + '" id="kpi-' + k.id + '">' +
+    '<div class="label">' + k.label + '<span class="tag">实时</span></div>' +
+    '<div class="value"><span id="kpi-val-' + k.id + '">0</span><span class="unit">' + k.unit + "</span></div>" +
+    '<div class="spark"><canvas id="kpi-spark-' + k.id + '"></canvas></div>' +
+    '<div class="sub" id="kpi-sub-' + k.id + '">等待数据…</div>' +
+    "</div>"
+  ).join("");
+}
+
+function setKpiVal(id, v) {
+  const node = el("kpi-val-" + id);
+  if (!node || node.textContent === String(v)) return;
+  node.textContent = v;
+  const box = node.parentElement;
+  box.classList.remove("bump");
+  void box.offsetWidth; // 重新触发动画
+  box.classList.add("bump");
+}
+
+function updateKpis() {
+  KPIS.forEach((k) => setKpiVal(k.id, stats[k.id]));
+}
+
+/* 分钟环比：近 1 分钟 vs 上一分钟 */
+function deltaHtml(key) {
+  const s = series[key];
+  if (!s.length) return "等待数据…";
+  const cur = s.slice(-12).reduce((a, b) => a + b, 0);
+  const prev = s.slice(-24, -12).reduce((a, b) => a + b, 0);
+  if (cur === 0 && prev === 0) return "近 1 分钟无新增";
+  if (prev === 0) return '近 1 分钟 <span class="up">+' + cur + "</span>";
+  const pct = Math.round(((cur - prev) / prev) * 100);
+  const cls = pct >= 0 ? "up" : "down";
+  const arrow = pct >= 0 ? "▲" : "▼";
+  return '近 1 分钟 ' + cur + ' <span class="' + cls + '">' + arrow + " " + Math.abs(pct) + "%</span>";
+}
+
+/* ================= Canvas 绘制 ================= */
+
+function setupCanvas(canvas, cssH) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 300;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.height = cssH + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h: cssH };
+}
+
+function drawSpark(canvas, data, color) {
+  if (!canvas || !data.length) return;
+  const { ctx, w, h } = setupCanvas(canvas, 34);
+  ctx.clearRect(0, 0, w, h);
+  const max = Math.max(1, ...data);
+  const step = w / Math.max(1, data.length - 1);
+  const y = (v) => h - 3 - (v / max) * (h - 9);
+
+  // 面积
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(i * step, y(v)) : ctx.moveTo(0, y(v))));
+  ctx.lineTo((data.length - 1) * step, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, color + "4d");
+  g.addColorStop(1, color + "00");
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  // 折线
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(i * step, y(v)) : ctx.moveTo(0, y(v))));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  // 末端亮点
+  const lx = (data.length - 1) * step, ly = y(data[data.length - 1]);
+  ctx.beginPath();
+  ctx.arc(lx, ly, 2.4, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 7;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function niceMax(v) {
+  if (v <= 1) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+function drawTrend() {
+  const canvas = el("trendChart");
+  const { ctx, w, h } = setupCanvas(canvas, 216);
+  ctx.clearRect(0, 0, w, h);
+  const padL = 38, padR = 12, padT = 14, padB = 24;
+  const iw = w - padL - padR, ih = h - padT - padB;
+
+  if (!bucketTimes.length) {
+    ctx.fillStyle = "rgba(93,107,130,0.7)";
+    ctx.font = "13px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("等待实时数据…", w / 2, h / 2);
+    return;
+  }
+
+  const lines = [
+    { key: "packets", color: C.gold },
+    { key: "results", color: C.blue },
+    { key: "suggestions", color: C.teal },
+  ];
+  let max = 1;
+  lines.forEach((l) => series[l.key].forEach((v) => { if (v > max) max = v; }));
+  const yMax = niceMax(max);
+  const len = series.packets.length;
+  const x = (i) => padL + (iw * (MAX_BUCKETS - len + i)) / (MAX_BUCKETS - 1);
+  const y = (v) => padT + ih * (1 - v / yMax);
+
+  // 横向网格 + 刻度
+  ctx.font = "10px 'Cascadia Code', Consolas, monospace";
+  for (let k = 0; k <= 4; k++) {
+    const Y = padT + ih * (1 - k / 4);
+    ctx.strokeStyle = k === 0 ? "rgba(30,42,59,0.16)" : "rgba(30,42,59,0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, Y);
+    ctx.lineTo(w - padR, Y);
+    ctx.stroke();
+    const val = (yMax * k) / 4;
+    ctx.fillStyle = "#8a97ab";
+    ctx.textAlign = "right";
+    ctx.fillText(val % 1 === 0 ? String(val) : val.toFixed(1), padL - 7, Y + 3);
+  }
+
+  // 时间刻度（每 1 分钟一个）
+  ctx.textAlign = "center";
+  for (let i = 0; i < len; i++) {
+    if ((len - 1 - i) % 12 !== 0) continue;
+    const d = new Date(bucketTimes[i]);
+    const label = String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+    ctx.fillStyle = "#8a97ab";
+    ctx.fillText(label, x(i), h - 7);
+  }
+
+  // 三条曲线（面积 + 描边 + 末端光点）
+  lines.forEach((l) => {
+    const data = series[l.key];
+    if (!data.length) return;
+    ctx.beginPath();
+    data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(0), y(v))));
+    ctx.lineTo(x(data.length - 1), padT + ih);
+    ctx.lineTo(x(0), padT + ih);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, padT, 0, padT + ih);
+    g.addColorStop(0, l.color + "3a");
+    g.addColorStop(1, l.color + "00");
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    ctx.beginPath();
+    data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(0), y(v))));
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    const lx = x(data.length - 1), ly = y(data[data.length - 1]);
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+    ctx.fillStyle = l.color;
+    ctx.shadowColor = l.color;
+    ctx.shadowBlur = 9;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+}
+
+function redrawAll() {
+  drawTrend();
+  KPIS.forEach((k) => {
+    drawSpark(el("kpi-spark-" + k.id), series[k.id], k.color);
+    const sub = el("kpi-sub-" + k.id);
+    if (sub) sub.innerHTML = deltaHtml(k.id);
+  });
+}
+
+/* ================= 服务健康 ================= */
+
+async function refreshServices() {
+  const targets = [
+    { key: "edge01", name: "Edge 节点 01", path: "edge01/health" },
+    { key: "edge02", name: "Edge 节点 02", path: "edge02/health" },
+    { key: "scheduler", name: "Scheduler 调度", path: "scheduler/health" },
+    { key: "cloud", name: "Cloud 云端", path: "cloud/health" },
+  ];
+  const items = await Promise.all(
+    targets.map(async (t) => {
+      try {
+        const h = await Api.get(t.path);
+        return svcItem(t, h);
+      } catch (e) {
+        return (
+          '<div class="svc-item down"><span class="svc-led"></span>' +
+          '<div class="svc-body"><div class="svc-name">' + t.name + "</div>" +
+          '<div class="svc-sub">' + fmt.escape(e.message) + "</div></div>" +
+          '<span class="badge danger">不可达</span></div>'
+        );
+      }
+    })
+  );
+  el("serviceList").innerHTML = items.join("");
+}
+
+function svcItem(t, h) {
+  const status = h.status || h.state || "ok";
+  const isOk = String(status).toLowerCase() === "ok" || h.ready === true;
+  let sub = "";
+  const tags = [];
+  if (t.key.startsWith("edge")) {
+    sub = "模型 " + (h.model_version || h.model_backend || "-");
+    tags.push(h.mqtt_connected ? badge("MQTT 已连接", "ok") : badge("MQTT 断开", "danger"));
+    if ((h.readiness && h.readiness.ready) || h.ready) tags.push(badge("就绪", "ok"));
+  } else if (t.key === "scheduler") {
+    const nodes = h.edge_nodes || {};
+    const total = Object.values(nodes).reduce((a, b) => a + b, 0);
+    sub = "边缘节点 " + total + " 个";
+  } else {
+    sub = "模型 " + (h.model_backend || "-");
+  }
+  return (
+    '<div class="svc-item ' + (isOk ? "ok" : "down") + '"><span class="svc-led"></span>' +
+    '<div class="svc-body"><div class="svc-name">' + t.name + "</div>" +
+    '<div class="svc-sub">' + fmt.escape(sub) + "</div>" +
+    (tags.length ? '<div class="svc-tags">' + tags.join("") + "</div>" : "") +
+    "</div>" +
+    '<span class="badge ' + (isOk ? "ok" : "danger") + '">' + (isOk ? "运行中" : "异常") + "</span></div>"
+  );
+}
+
+/* ================= 实时流渲染 ================= */
+
+function prepend(container, html, max) {
+  container.insertAdjacentHTML("afterbegin", html);
+  while (container.children.length > (max || 30)) {
+    container.removeChild(container.lastChild);
+  }
+}
+
+function renderResult(ev) {
+  const p = ev.payload || {};
+  stats.results++;
+  windowCount.results++;
+  const state = p.final_state || p.status || "-";
+  const isFault = String(state).toLowerCase() === "fault";
+  if (isFault) { stats.faults++; windowCount.faults++; }
+  updateKpis();
+  const html =
+    '<div class="item' + (isFault ? " fault" : "") + '">' +
+    '<span class="time">' + fmt.timeS(ev.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    badge(fmt.stateText(state), fmt.stateClass(state)) +
+    "<b>" + fmt.escape(p.device_id || "-") + "</b>" +
+    '<span class="badge muted">置信 ' + fmt.pct(p.confidence) + "</span>" +
+    (p.risk_level ? badge("风险 " + p.risk_level, p.risk_level === "high" ? "danger" : p.risk_level === "medium" ? "warn" : "muted") : "") +
+    "</div>" +
+    '<div class="row2">' +
+    "动作级别 " + (p.final_action_grade !== undefined ? p.final_action_grade : "-") +
+    " · 冲突 " + (p.has_conflict ? "是" : "否") +
+    " · 轮次 " + fmt.escape(p.decision_round_id || "-") +
+    "</div>" +
+    "</div></div>";
+  prepend(el("resultStream"), html);
+}
+
+function renderSuggestion(ev) {
+  const p = ev.payload || {};
+  stats.suggestions++;
+  windowCount.suggestions++;
+  updateKpis();
+  const html =
+    '<div class="item">' +
+    '<span class="time">' + fmt.timeS(ev.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    badge("优先级 " + (p.priority || "-"), fmt.priorityClass(p.priority)) +
+    "<b>" + fmt.escape(p.device_id || "-") + "</b>" +
+    '<span class="badge accent">' + fmt.escape(p.suggestion_type || "-") + "</span>" +
+    (p.generated_by ? '<span class="badge muted">' + fmt.escape(p.generated_by) + "</span>" : "") +
+    "</div>" +
+    '<div class="row2">' + fmt.escape(p.suggestion || "-") + "</div>" +
+    "</div></div>";
+  prepend(el("suggestionStream"), html);
+}
+
+function renderPacket(ev) {
+  const p = ev.payload || {};
+  stats.packets++;
+  windowCount.packets++;
+  updateKpis();
+  const d = p.data || {};
+  const html =
+    '<div class="item">' +
+    '<span class="time">' + fmt.timeS(ev.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    badge(fmt.escape(ev.topic || ""), "muted") +
+    "<b>" + fmt.escape(p.device_id || "-") + "</b>" +
+    '<span class="badge muted">' + fmt.escape(p.packet_id || "-") + "</span>" +
+    "</div>" +
+    '<div class="row2">' +
+    (d.vibration_sample_count ? d.vibration_sample_count + " 点振动 · " : "") +
+    (d.speed !== undefined ? "转速 " + fmt.num(d.speed) + " · " : "") +
+    (d.temperature !== undefined ? "温度 " + fmt.num(d.temperature) + "°C" : "") +
+    "</div>" +
+    "</div></div>";
+  prepend(el("packetStream"), html);
+}
+
+/* ================= 初始化 ================= */
+
+function setMqttStatus(on) {
+  const c = el("mqttConn");
+  c.className = "conn " + (on ? "on" : "off");
+  c.querySelector("span:last-child").textContent = on ? "MQTT 实时流已连接" : "MQTT 实时流未连接";
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(redrawAll, 150);
+});
+
+function init() {
+  renderHero();
+  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+  showEmpty(el("suggestionStream"), "等待维护建议…");
+  showEmpty(el("packetStream"), "等待传感器数据包…");
+  updateKpis();
+  setMqttStatus(false);
+
+  connectEvents({
+    "device-result": renderResult,
+    suggestion: renderSuggestion,
+    "input-packet": renderPacket,
+    "mqtt-status": (d) => setMqttStatus(!!d.connected),
+  });
+
+  // 分桶推进：每 5 秒把窗口计数落入序列，驱动 sparkline 与趋势图
+  setInterval(() => {
+    const t = Date.now();
+    Object.keys(series).forEach((k) => {
+      series[k].push(windowCount[k]);
+      if (series[k].length > MAX_BUCKETS) series[k].shift();
+      windowCount[k] = 0;
+    });
+    bucketTimes.push(t);
+    if (bucketTimes.length > MAX_BUCKETS) bucketTimes.shift();
+    redrawAll();
+  }, BUCKET_MS);
+
+  refreshServices();
+  startPolling(refreshServices, 5000);
+}
+
+init();
+</script>
+</body>
+</html>

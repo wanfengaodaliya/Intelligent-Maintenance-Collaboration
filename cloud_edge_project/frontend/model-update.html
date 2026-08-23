@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模型更新工作流 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>模型更新工作流</h1>
+        <div class="desc">创建 → 校验 → 训练 → 审批 → 下发 → 部署 → 回滚</div>
+      </div>
+    </div>
+
+    <!-- 查询区 -->
+    <div class="card">
+      <div class="card-title">更新任务查询</div>
+      <div class="form-row">
+        <label class="field">更新任务 ID
+          <input type="text" id="updateId" placeholder="例如 mu_20260820_0001" style="width:260px;">
+        </label>
+        <button class="btn" id="queryBtn">查询详情</button>
+        <button class="btn ghost" id="pendingBtn">待下发任务列表</button>
+      </div>
+    </div>
+
+    <!-- 工作流进度 -->
+    <div class="card" id="workflowCard" style="display:none;">
+      <div class="card-title">工作流进度 <span class="hint" id="wfTitle"></span></div>
+      <div class="steps" id="wfSteps"></div>
+      <div id="updateDetail"></div>
+    </div>
+
+    <!-- 列表 -->
+    <div class="card">
+      <div class="card-title">待下发更新任务 <span class="hint">GET /cloud/model-update/pending-distribution</span></div>
+      <div id="pendingBox"><div class="empty">点击「待下发任务列表」加载</div></div>
+    </div>
+
+    <!-- 创建任务 -->
+    <div class="card">
+      <div class="card-title">创建新的模型更新任务 <span class="hint">POST /cloud/model-update</span></div>
+      <div class="form-row">
+        <label class="field">目标模型类型
+          <select id="newModelType">
+            <option value="distilled_h5">distilled_h5（边缘蒸馏模型）</option>
+            <option value="moment">moment（云端 MOMENT 模型）</option>
+          </select>
+        </label>
+        <label class="field">任务说明<input type="text" id="newReason" placeholder="例如：误报率上升，需重新训练" style="width:300px;"></label>
+        <button class="btn" id="createBtn">创建任务</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);">
+        说明：创建后任务进入 DRAFT 状态，后续校验/训练/审批等步骤由云端流程或本页面逐步触发。
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+const WF_STAGES = [
+  { key: "DRAFT", label: "创建" },
+  { key: "VALIDATED", label: "校验" },
+  { key: "TRAINING", label: "训练" },
+  { key: "APPROVAL", label: "审批" },
+  { key: "DISTRIBUTION", label: "下发" },
+  { key: "DEPLOYED", label: "部署" },
+  { key: "ROLLED_BACK", label: "回滚" },
+];
+
+function kvRows(pairs) {
+  return '<div class="kv">' + pairs.map(
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v wrap">' + (v === null || v === undefined ? "-" : v) + "</div>"
+  ).join("") + "</div>";
+}
+
+function renderWorkflow(status) {
+  const s = String(status || "").toUpperCase();
+  const rollback = s === "ROLLED_BACK";
+  const idx = WF_STAGES.findIndex((st) => st.key === s);
+  el("workflowCard").style.display = "";
+  el("wfSteps").innerHTML = WF_STAGES.map((st, i) => {
+    let cls = "";
+    if (rollback) {
+      cls = st.key === "ROLLED_BACK" ? "error" : (i <= 4 ? "done" : "");
+    } else if (idx >= 0) {
+      cls = i < idx ? "done" : i === idx ? "active" : "";
+    }
+    return '<div class="step ' + cls + '"><div class="idx">' + "①②③④⑤⑥⑦"[i] + "</div>" + st.label + "</div>";
+  }).join("");
+}
+
+// ---------- 查询详情 ----------
+
+async function queryUpdate() {
+  const id = el("updateId").value.trim();
+  if (!id) { toast("请输入更新任务 ID", "warn"); return; }
+  try {
+    const data = await Api.get("cloud/cloud/model-update/" + encodeURIComponent(id));
+    const u = data.result || data.update || data;
+    el("wfTitle").textContent = "任务 " + id + " · 状态 " + (u.status || "-");
+    renderWorkflow(u.status);
+    el("updateDetail").innerHTML =
+      kvRows([
+        ["任务 ID", fmt.escape(u.update_id || id)],
+        ["状态", fmt.escape(String(u.status || "-"))],
+        ["模型类型", fmt.escape(String(u.model_type || "-"))],
+        ["基线版本", fmt.escape(String(u.baseline_version || "-"))],
+        ["目标版本", fmt.escape(String(u.target_version || u.new_version || "-"))],
+        ["创建时间", u.created_at ? fmt.escape(String(u.created_at).replace("T", " ").slice(0, 19)) : "-"],
+        ["更新时间", u.updated_at ? fmt.escape(String(u.updated_at).replace("T", " ").slice(0, 19)) : "-"],
+        ["原因说明", fmt.escape(String(u.reason || u.description || "-"))],
+      ]) + jsonDetails(data, "查看任务完整 JSON");
+  } catch (e) {
+    toast("查询失败：" + e.message, "danger");
+  }
+}
+
+// ---------- 待下发列表 ----------
+
+async function loadPending() {
+  try {
+    const data = await Api.get("cloud/cloud/model-update/pending-distribution");
+    const items = Array.isArray(data) ? data : (data.result || data.updates || data.items || []);
+    if (!items.length) {
+      el("pendingBox").innerHTML = '<div class="empty">当前没有待下发的更新任务</div>';
+      return;
+    }
+    const rows = items.map((u) => {
+      const uid = u.update_id || u.id || "-";
+      return "<tr class='row-click' data-uid='" + fmt.escape(uid) + "'><td class='mono'>" + fmt.escape(uid) +
+        "</td><td>" + fmt.escape(String(u.model_type || "-")) + "</td><td>" +
+        badge(String(u.status || "-"), "accent") + "</td><td class='mono'>" +
+        fmt.escape(String(u.baseline_version || "-")) + "</td><td class='trunc'>" +
+        fmt.escape(String(u.reason || "-")) + "</td></tr>";
+    });
+    el("pendingBox").innerHTML =
+      '<div class="table-wrap"><table class="list"><thead><tr><th>任务 ID</th><th>模型类型</th><th>状态</th><th>基线版本</th><th>原因</th></tr></thead><tbody>' +
+      rows.join("") + "</tbody></table></div>";
+    // 点击行 → 查询详情
+    el("pendingBox").querySelectorAll("tr.row-click").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        el("updateId").value = tr.dataset.uid;
+        queryUpdate();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
+  } catch (e) {
+    el("pendingBox").innerHTML = '<div class="empty">加载失败：' + fmt.escape(e.message) + "</div>";
+  }
+}
+
+// ---------- 创建任务 ----------
+
+async function createUpdate() {
+  const body = {
+    model_type: el("newModelType").value,
+    reason: el("newReason").value.trim() || "前端发起的模型更新",
+  };
+  try {
+    const data = await Api.post("cloud/cloud/model-update", body);
+    const u = data.result || data.update || data;
+    const uid = u.update_id || u.id;
+    toast("创建成功：" + (uid || "已提交"), "ok");
+    if (uid) {
+      el("updateId").value = uid;
+      queryUpdate();
+    }
+    loadPending();
+  } catch (e) {
+    toast("创建失败：" + e.message, "danger");
+  }
+}
+
+el("queryBtn").addEventListener("click", queryUpdate);
+el("pendingBtn").addEventListener("click", loadPending);
+el("createBtn").addEventListener("click", createUpdate);
+el("updateId").addEventListener("keydown", (ev) => { if (ev.key === "Enter") queryUpdate(); });
+
+loadPending();
+</script>
+</body>
+</html>
