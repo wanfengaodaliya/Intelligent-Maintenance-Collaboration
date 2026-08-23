@@ -5,10 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from bootstrap.scenarios import build_sender_scenario_registry
+from core.scenario_plugin import INPUT_ADAPTER
 from sender.mat_reader import SignalWindow
 from sender.packet import build_sensor_packet, serialize_packet
 from sender.source_mapping import PacketSourceMappingStore
-from scenarios.bearing.ingestion import BearingInputAdapter
+from scenarios.bearing.ingestion import (
+    BearingInputAdapter,
+    BearingInputAdapterProvider,
+)
 from scenarios.bearing.ingestion import provider as ingestion_module
 
 
@@ -112,3 +117,66 @@ def test_bearing_input_adapter_preserves_window_validation_errors(
             unit_id="bearing_01",
             expected_sequence=2,
         )
+
+
+def test_sender_registry_runs_complete_bearing_ingestion_flow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_path = tmp_path / "N09_M07_F10_KA01_1.mat"
+    window = _window()
+    monkeypatch.setattr(
+        ingestion_module,
+        "load_mat_record",
+        lambda path: SimpleNamespace(
+            source_path=source_path,
+            windows=lambda **kwargs: iter([window]),
+        ),
+    )
+    store = PacketSourceMappingStore(tmp_path / "mapping.db")
+    registry = build_sender_scenario_registry()
+    provider = registry.require_provider("bearing", INPUT_ADAPTER)
+
+    assert isinstance(provider, BearingInputAdapterProvider)
+    adapter = provider.build_adapter(tmp_path, store)
+    prepared = adapter.prepare(
+        source_path,
+        unit_id="bearing_01",
+        duration_ms=50,
+        count=1,
+    )
+    first_window = adapter.next_window(
+        prepared,
+        unit_id="bearing_01",
+        expected_sequence=1,
+    )
+    packet = adapter.build_packet(
+        device_id="machine_01",
+        task_id="sd_01_tk_0001",
+        unit_id="bearing_01",
+        sender_id="sender_01",
+        sequence_number=1,
+        window=first_window,
+        end_generate_timestamp_ns=1,
+    )
+    adapter.persist_source(
+        packet=packet,
+        task_id="sd_01_tk_0001",
+        unit_id="bearing_01",
+        source_path=prepared.source_path,
+        window=first_window,
+    )
+
+    assert adapter.serialize_packet(packet) == serialize_packet(packet)
+    assert store.get(packet["packet_id"]) == {
+        "packet_id": "sd_01_tk_0001_bearing_01_pkt_001",
+        "task_id": "sd_01_tk_0001",
+        "bearing_id": "bearing_01",
+        "dataset_name": "paderborn",
+        "dataset_version": "paderborn_v1",
+        "source_file": "N09_M07_F10_KA01_1.mat",
+        "source_bearing_code": "KA01",
+        "start_index": 0,
+        "end_index": 3200,
+        "window_index": 0,
+    }

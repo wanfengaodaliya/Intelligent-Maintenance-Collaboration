@@ -210,3 +210,46 @@ def test_bearing_ingestion_business_definitions_have_one_owner(
     assert scenario_path.is_file()
     assert business_names.issubset(_defined_names(scenario_path))
     assert _defined_names(sender_root / filename).isdisjoint(business_names)
+
+
+def test_legacy_bearing_ingestion_modules_are_thin_explicit_shims() -> None:
+    sender_root = PROJECT_ROOT / "sender_module" / "sender"
+    for filename in BEARING_INGESTION_MODULES:
+        path = sender_root / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assignments = [
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
+
+        assert assignments == ["__all__"]
+        assert all(
+            isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
+            for node in tree.body
+        )
+        assert all(
+            alias.name != "*"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        )
+
+
+def test_bearing_ingestion_compatibility_exports_are_explicit() -> None:
+    path = (
+        PROJECT_ROOT
+        / "compatibility"
+        / "bearing_v12"
+        / "ingestion_exports.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    assert all(
+        alias.name != "*"
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    )
