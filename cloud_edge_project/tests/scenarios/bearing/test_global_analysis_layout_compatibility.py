@@ -277,6 +277,36 @@ def test_bearing_provider_builds_complete_global_analysis_runtime(
     assert callable(runtime.detect_scenario_candidates)
 
 
+def test_global_analysis_runtimes_receive_independent_default_configs(
+    tmp_path: Path,
+) -> None:
+    from compatibility.bearing_v12.global_analysis_exports import (
+        build_legacy_global_analysis_runtime,
+    )
+    from scenarios.bearing.cloud.global_analysis.provider import (
+        BearingGlobalAnalysisProvider,
+    )
+
+    provider = BearingGlobalAnalysisProvider()
+    provider_runtime_a = provider.build_runtime(tmp_path / "provider_a.db")
+    provider_runtime_b = provider.build_runtime(tmp_path / "provider_b.db")
+    legacy_runtime_a = build_legacy_global_analysis_runtime(
+        tmp_path / "legacy_a.db"
+    )
+    legacy_runtime_b = build_legacy_global_analysis_runtime(
+        tmp_path / "legacy_b.db"
+    )
+
+    assert provider_runtime_a.config is not provider_runtime_b.config
+    assert legacy_runtime_a.config is not legacy_runtime_b.config
+    assert provider_runtime_a.config.condition_thresholds is not (
+        provider_runtime_b.config.condition_thresholds
+    )
+    assert legacy_runtime_a.config.condition_thresholds is not (
+        legacy_runtime_b.config.condition_thresholds
+    )
+
+
 def test_provider_runtime_scenario_analysis_matches_legacy_analyzers(
     tmp_path: Path,
 ) -> None:
@@ -335,6 +365,23 @@ def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def test_generic_service_import_does_not_load_bearing_scenario() -> None:
+    completed = _run_isolated(
+        """
+import importlib
+import sys
+
+importlib.import_module("cloud_service.global_analysis.service")
+assert not any(
+    name.startswith("scenarios.bearing.cloud.global_analysis")
+    for name in sys.modules
+)
+"""
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize(

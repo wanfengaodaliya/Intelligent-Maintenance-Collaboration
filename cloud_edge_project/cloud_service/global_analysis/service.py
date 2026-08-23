@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from compatibility.bearing_v12 import global_analysis_exports
 from cloud_service.global_analysis.arbitration_analyzer import analyze_device_arbitration
 from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
 from cloud_service.global_analysis.packet_model_analyzer import analyze_packet_model
@@ -47,12 +46,16 @@ class GlobalAnalysisService:
     ) -> None:
         self.database_path = Path(database_path)
         self.repository = GlobalAnalysisResultRepository(self.database_path)
-        selected_runtime = runtime or global_analysis_exports.build_legacy_global_analysis_runtime(
-            self.database_path,
-            data_source=data_source,
-            config=config,
-            scenario_analyzers=scenario_analyzers,
-        )
+        if runtime is None:
+            from compatibility.bearing_v12 import global_analysis_exports
+
+            runtime = global_analysis_exports.build_legacy_global_analysis_runtime(
+                self.database_path,
+                data_source=data_source,
+                config=config,
+                scenario_analyzers=scenario_analyzers,
+            )
+        selected_runtime = runtime
         self.data_source = selected_runtime.data_source
         self.config = selected_runtime.config
         self.analyze_scenario = selected_runtime.analyze_scenario

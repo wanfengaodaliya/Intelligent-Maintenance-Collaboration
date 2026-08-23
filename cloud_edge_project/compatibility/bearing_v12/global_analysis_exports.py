@@ -59,7 +59,7 @@ def build_legacy_global_analysis_runtime(
 
     return GlobalAnalysisRuntime(
         data_source=data_source or V12GlobalAnalysisDataSource(database_path),
-        config=config or DEFAULT_CONFIG,
+        config=config if config is not None else GlobalAnalysisConfig(),
         analyze_scenario=analyze_scenario,
         detect_scenario_candidates=detect_scenario_candidates,
     )

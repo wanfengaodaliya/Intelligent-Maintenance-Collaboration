@@ -16,7 +16,7 @@ from scenarios.bearing.cloud.global_analysis.bearing_aggregation_analyzer import
 from scenarios.bearing.cloud.global_analysis.bearing_risk_analyzer import (
     analyze_bearing_risk,
 )
-from scenarios.bearing.cloud.global_analysis.config import DEFAULT_CONFIG
+from scenarios.bearing.cloud.global_analysis.config import GlobalAnalysisConfig
 from scenarios.bearing.cloud.global_analysis.problem_detector import (
     detect_bearing_problem_candidates,
 )
@@ -59,7 +59,7 @@ class BearingGlobalAnalysisProvider:
         analyzers = self.build_analyzers()
         return GlobalAnalysisRuntime(
             data_source=V12GlobalAnalysisDataSource(database_path),
-            config=DEFAULT_CONFIG,
+            config=GlobalAnalysisConfig(),
             analyze_scenario=partial(_analyze_scenario_results, analyzers),
             detect_scenario_candidates=detect_bearing_problem_candidates,
         )
