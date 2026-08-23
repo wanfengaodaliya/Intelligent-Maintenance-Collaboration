@@ -340,13 +340,48 @@ def test_legacy_edge_h5_modules_are_thin_explicit_shims() -> None:
 def test_edge_h5_compatibility_exports_are_explicit() -> None:
     path = PROJECT_ROOT / "compatibility" / "bearing_v12" / "edge_h5_exports.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assignments = [
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
 
+    assert assignments == ["__all__"]
+    assert all(
+        isinstance(node, (ast.Expr, ast.ImportFrom, ast.Assign))
+        for node in tree.body
+    )
     assert all(
         alias.name != "*"
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     )
+
+
+def test_bearing_edge_h5_business_definitions_have_exactly_one_owner() -> None:
+    scenario_root = (
+        PROJECT_ROOT / "scenarios" / "bearing" / "edge_inference" / "h5"
+    )
+    compatibility_path = (
+        PROJECT_ROOT / "compatibility" / "bearing_v12" / "edge_h5_exports.py"
+    )
+    legacy_root = PROJECT_ROOT / "edge_service" / "src" / "edge_diagnosis"
+    candidate_paths = [
+        *scenario_root.glob("*.py"),
+        compatibility_path,
+        *(legacy_root / filename for filename in EDGE_H5_MODULES),
+    ]
+
+    for scenario_filename, business_names in EDGE_H5_MODULES.values():
+        expected_owner = scenario_root / scenario_filename
+        for business_name in business_names:
+            owners = [
+                path for path in candidate_paths if business_name in _defined_names(path)
+            ]
+            assert owners == [expected_owner]
 
 
 def test_edge_image_copies_compatibility_boundary() -> None:

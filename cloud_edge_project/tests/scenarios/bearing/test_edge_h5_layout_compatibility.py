@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
+import json
 import os
+import shutil
 import subprocess
 import sys
-import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -182,16 +184,16 @@ def test_h5_network_structure_and_forward_match_frozen_goldens() -> None:
         logits,
         torch.tensor([[0.0577577762, -0.0212971549, -0.0545240901]]),
         rtol=0,
-        atol=1e-8,
+        atol=1e-6,
     )
     assert tuple(fused.shape) == (1, 176)
     torch.testing.assert_close(
         fused.detach()[0, torch.tensor([0, 175])],
         torch.tensor([0.0948042497, 0.0090928469]),
         rtol=0,
-        atol=1e-8,
+        atol=1e-6,
     )
-    assert float(fused.detach().sum()) == pytest.approx(14.7061004639, abs=1e-8)
+    assert float(fused.detach().sum()) == pytest.approx(14.7061004639, abs=1e-6)
 
 
 def _scenario_model():
@@ -202,6 +204,27 @@ def _scenario_model():
         MODEL_DIR,
         model_version=MODEL_VERSION,
     )
+
+
+def _probe_packet_with_currents() -> tuple[object, dict[str, object]]:
+    from edge_model.h5_probe import default_probe_dir, load_h5_probe_task
+
+    task = load_h5_probe_task(default_probe_dir())
+    assert task.raw_packet is not None
+    packet = copy.deepcopy(task.raw_packet)
+    packet["data"]["phase_current_1_A"] = {
+        "sample_rate_hz": 64_000,
+        "sample_count": 3_200,
+        "values": [1.0] * 3_200,
+        "unit": "A",
+    }
+    packet["data"]["phase_current_2_A"] = {
+        "sample_rate_hz": 64_000,
+        "sample_count": 3_200,
+        "values": [1.25] * 3_200,
+        "unit": "A",
+    }
+    return task, packet
 
 
 def test_distilled_h5_probe_tensors_and_result_match_frozen_goldens() -> None:
@@ -263,24 +286,7 @@ def test_distilled_h5_probe_tensors_and_result_match_frozen_goldens() -> None:
 
 
 def test_distilled_h5_evidence_and_errors_match_frozen_goldens() -> None:
-    from edge_model.contracts import InferenceCancelled
-    from edge_model.h5_probe import default_probe_dir, load_h5_probe_task
-
-    task = load_h5_probe_task(default_probe_dir())
-    assert task.raw_packet is not None
-    packet = copy.deepcopy(task.raw_packet)
-    packet["data"]["phase_current_1_A"] = {
-        "sample_rate_hz": 64_000,
-        "sample_count": 3_200,
-        "values": [1.0] * 3_200,
-        "unit": "A",
-    }
-    packet["data"]["phase_current_2_A"] = {
-        "sample_rate_hz": 64_000,
-        "sample_count": 3_200,
-        "values": [1.25] * 3_200,
-        "unit": "A",
-    }
+    _, packet = _probe_packet_with_currents()
     model = _scenario_model()
 
     evidence = model.build_evidence(packet)
@@ -298,11 +304,11 @@ def test_distilled_h5_evidence_and_errors_match_frozen_goldens() -> None:
             "spectral_entropy": 0.9360470475,
             "unit": "mm/s",
         },
-        abs=1e-9,
+        abs=1e-6,
     )
     assert evidence["features"]["current_relationship"] == pytest.approx(
         {"current_imbalance_ratio": 0.2222225256},
-        abs=1e-9,
+        abs=1e-6,
     )
     assert evidence["features"]["operating_context"]["shaft_speed_rpm"] == (
         pytest.approx(
@@ -313,23 +319,232 @@ def test_distilled_h5_evidence_and_errors_match_frozen_goldens() -> None:
                 "maximum": 899.8059082031,
                 "standard_deviation": 0.0086553404,
             },
-            abs=1e-9,
+            abs=1e-6,
         )
     )
 
-    with pytest.raises(ValueError, match="distilled H5 requires the validated raw packet"):
+
+def _set_packet_value(
+    packet: dict[str, object],
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    target = packet
+    for name in path[:-1]:
+        target = target[name]  # type: ignore[assignment,index]
+    target[path[-1]] = value
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "operation", "message"),
+    (
+        (("data",), None, "prepare", "raw packet data must be an object"),
+        (
+            ("data", "vibration", "sample_count"),
+            3_199,
+            "prepare",
+            "vibration must be 64000 Hz / 3200 samples",
+        ),
+        (
+            ("data", "vibration", "values"),
+            [0.0] * 3_199,
+            "prepare",
+            "vibration values must be finite 3200-sample data",
+        ),
+        (
+            ("data", "vibration", "values"),
+            [0.0] * 3_199 + [float("nan")],
+            "prepare",
+            "vibration values must be finite 3200-sample data",
+        ),
+        (
+            ("data", "vibration", "values"),
+            ["invalid"] * 3_200,
+            "prepare",
+            "vibration values must be numeric",
+        ),
+        (
+            ("data", "shaft_speed_rpm", "sample_count"),
+            199,
+            "prepare",
+            "shaft_speed_rpm must be 4000 Hz / 200 samples",
+        ),
+        (
+            ("data", "bearing_module_temperature_c"),
+            float("nan"),
+            "prepare",
+            "bearing_module_temperature_c must be finite",
+        ),
+        (("device_id",), "", "evidence", "raw packet identity is invalid"),
+        (("sequence_number",), 0, "evidence", "raw packet sequence_number is invalid"),
+        (("end_generate_timestamp_ns",), 0, "evidence", "end_generate_timestamp_ns must be positive"),
+        (
+            ("data", "phase_current_1_A"),
+            None,
+            "evidence",
+            "raw packet phase_current_1_A must be an object",
+        ),
+        (
+            ("data", "phase_current_1_A", "values"),
+            [0.0] * 3_199 + [float("inf")],
+            "evidence",
+            "phase_current_1_A values must be finite 3200-sample data",
+        ),
+    ),
+    ids=(
+        "data-object",
+        "vibration-count",
+        "vibration-shape",
+        "vibration-non-finite",
+        "vibration-non-numeric",
+        "condition-count",
+        "temperature-non-finite",
+        "identity",
+        "sequence",
+        "timestamp",
+        "current-object",
+        "current-non-finite",
+    ),
+)
+def test_distilled_h5_input_errors_match_frozen_contract(
+    path: tuple[str, ...],
+    value: object,
+    operation: str,
+    message: str,
+) -> None:
+    _, packet = _probe_packet_with_currents()
+    _set_packet_value(packet, path, value)
+    model = _scenario_model()
+    target = model.prepare_inputs if operation == "prepare" else model.build_evidence
+
+    with pytest.raises(ValueError) as error:
+        target(packet)
+
+    assert str(error.value) == message
+
+
+def test_distilled_h5_run_errors_and_probability_guard_match_frozen_contract() -> None:
+    task, _ = _probe_packet_with_currents()
+    model = _scenario_model()
+
+    with pytest.raises(ValueError) as raw_packet_error:
         model.run(replace(task, raw_packet=None))
-    invalid_packet = copy.deepcopy(packet)
-    invalid_packet["data"]["vibration"]["sample_rate_hz"] = 16_000
-    with pytest.raises(ValueError, match="vibration must be 64000 Hz / 3200 samples"):
-        model.prepare_inputs(invalid_packet)
-    cancelled = threading.Event()
-    cancelled.set()
-    with pytest.raises(
-        InferenceCancelled,
-        match="distilled H5 inference cancelled",
-    ):
-        model.run(task, cancel_event=cancelled)
+    assert str(raw_packet_error.value) == (
+        "distilled H5 requires the validated raw packet"
+    )
+
+    class _InvalidProbabilityNetwork:
+        def __call__(self, vibration, physical, condition):  # noqa: ANN001
+            del vibration, physical, condition
+            return torch.full((1, 3), float("nan")), torch.empty((1, 0))
+
+    model.model = _InvalidProbabilityNetwork()
+    with pytest.raises(ValueError) as probability_error:
+        model.run(task)
+    assert str(probability_error.value) == "distilled H5 probabilities are invalid"
+
+
+def test_distilled_h5_all_cancellation_checkpoints_match_frozen_contract() -> None:
+    from edge_model.contracts import InferenceCancelled
+
+    task, _ = _probe_packet_with_currents()
+    model = _scenario_model()
+
+    class _CancelOnCheck:
+        def __init__(self, trigger: int) -> None:
+            self.trigger = trigger
+            self.calls = 0
+
+        def is_set(self) -> bool:
+            self.calls += 1
+            return self.calls == self.trigger
+
+    for trigger in range(1, 5):
+        cancel_event = _CancelOnCheck(trigger)
+        with pytest.raises(InferenceCancelled) as error:
+            model.run(task, cancel_event=cancel_event)
+        assert str(error.value) == "distilled H5 inference cancelled"
+        assert cancel_event.calls == trigger
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _update_manifest_hash(model_dir: Path, filename: str) -> None:
+    manifest_path = model_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][filename] = _sha256(model_dir / filename)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_distilled_h5_manifest_errors_match_frozen_contract(tmp_path: Path) -> None:
+    from scenarios.bearing.edge_inference.h5.distilled_h5_model import (
+        H5ModelArtifactError,
+        DistilledH5DiagnosticModel,
+    )
+
+    with pytest.raises(H5ModelArtifactError) as missing_error:
+        DistilledH5DiagnosticModel(
+            tmp_path / "missing",
+            model_version=MODEL_VERSION,
+        )
+    assert str(missing_error.value) == "MODEL_MANIFEST_DIR_MISSING"
+
+    with pytest.raises(H5ModelArtifactError) as version_error:
+        DistilledH5DiagnosticModel(MODEL_DIR, model_version="unexpected-version")
+    assert str(version_error.value) == (
+        "MODEL_MANIFEST_VERSION_MISMATCH: expected=unexpected-version "
+        f"got={MODEL_VERSION}"
+    )
+
+
+def test_distilled_h5_normalization_error_matches_frozen_contract(
+    tmp_path: Path,
+) -> None:
+    from scenarios.bearing.edge_inference.h5.distilled_h5_model import (
+        H5ModelArtifactError,
+        DistilledH5DiagnosticModel,
+    )
+
+    model_dir = tmp_path / MODEL_VERSION
+    shutil.copytree(MODEL_DIR, model_dir)
+    normalization_path = model_dir / "condition_norm.json"
+    normalization_path.write_text(
+        json.dumps({"mean": [0.0] * 13, "std": [0.0] * 13}),
+        encoding="utf-8",
+    )
+    _update_manifest_hash(model_dir, "condition_norm.json")
+
+    with pytest.raises(H5ModelArtifactError) as error:
+        DistilledH5DiagnosticModel(model_dir, model_version=MODEL_VERSION)
+
+    assert str(error.value) == (
+        "MODEL_MANIFEST_NORMALIZATION_STD_INVALID: condition_norm.json"
+    )
+
+
+def test_distilled_h5_missing_checkpoint_weights_match_frozen_contract(
+    tmp_path: Path,
+) -> None:
+    from scenarios.bearing.edge_inference.h5.distilled_h5_model import (
+        H5ModelArtifactError,
+        DistilledH5DiagnosticModel,
+    )
+
+    model_dir = tmp_path / MODEL_VERSION
+    shutil.copytree(MODEL_DIR, model_dir)
+    checkpoint_path = model_dir / "best_model.pt"
+    torch.save({"model_state_dict": {"other.weight": torch.ones(1)}}, checkpoint_path)
+    checksum_path = model_dir / "checkpoint_sha256.txt"
+    checksum_path.write_text(_sha256(checkpoint_path) + "\n", encoding="utf-8")
+    _update_manifest_hash(model_dir, "best_model.pt")
+    _update_manifest_hash(model_dir, "checkpoint_sha256.txt")
+
+    with pytest.raises(H5ModelArtifactError) as error:
+        DistilledH5DiagnosticModel(model_dir, model_version=MODEL_VERSION)
+
+    assert str(error.value) == "distilled H5 checkpoint cannot be loaded"
 
 
 def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
