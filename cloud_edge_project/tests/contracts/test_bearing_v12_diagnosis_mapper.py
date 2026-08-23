@@ -94,6 +94,8 @@ def test_reverse_mapping_updates_only_shared_conclusion_fields() -> None:
     legacy = _edge()
     scenario = replace(
         edge_bearing_to_scenario(legacy),
+        task_id="other_task",
+        unit_id="other_bearing",
         state="outer_race_fault",
         confidence=0.8,
         risk_level="medium",
@@ -105,6 +107,8 @@ def test_reverse_mapping_updates_only_shared_conclusion_fields() -> None:
 
     assert updated.bearing_state == "outer_race_fault"
     assert updated.model_version == "edge-v2"
+    assert updated.task_id == legacy.task_id
+    assert updated.bearing_id == legacy.bearing_id
     assert updated.result_id == legacy.result_id
     assert updated.diagnosis_window_id == legacy.diagnosis_window_id
 
@@ -112,3 +116,29 @@ def test_reverse_mapping_updates_only_shared_conclusion_fields() -> None:
 def test_reverse_mapping_rejects_wrong_template_type() -> None:
     with pytest.raises(TypeError, match="EdgeBearingResult"):
         scenario_to_edge_bearing(edge_bearing_to_scenario(_edge()), _cloud())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "required_evidence"),
+    [
+        (
+            edge_bearing_to_scenario(_edge()),
+            {"sender_id", "decision_round_id", "diagnosis_window_id", "created_at_ns"},
+        ),
+        (
+            bearing_decision_to_scenario(_bearing_decision()),
+            {"revision", "lifecycle_state", "review_status", "edge_result_id"},
+        ),
+        (
+            device_decision_to_scenario(_device_decision()),
+            {"expected_bearing_ids", "closure_reason", "has_conflict", "closed_at_ns"},
+        ),
+    ],
+)
+def test_forward_mapping_preserves_legacy_trace_evidence(
+    scenario,
+    required_evidence,
+) -> None:
+    assert required_evidence <= set(scenario.evidence)
+    with pytest.raises(TypeError):
+        scenario.evidence["result_id"] = "changed"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import TypeVar
 
 from core.diagnosis_contracts import (
@@ -51,13 +51,18 @@ def bearing_decision_to_scenario(result: BearingDecisionResult) -> ScenarioDecis
         risk_level=result.risk_level,
         action_level=result.action_grade,
         decision=result.recommended_action,
-        evidence={
-            "data_quality_score": result.data_quality_score,
-            "model_version": result.model_version,
-            "result_id": result.result_id,
-            "device_id": result.device_id,
-            "decision_source": result.decision_source,
-        },
+        evidence=_legacy_evidence(
+            result,
+            exclude={
+                "task_id",
+                "bearing_id",
+                "bearing_state",
+                "confidence",
+                "risk_level",
+                "action_grade",
+                "recommended_action",
+            },
+        ),
     )
 
 
@@ -69,8 +74,6 @@ def scenario_to_bearing_decision(
     _require_bearing_scenario(decision.scenario_id)
     return replace(
         template,
-        task_id=decision.task_id,
-        bearing_id=decision.unit_id,
         bearing_state=decision.state,
         confidence=decision.confidence,
         risk_level=decision.risk_level,
@@ -89,11 +92,17 @@ def device_decision_to_scenario(result: DeviceDecisionResult) -> ScenarioDecisio
         risk_level="unknown",
         action_level=result.final_action_grade,
         decision=result.final_action,
-        evidence={
-            "data_quality_score": result.data_quality_score,
-            "result_id": result.result_id,
-            "decision_source": result.decision_source,
-        },
+        evidence=_legacy_evidence(
+            result,
+            exclude={
+                "task_id",
+                "device_id",
+                "final_state",
+                "confidence",
+                "final_action_grade",
+                "final_action",
+            },
+        ),
     )
 
 
@@ -105,8 +114,6 @@ def scenario_to_device_decision(
     _require_bearing_scenario(decision.scenario_id)
     return replace(
         template,
-        task_id=decision.task_id,
-        device_id=decision.unit_id,
         final_state=decision.state,
         confidence=decision.confidence,
         final_action_grade=decision.action_level,
@@ -130,10 +137,20 @@ def _diagnosis_to_scenario(
         model_id=model_id,
         model_version=result.model_version,
         evidence={
-            "data_quality_score": result.data_quality_score,
+            **_legacy_evidence(
+                result,
+                exclude={
+                    "task_id",
+                    "bearing_id",
+                    "bearing_state",
+                    "confidence",
+                    "risk_level",
+                    "action_grade",
+                    "recommended_action",
+                    "model_version",
+                },
+            ),
             "recommended_action": result.recommended_action,
-            "result_id": result.result_id,
-            "device_id": result.device_id,
         },
     )
 
@@ -150,8 +167,6 @@ def _scenario_to_diagnosis(
         recommended_action = template.recommended_action
     return replace(
         template,
-        task_id=diagnosis.task_id,
-        bearing_id=diagnosis.unit_id,
         bearing_state=diagnosis.state,
         confidence=diagnosis.confidence,
         risk_level=diagnosis.risk_level,
@@ -159,6 +174,14 @@ def _scenario_to_diagnosis(
         recommended_action=recommended_action,
         model_version=diagnosis.model_version,
     )
+
+
+def _legacy_evidence(result: object, *, exclude: set[str]) -> dict[str, object]:
+    return {
+        field.name: getattr(result, field.name)
+        for field in fields(result)
+        if field.name not in exclude
+    }
 
 
 def _require_template(template: object, expected_type: type[object]) -> None:

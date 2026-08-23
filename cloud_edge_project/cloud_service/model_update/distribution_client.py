@@ -27,6 +27,8 @@ def resolve_distribution_target(
         descriptor = catalog.require(model_type)
     except ValueError:
         raise ValueError("INVALID_APPROVED_MODEL")
+    if descriptor.family not in {"edge", "cloud"}:
+        raise ValueError("INVALID_APPROVED_MODEL")
     if descriptor.family == "edge":
         return {
             "family": "edge",
@@ -63,6 +65,8 @@ def build_distribution_request(
     try:
         descriptor = catalog.require(model_type)
     except ValueError:
+        raise ValueError("INVALID_APPROVED_MODEL")
+    if descriptor.family not in {"edge", "cloud"}:
         raise ValueError("INVALID_APPROVED_MODEL")
     result = {key: approved_model[key] for key in required}
     result["model_type"] = model_type

@@ -92,6 +92,12 @@ class ModelUpdateService:
     def _active_versions(self) -> ActiveModelVersionStore:
         return ActiveModelVersionStore(self.database_path)
 
+    def _model_family(self, model_type: str) -> str:
+        family = self.model_catalog.require(model_type).family
+        if family not in {"edge", "cloud"}:
+            raise ModelUpdateError("INVALID_APPROVED_MODEL")
+        return family
+
     def create(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ModelUpdateError("INVALID_UPDATE_REQUEST")
@@ -528,7 +534,7 @@ class ModelUpdateService:
             task, {"handoff_to_distribution", "distribution_in_progress"}
         )
         if (
-            self.model_catalog.require(task["model_type"]).family == "cloud"
+            self._model_family(task["model_type"]) == "cloud"
             and not local_cloud_activation_result
         ):
             raise ModelUpdateError("CLOUD_DISTRIBUTION_REQUIRES_LOCAL_ACTIVATION")
@@ -645,7 +651,7 @@ class ModelUpdateService:
         if not isinstance(executed_by, str) or not executed_by.strip():
             raise ModelUpdateError("ROLLBACK_EXECUTOR_REQUIRED")
         model_type = task["model_type"]
-        if self.model_catalog.require(model_type).family == "cloud":
+        if self._model_family(model_type) == "cloud":
             if local_cloud_activator is None:
                 raise ModelUpdateError("CLOUD_ROLLBACK_REQUIRES_LOCAL_ACTIVATION")
             try:

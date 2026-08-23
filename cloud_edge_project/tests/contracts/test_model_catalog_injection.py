@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 from cloud_service.model_update.distribution_client import build_distribution_request
-from cloud_service.model_update.service import ModelUpdateService
+import pytest
+
+from cloud_service.model_update.service import ModelUpdateError, ModelUpdateService
 from cloud_service.storage.database import connect
 from core.model_lifecycle import ModelCatalog, ModelDescriptor
 
@@ -16,6 +18,19 @@ GENERIC_CATALOG = ModelCatalog(
             family="edge",
             default_version="pump-v1",
             description="pump edge model",
+        )
+    },
+)
+
+INVALID_FAMILY_CATALOG = ModelCatalog(
+    scenario_id="pump",
+    default_model_id="pump_remote",
+    models={
+        "pump_remote": ModelDescriptor(
+            model_id="pump_remote",
+            family="remote",
+            default_version="pump-v1",
+            description="unsupported remote pump model",
         )
     },
 )
@@ -82,3 +97,27 @@ def test_model_update_service_uses_injected_default_and_seed_version(
 
     assert created["update"]["model_type"] == "pump_edge"
     assert created["update"]["baseline_version"] == "pump-v1"
+
+
+def test_distribution_rejects_injected_unknown_routing_family() -> None:
+    approved = {**_approved(), "model_type": "pump_remote"}
+
+    with pytest.raises(ValueError, match="INVALID_APPROVED_MODEL"):
+        build_distribution_request(approved, model_catalog=INVALID_FAMILY_CATALOG)
+
+
+def test_rollback_rejects_injected_unknown_routing_family(tmp_path: Path) -> None:
+    database_path = tmp_path / "cloud.db"
+    service = ModelUpdateService(
+        database_path,
+        model_catalog=INVALID_FAMILY_CATALOG,
+    )
+    _save_analysis(database_path)
+    created = service.create(
+        {"analysis_id": "analysis_pump", "problem_id": "problem_pump"}
+    )["update"]
+    service.repository.update(created["update_id"], status="ineffective")
+    service.request_rollback(created["update_id"], requested_by="operator")
+
+    with pytest.raises(ModelUpdateError, match="INVALID_APPROVED_MODEL"):
+        service.execute_rollback(created["update_id"], executed_by="operator")
