@@ -363,6 +363,8 @@ def _coerce_request(payload: Any) -> ScenarioInferenceRequest:
         raise ValueError("INVALID_REFERENCE_REQUEST")
     if request.scenario_id != SCENARIO_ID:
         raise ValueError("INVALID_REFERENCE_SCENARIO")
+    if not isinstance(request.evidence, Mapping):
+        raise ValueError("INVALID_REFERENCE_REQUEST")
     return request
 
 

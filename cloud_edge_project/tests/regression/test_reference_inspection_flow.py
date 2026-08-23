@@ -9,7 +9,7 @@ from core.consistency_engine import (
     ConsistencyRequest,
     ConsistencyUnit,
 )
-from core.scenario_contracts import ScenarioDiagnosis
+from core.scenario_contracts import ScenarioDiagnosis, ScenarioInferenceRequest
 from core.scenario_plugin import (
     ARBITRATION_POLICY,
     CLOUD_DIAGNOSIS,
@@ -195,6 +195,23 @@ def test_reference_edge_and_cloud_reject_malformed_evidence_or_capability(
         edge_provider.infer_compatible(packet)
     with pytest.raises(ValueError, match="INVALID_REFERENCE_REQUEST"):
         cloud_handler.infer(packet)
+
+
+@pytest.mark.parametrize("evidence", [None, []])
+def test_reference_edge_rejects_malformed_generic_request_evidence(evidence) -> None:
+    request = ScenarioInferenceRequest(
+        scenario_id="reference_inspection",
+        task_id="inspection-task-1",
+        unit_id="panel-1",
+        device_id="camera-1",
+        capability="edge_inference",
+        observation_window_id="frame-1",
+        evidence=evidence,
+    )
+    edge_provider = _registry().require_provider("reference_inspection", EDGE_INFERENCE)
+
+    with pytest.raises(ValueError, match="INVALID_REFERENCE_REQUEST"):
+        edge_provider.infer_compatible(request)
 
 
 def test_reference_results_run_through_generic_consistency_engine(
