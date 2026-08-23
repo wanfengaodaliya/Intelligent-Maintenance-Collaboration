@@ -79,9 +79,14 @@ class PacketRouter:
         self.clock_ns = clock_ns
 
     def decide(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        generic_vocabulary = uses_generic_scheduler_fields(payload)
         result = _validate_packet_result(payload)
         assignment = self.assignment_lookup(result["task_id"])
-        _validate_assignment_identity(result, assignment)
+        _validate_assignment_identity(
+            result,
+            assignment,
+            generic_vocabulary=generic_vocabulary,
+        )
         now_ns = self.clock_ns()
         decision_id = _decision_id(result)
 
@@ -425,7 +430,12 @@ def _validate_packet_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise PacketRouteError("INVALID_PACKET_RESULT", message) from error
 
 
-def _validate_assignment_identity(result: Mapping[str, Any], assignment: Mapping[str, Any] | None) -> None:
+def _validate_assignment_identity(
+    result: Mapping[str, Any],
+    assignment: Mapping[str, Any] | None,
+    *,
+    generic_vocabulary: bool,
+) -> None:
     if assignment is None:
         raise PacketRouteError("PACKET_ASSIGNMENT_CONFLICT", "task_id is not assigned", 409)
     try:
@@ -446,9 +456,14 @@ def _validate_assignment_identity(result: Mapping[str, Any], assignment: Mapping
     }
     for field, value in expected.items():
         if domain_assignment.get(field) != value:
+            external_field = (
+                "bearing_id"
+                if field == "unit_id" and not generic_vocabulary
+                else field
+            )
             raise PacketRouteError(
                 "PACKET_ASSIGNMENT_CONFLICT",
-                f"packet result does not match assigned {field}",
+                f"packet result does not match assigned {external_field}",
                 409,
             )
 

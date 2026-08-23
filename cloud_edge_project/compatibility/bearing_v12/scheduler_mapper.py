@@ -36,7 +36,7 @@ def uses_generic_scheduler_fields(value: Any) -> bool:
 
 
 def legacy_scheduler_error_message(message: str) -> str:
-    result = message
+    result = message.replace("unit result", "bearing result")
     for generic, legacy in _FIELD_ALIASES:
         result = result.replace(generic, legacy)
         result = result.replace(f"{legacy} or {legacy}", legacy)

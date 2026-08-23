@@ -255,3 +255,21 @@ def test_malformed_assignment_aliases_are_reported_as_assignment_conflict() -> N
 
     assert captured.value.code == "PACKET_ASSIGNMENT_CONFLICT"
     assert captured.value.status_code == 409
+
+
+def test_legacy_assignment_conflict_keeps_legacy_identity_field() -> None:
+    router = PacketRouter(
+        assignment_lookup=lambda _task_id: {
+            "task_id": "task_001",
+            "device_id": "machine_01",
+            "sender_id": "sender_02",
+            "bearing_id": "bearing_99",
+            "edge_node_id": "edge_01",
+            "assignment_status": "ASSIGNED",
+        },
+        cloud_registry=_ReadyRegistry(),
+        clock_ns=lambda: 3,
+    )
+
+    with pytest.raises(PacketRouteError, match="assigned bearing_id"):
+        router.decide(_packet_route_request())

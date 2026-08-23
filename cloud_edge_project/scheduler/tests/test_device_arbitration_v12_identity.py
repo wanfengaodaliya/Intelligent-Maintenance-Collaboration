@@ -281,3 +281,15 @@ def test_device_legacy_invalid_count_keeps_legacy_error_message() -> None:
             cloud_registry=_ReadyRegistry(),
             clock_ns=lambda: 3,
         ).decide(request)
+
+
+def test_device_legacy_invalid_result_keeps_legacy_object_name() -> None:
+    request = _request()
+    request["bearing_results"] = ["invalid"]
+    request["bearing_result_ids"] = ["invalid"]
+
+    with pytest.raises(DeviceArbitrationRouteError, match="bearing result must be"):
+        DeviceArbitrationRouter(
+            cloud_registry=_ReadyRegistry(),
+            clock_ns=lambda: 3,
+        ).decide(request)
