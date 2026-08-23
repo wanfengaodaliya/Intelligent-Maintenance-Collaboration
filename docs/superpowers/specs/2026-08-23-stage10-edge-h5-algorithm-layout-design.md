@@ -45,6 +45,8 @@ This batch will:
 - add one explicit bearing V1.2 compatibility export module;
 - retain the three old `edge_diagnosis` modules as thin explicit shims;
 - preserve existing `edge_diagnosis.__init__` exports;
+- copy the existing `compatibility` package into the edge image so the
+  approved legacy import chain is available at runtime;
 - add identity, golden-output, import-order, pickle, and architecture tests;
 - move one algorithm module at a time and verify it before continuing.
 
@@ -56,7 +58,7 @@ This batch will not:
   or polling behavior;
 - move model weights, normalization data, manifests, probe resources, or Git
   LFS files;
-- modify Dockerfile or packaging rules;
+- modify packaging rules beyond the approved one-line `compatibility` copy;
 - modify the provider API, edge service routes, scheduler, cloud service, or
   other Stage 10 responsibility groups.
 
@@ -309,8 +311,8 @@ Acceptance requires:
 - verify the old modules are explicit shims with no algorithm code;
 - verify no old shim directly imports the scenario package;
 - verify the scenario implementation does not import old H5 shims;
-- verify no model weight, resource, client, probe, Docker, or unrelated file
-  changed;
+- verify no model weight, resource, client, probe, unrelated Docker statement,
+  or unrelated file changed;
 - run the complete suite with the formal model environment;
 - require at least 811 baseline tests plus new tests;
 - request an independent read-only review and fix every Critical or Important
@@ -339,8 +341,14 @@ Potentially modified only for explicit compatibility exports:
 
 - `cloud_edge_project/edge_service/src/edge_diagnosis/__init__.py`.
 
+Modified only to make the approved compatibility boundary available in the
+edge image:
+
+- `cloud_edge_project/edge_service/Dockerfile` (one `COPY compatibility
+  ./compatibility` statement).
+
 Focused tests and architecture guards will be added or modified. No other
-production file is planned for change.
+production or packaging file is planned for change.
 
 ## Stop Conditions
 
@@ -350,8 +358,8 @@ Stop and request direction if:
 - probabilities exceed the existing accepted floating-point tolerance;
 - `local_h5_client`, `h5_probe`, model-store, version-store, worker, or poller
   logic must change;
-- any model weight, manifest, normalization, probe, Docker, or Git LFS file
-  must move or change;
+- any model weight, manifest, normalization, probe, unrelated Docker
+  statement, or Git LFS file must move or change;
 - compatibility requires duplicate implementation;
 - another Stage 10 responsibility group must move simultaneously;
 - an unrelated user modification overlaps a target file.
@@ -364,8 +372,8 @@ Stop and request direction if:
   boundary.
 - Public objects, model structure, features, tensors, outputs, evidence,
   errors, and versions remain equivalent.
-- Client, probe, artifacts, weights, resources, Docker, and lifecycle behavior
-  remain unchanged.
+- Client, probe, artifacts, weights, resources, and lifecycle behavior remain
+  unchanged; the edge image adds only the approved compatibility-package copy.
 - Focused and full tests pass.
 - Independent review reports no remaining Critical or Important finding.
 - This H5 algorithm batch is reported complete without automatically starting

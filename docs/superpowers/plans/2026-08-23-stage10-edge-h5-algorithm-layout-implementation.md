@@ -17,8 +17,9 @@ bearing V1.2 compatibility boundary.
   approved identity/value relationship.
 - Fixed-probe tensors, probabilities, class, confidence, result, risk,
   evidence, versions, and errors remain equivalent.
-- H5 client, probe loader, lifecycle, weights, manifests, resources, Docker,
-  and Git LFS content do not change.
+- H5 client, probe loader, lifecycle, weights, manifests, resources, and Git
+  LFS content do not change; Docker adds only the approved
+  `COPY compatibility ./compatibility` statement.
 - The full suite passes with at least the 811-test baseline plus new tests.
 - Independent review reports no remaining Critical or Important finding.
 
@@ -32,7 +33,8 @@ bearing V1.2 compatibility boundary.
   `edge_model/h5_probe.py`.
 - Do not regenerate, alter, or recommit the fixed probe.
 - Do not move or modify model weights, manifests, normalization files, model
-  directories, probe resources, Dockerfile, or Git LFS configuration.
+  directories, probe resources, unrelated Docker statements, or Git LFS
+  configuration.
 - Do not modify provider, service, scheduler, cloud, or lifecycle behavior.
 - Do not touch the protected user-owned deleted or untracked files.
 - Stop if output equivalence fails or a broader logic change becomes
@@ -254,7 +256,8 @@ Actions:
    compatibility imports, and `__all__`.
 6. Verify only scenario files own feature/network/runner definitions.
 7. Verify H5 client, probe, model store, version store, poller, worker,
-   provider, artifacts, resources, Dockerfile, and LFS files have no diff.
+   provider, artifacts, resources, and LFS files have no diff; verify the
+   Dockerfile differs only by the approved compatibility-package copy.
 8. Run model activation, rollback, readiness, worker, and provider tests.
 
 Verification:
@@ -294,11 +297,12 @@ Actions:
 Acceptance:
 
 - all focused and full tests pass;
-- all frozen hashes outside the approved source/test files are unchanged;
+- all frozen hashes outside the approved source/test files and the approved
+  Dockerfile copy statement are unchanged;
 - no tensor, probability, result, error, artifact, lifecycle, route, or weak
   network behavior changes;
-- only this H5 algorithm batch's source, compatibility, tests, and documents
-  are committed.
+- only this H5 algorithm batch's source, compatibility, Dockerfile, tests, and
+  documents are committed.
 
 ## Task 8: Independent review and final acceptance
 

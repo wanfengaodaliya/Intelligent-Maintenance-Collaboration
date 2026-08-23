@@ -40,6 +40,7 @@ COPY common ./common
 COPY core ./core
 COPY configs ./configs
 COPY scenarios ./scenarios
+COPY compatibility ./compatibility
 COPY contracts ./contracts
 COPY edge_service ./edge_service
 
