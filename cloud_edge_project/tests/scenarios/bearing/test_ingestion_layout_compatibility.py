@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -311,4 +312,120 @@ def test_packet_serializer_preserves_validation_error() -> None:
         assert str(error.value) == (
             "packet cannot be serialized: "
             "Out of range float values are not JSON compliant: nan"
+        )
+
+
+def _create_historical_source_mapping_database(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """CREATE TABLE packet_source_mapping (
+                   packet_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,
+                   bearing_id TEXT NOT NULL,dataset_name TEXT NOT NULL,
+                   dataset_version TEXT NOT NULL,source_file TEXT NOT NULL,
+                   source_bearing_code TEXT NOT NULL,start_index INTEGER NOT NULL,
+                   end_index INTEGER NOT NULL,window_index INTEGER NOT NULL,
+                   created_at_ns INTEGER NOT NULL
+               )"""
+        )
+        connection.execute(
+            "INSERT INTO packet_source_mapping VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "historical_packet",
+                "sd_01_tk_0001",
+                "bearing_01",
+                "paderborn",
+                "paderborn_v1",
+                "N09_M07_F10_KA01_1.mat",
+                "KA01",
+                0,
+                3200,
+                0,
+                100,
+            ),
+        )
+
+
+def _source_mapping_created_at(database_path: Path, packet_id: str) -> int:
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT created_at_ns FROM packet_source_mapping WHERE packet_id=?",
+            (packet_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_source_mapping_preserves_historical_database_and_upsert_shape(
+    tmp_path: Path,
+) -> None:
+    from sender.source_mapping import PacketSourceMappingStore as LegacyStore
+    from scenarios.bearing.ingestion.source_mapping import PacketSourceMappingStore
+
+    database_path = tmp_path / "historical.db"
+    _create_historical_source_mapping_database(database_path)
+
+    legacy_store = LegacyStore(database_path)
+    scenario_store = PacketSourceMappingStore(database_path)
+    historical_mapping = {
+        "packet_id": "historical_packet",
+        "task_id": "sd_01_tk_0001",
+        "bearing_id": "bearing_01",
+        "dataset_name": "paderborn",
+        "dataset_version": "paderborn_v1",
+        "source_file": "N09_M07_F10_KA01_1.mat",
+        "source_bearing_code": "KA01",
+        "start_index": 0,
+        "end_index": 3200,
+        "window_index": 0,
+    }
+
+    assert legacy_store.get("historical_packet") == historical_mapping
+    assert scenario_store.get("historical_packet") == historical_mapping
+
+    legacy_store.save(
+        packet_id="new_packet",
+        task_id="sd_01_tk_0002",
+        bearing_id="bearing_01",
+        source_path=tmp_path / "N09_M07_F10_KA01_1.mat",
+        start_index=3200,
+        end_index=6400,
+        window_index=1,
+    )
+    created_at_ns = _source_mapping_created_at(database_path, "new_packet")
+    scenario_store.save(
+        packet_id="new_packet",
+        task_id="sd_01_tk_0003",
+        bearing_id="bearing_02",
+        source_path=tmp_path / "N09_M07_F10_ki04_1.mat",
+        start_index=6400,
+        end_index=9600,
+        window_index=2,
+    )
+
+    assert legacy_store.get("new_packet") == {
+        "packet_id": "new_packet",
+        "task_id": "sd_01_tk_0003",
+        "bearing_id": "bearing_02",
+        "dataset_name": "paderborn",
+        "dataset_version": "paderborn_v1",
+        "source_file": "N09_M07_F10_ki04_1.mat",
+        "source_bearing_code": "KI04",
+        "start_index": 6400,
+        "end_index": 9600,
+        "window_index": 2,
+    }
+    assert _source_mapping_created_at(database_path, "new_packet") == created_at_ns
+
+
+def test_source_mapping_preserves_filename_error() -> None:
+    from sender.source_mapping import extract_paderborn_bearing_code as legacy_extract
+    from scenarios.bearing.ingestion.source_mapping import (
+        extract_paderborn_bearing_code,
+    )
+
+    for extractor in (extract_paderborn_bearing_code, legacy_extract):
+        with pytest.raises(ValueError) as error:
+            extractor("unsupported.mat")
+        assert str(error.value) == (
+            "source file is not a supported Paderborn MAT filename"
         )

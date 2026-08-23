@@ -20,6 +20,11 @@ from scenarios.bearing.ingestion.packet import (
     build_sensor_packet,
     serialize_packet,
 )
+from scenarios.bearing.ingestion.source_mapping import (
+    PADERBORN_FILENAME,
+    PacketSourceMappingStore,
+    extract_paderborn_bearing_code,
+)
 
 __all__ = [
     "MatDataError",
@@ -38,4 +43,7 @@ __all__ = [
     "BEARING_ID_PATTERN",
     "build_sensor_packet",
     "serialize_packet",
+    "PADERBORN_FILENAME",
+    "extract_paderborn_bearing_code",
+    "PacketSourceMappingStore",
 ]
