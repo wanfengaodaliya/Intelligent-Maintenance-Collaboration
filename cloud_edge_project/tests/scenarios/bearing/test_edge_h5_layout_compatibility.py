@@ -28,30 +28,40 @@ MODEL_DIR = (
     / "distilled_h5"
     / MODEL_VERSION
 )
-PUBLIC_NAMES = {
-    "features": ("_compute_single", "normalize_features"),
-    "network": ("PhysicalFusionModel",),
-    "distilled_h5_model": (
-        "H5_LABELS",
-        "RUNTIME_MODEL_VERSION",
-        "H5ModelArtifactError",
-        "DistilledH5DiagnosticModel",
+MODULE_EXPORTS = (
+    ("features", "h5_features", ("_compute_single", "normalize_features")),
+    ("network", "h5_network", ("PhysicalFusionModel",)),
+    (
+        "distilled_h5_model",
+        "distilled_h5_model",
+        (
+            "H5_LABELS",
+            "RUNTIME_MODEL_VERSION",
+            "H5ModelArtifactError",
+            "DistilledH5DiagnosticModel",
+        ),
     ),
-}
+)
 
 
-@pytest.mark.parametrize(("module_name", "public_names"), PUBLIC_NAMES.items())
+@pytest.mark.parametrize(
+    ("scenario_module_name", "legacy_module_name", "public_names"),
+    MODULE_EXPORTS,
+)
 def test_legacy_h5_exports_are_scenario_objects(
-    module_name: str,
+    scenario_module_name: str,
+    legacy_module_name: str,
     public_names: tuple[str, ...],
 ) -> None:
     scenario_module = importlib.import_module(
-        f"scenarios.bearing.edge_inference.h5.{module_name}"
+        f"scenarios.bearing.edge_inference.h5.{scenario_module_name}"
     )
     compatibility_module = importlib.import_module(
         "compatibility.bearing_v12.edge_h5_exports"
     )
-    legacy_module = importlib.import_module(f"edge_diagnosis.{module_name}")
+    legacy_module = importlib.import_module(
+        f"edge_diagnosis.{legacy_module_name}"
+    )
 
     assert tuple(legacy_module.__all__) == public_names
     assert set(public_names).issubset(compatibility_module.__all__)
