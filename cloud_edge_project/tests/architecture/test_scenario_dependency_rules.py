@@ -37,6 +37,22 @@ EDGE_H5_MODULES = {
         {"H5ModelArtifactError", "DistilledH5DiagnosticModel"},
     ),
 }
+CLOUD_MOMENT_MODULES = {
+    "moment_backbone.py": (
+        "moment_backbone.py",
+        {"load_moment_backbone"},
+    ),
+    "moment_light_adapt.py": (
+        "moment_light_adapt.py",
+        {
+            "MomentPrediction",
+            "MomentReviewPolicy",
+            "build_condition_vector",
+            "deployment_workspace_root",
+            "MomentLightAdaptRunner",
+        },
+    ),
+}
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
@@ -401,3 +417,135 @@ def test_edge_image_copies_compatibility_boundary() -> None:
     )
 
     assert "COPY compatibility ./compatibility" in dockerfile.splitlines()
+
+
+@pytest.mark.parametrize("legacy_filename", CLOUD_MOMENT_MODULES)
+def test_legacy_cloud_moment_modules_use_compatibility_boundary(
+    legacy_filename: str,
+) -> None:
+    legacy_path = PROJECT_ROOT / "cloud_service" / legacy_filename
+    imported_modules = _imported_modules(legacy_path)
+
+    assert "compatibility.bearing_v12.cloud_moment_exports" in imported_modules
+    assert not any(
+        module.startswith("scenarios.bearing") for module in imported_modules
+    )
+
+
+@pytest.mark.parametrize(
+    ("legacy_filename", "scenario_filename", "business_names"),
+    tuple(
+        (legacy_filename, scenario_filename, business_names)
+        for legacy_filename, (
+            scenario_filename,
+            business_names,
+        ) in CLOUD_MOMENT_MODULES.items()
+    ),
+)
+def test_bearing_cloud_moment_business_definitions_have_one_owner(
+    legacy_filename: str,
+    scenario_filename: str,
+    business_names: set[str],
+) -> None:
+    scenario_path = (
+        PROJECT_ROOT
+        / "scenarios"
+        / "bearing"
+        / "cloud_diagnosis"
+        / scenario_filename
+    )
+    legacy_path = PROJECT_ROOT / "cloud_service" / legacy_filename
+
+    assert scenario_path.is_file()
+    assert business_names.issubset(_defined_names(scenario_path))
+    assert _defined_names(legacy_path).isdisjoint(business_names)
+    assert not {
+        "cloud_service.moment_backbone",
+        "cloud_service.moment_light_adapt",
+    }.intersection(_imported_modules(scenario_path))
+
+
+def test_legacy_cloud_moment_modules_are_thin_explicit_shims() -> None:
+    legacy_root = PROJECT_ROOT / "cloud_service"
+    for legacy_filename in CLOUD_MOMENT_MODULES:
+        path = legacy_root / legacy_filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assignments = [
+            target.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
+
+        assert assignments == ["__all__"]
+        assert tree.body and _is_module_docstring(tree.body[0])
+        assert all(
+            isinstance(node, (ast.ImportFrom, ast.Assign))
+            for node in tree.body[1:]
+        )
+        assert all(
+            alias.name != "*"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        )
+
+
+def test_cloud_moment_compatibility_exports_are_explicit() -> None:
+    path = (
+        PROJECT_ROOT
+        / "compatibility"
+        / "bearing_v12"
+        / "cloud_moment_exports.py"
+    )
+
+    assert path.is_file()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assignments = [
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
+
+    assert assignments == ["__all__"]
+    assert tree.body and _is_module_docstring(tree.body[0])
+    assert all(
+        isinstance(node, (ast.ImportFrom, ast.Assign))
+        for node in tree.body[1:]
+    )
+    assert all(
+        alias.name != "*"
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    )
+
+
+def test_bearing_cloud_moment_business_definitions_have_exactly_one_owner() -> None:
+    scenario_root = PROJECT_ROOT / "scenarios" / "bearing" / "cloud_diagnosis"
+    compatibility_path = (
+        PROJECT_ROOT
+        / "compatibility"
+        / "bearing_v12"
+        / "cloud_moment_exports.py"
+    )
+    legacy_root = PROJECT_ROOT / "cloud_service"
+    expected_paths = [
+        *(scenario_root / filename for filename, _names in CLOUD_MOMENT_MODULES.values()),
+        compatibility_path,
+        *(legacy_root / filename for filename in CLOUD_MOMENT_MODULES),
+    ]
+
+    assert all(path.is_file() for path in expected_paths)
+    for scenario_filename, business_names in CLOUD_MOMENT_MODULES.values():
+        expected_owner = scenario_root / scenario_filename
+        for business_name in business_names:
+            owners = [
+                path
+                for path in expected_paths
+                if business_name in _defined_names(path)
+            ]
+            assert owners == [expected_owner]
