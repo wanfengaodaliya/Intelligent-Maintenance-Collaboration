@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,20 +16,35 @@ from core.scenario_plugin import (
 
 
 LOGGER = logging.getLogger(__name__)
+_TORCH_THREAD_CONFIG_LOCK = threading.Lock()
+_APPLIED_TORCH_THREAD_CONFIG: tuple[int, int] | None = None
 
 
 def configure_local_h5_torch_threads() -> dict[str, int]:
     """Limit PyTorch internal parallelism for the bearing H5 runtime."""
+    global _APPLIED_TORCH_THREAD_CONFIG
     intraop = int(os.getenv("EDGE_TORCH_INTRAOP_THREADS", "1"))
     interop = int(os.getenv("EDGE_TORCH_INTEROP_THREADS", "1"))
     if intraop < 1 or interop < 1:
         raise ValueError(
             "EDGE_TORCH_INTRAOP_THREADS and EDGE_TORCH_INTEROP_THREADS must be >= 1"
         )
-    import torch
+    requested = (intraop, interop)
+    with _TORCH_THREAD_CONFIG_LOCK:
+        if _APPLIED_TORCH_THREAD_CONFIG is not None:
+            if requested != _APPLIED_TORCH_THREAD_CONFIG:
+                raise ValueError(
+                    "PyTorch thread configuration is already fixed for this process: "
+                    f"intraop={_APPLIED_TORCH_THREAD_CONFIG[0]}, "
+                    f"interop={_APPLIED_TORCH_THREAD_CONFIG[1]}"
+                )
+            return {"intraop": intraop, "interop": interop}
 
-    torch.set_num_threads(intraop)
-    torch.set_num_interop_threads(interop)
+        import torch
+
+        torch.set_num_threads(intraop)
+        torch.set_num_interop_threads(interop)
+        _APPLIED_TORCH_THREAD_CONFIG = requested
     return {"intraop": intraop, "interop": interop}
 
 
