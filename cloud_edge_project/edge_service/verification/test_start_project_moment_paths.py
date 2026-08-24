@@ -23,3 +23,16 @@ def test_start_script_checks_every_required_moment_asset():
     assert all(path in script for path in required_defaults)
     assert all(expression in script for expression in required_derived_files)
     assert "$missingMomentFiles" in script
+
+
+def test_check_config_is_a_read_only_full_preflight():
+    script = START_SCRIPT.read_text(encoding="utf-8")
+    completion = script.index("Read-only deployment preflight passed")
+    stage_one = script.index("# ---------- Stage 1: network simulator ----------")
+
+    assert completion < stage_one
+    assert "no secret was created during preflight" in script
+    assert "read-only preflight will not stop containers" in script
+    assert "docker network inspect network_simulator_default" in script
+    assert "conda run -n $CondaEnvName python --version" in script
+    assert "docker compose -f compose.multi-edge.yml config --quiet" in script

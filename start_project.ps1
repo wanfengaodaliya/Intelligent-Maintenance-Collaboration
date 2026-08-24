@@ -105,6 +105,7 @@ Assert-UrlPort "VLLM_URL" $VllmUrl $CloudLlmPort
 $CondaActivatePrefix = "conda shell.powershell hook | Out-String | Invoke-Expression; conda activate '$CondaEnvName'; "
 
 if ($CheckConfig) {
+    Write-Host "=== Read-only deployment preflight ==="
     Write-Host "ProjectRoot=$ProjectRoot"
     Write-Host "CondaEnv=$CondaEnvName"
     Write-Host "Scheduler=http://$SchedulerHost`:$SchedulerPort"
@@ -112,7 +113,6 @@ if ($CheckConfig) {
     Write-Host "Edges=$Edge01NodeId`:$Edge01Port,$Edge02NodeId`:$Edge02Port"
     Write-Host "NetworkApi=http://$NetworkApiHost`:$NetworkApiPort"
     Write-Host "LlamaCpp=$LLM_DIR"
-    exit 0
 }
 
 # EDGE_CONTROL_SHARED_SECRET：Scheduler 与 Edge 之间控制链路的 HMAC 密钥（≥32字节）。
@@ -128,6 +128,10 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
     # 未设置、文件不存在，或文件内容无效(过短)时，用 PowerShell 5.1 兼容方式重新生成。
     if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
         [System.Text.Encoding]::UTF8.GetByteCount($env:EDGE_CONTROL_SHARED_SECRET) -lt 32) {
+        if ($CheckConfig) {
+            Write-Host "  EDGE_CONTROL_SHARED_SECRET must contain at least 32 bytes (no secret was created during preflight)"
+            exit 1
+        }
         $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
         $bytes = New-Object byte[] 48
         $rng.GetBytes($bytes)
@@ -205,12 +209,25 @@ $dockerInfo = docker info 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "  Docker not running, start Docker Desktop first"; exit 1 }
 Write-Host "  Docker OK"
 
+Write-Host "[Check] External Docker network network_simulator_default ..."
+$null = docker network inspect network_simulator_default 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Network missing. Create it with: docker network create network_simulator_default"
+    exit 1
+}
+Write-Host "  External network OK"
+
 Write-Host "[Check] Conda $CondaEnvName env ..."
 $condaEnvs = conda env list 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "  Could not query Conda environments"; exit 1 }
 $escapedCondaEnv = [regex]::Escape($CondaEnvName)
 if (-not ($condaEnvs -match "^\s*$escapedCondaEnv\s")) { Write-Host "  $CondaEnvName env missing, create it first"; exit 1 }
 Write-Host "  $CondaEnvName OK"
+
+Write-Host "[Check] Python in Conda environment ..."
+$pythonVersion = conda run -n $CondaEnvName python --version 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "  Python is unavailable in Conda env $CondaEnvName"; exit 1 }
+Write-Host "  $pythonVersion"
 
 Write-Host "[Check] MOMENT model ..."
 $momentCheckpoint = Resolve-DeploymentPath (Get-EnvValue "CLOUD_MOMENT_CHECKPOINT_PATH" "model_assets\moment\releases\moment-scl05-final\best_model.pt") $CloudEdge
@@ -264,12 +281,29 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Image OK"
 
+Write-Host "[Check] Docker Compose interpolation ..."
+Push-Location $EdgeService
+try {
+    docker compose -f compose.multi-edge.yml config --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  compose.multi-edge.yml interpolation failed"
+        exit 1
+    }
+} finally {
+    Pop-Location
+}
+Write-Host "  Compose OK"
+
 Write-Host "[Check] Host ports $Edge01Port/$Edge02Port must be free for the Edge containers ..."
 $occupiedPorts = @()
 foreach ($port in $Edge01Port, $Edge02Port) {
     if (Test-TcpPort $HealthHost $port) { $occupiedPorts += $port }
 }
 if ($occupiedPorts.Count -gt 0) {
+    if ($CheckConfig) {
+        Write-Host "  Ports $($occupiedPorts -join ', ') are occupied; read-only preflight will not stop containers"
+        exit 1
+    }
     # 端口被占用：通常是上次运行遗留的 edge 容器（Docker 容器不随终端关闭而停止）。
     # 自动执行 compose down 清理，再重新检查；若仍被占用则说明不是本项目的容器。
     Write-Host "  Ports $($occupiedPorts -join ', ') in use. Stopping stale Edge containers ..."
@@ -299,6 +333,11 @@ if (-not $SkipLLM) {
         exit 1
     }
     Write-Host "[Check] LLM OK (0.5B suggestion + 3B cloud model-update)"
+}
+
+if ($CheckConfig) {
+    Write-Host "=== Read-only deployment preflight passed; no files, processes, or containers were changed ==="
+    exit 0
 }
 
 # ---------- Stage 1: network simulator ----------
