@@ -45,8 +45,8 @@
 
 ### 5. 调度拓扑时间参考
 
-- 链路状态按后端 `current_state` 和 `available` 判断，不再依赖接口不存在的 `status/toxics` 字段。
-- 每条链路显示 `state_since_ns` 对应的“状态开始时间”。
+- 链路状态优先按后端实际生效的 `applied_parameters.state` 和 `available` 判断，尚未应用时回退到 `current_state`；不再依赖接口不存在的 `status/toxics` 字段。
+- 每条链路优先显示 `applied_state_since_ns` 对应的“状态开始时间”，尚未应用时回退到 `state_since_ns`。
 - 链路板块显示本次成功获取数据的“刷新时间”。
 - 时间转换统一处理纳秒 Unix 时间戳，缺失值显示 `-`。
 

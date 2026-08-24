@@ -33,7 +33,7 @@
 - `cloud_edge_project/frontend/arbitration.html`: automatically list device decisions and true conflict arbitrations.
 - `cloud_edge_project/frontend/analysis.html`: automatically list recent saved analyses.
 - `cloud_edge_project/frontend/topology.html`: render actual link state and timestamps.
-- `cloud_edge_project/tests/test_frontend_realtime_views.py`: static contract checks for the framework-free pages.
+- `cloud_edge_project/frontend/test_realtime_views.py`: static contract checks for the framework-free pages.
 
 ### Task 1: Increment Sender device IDs by round
 
@@ -136,7 +136,7 @@ Expected: missing-method failures.
 
 Each method chooses one of two parameterized SQL statements depending on whether the optional device/subject filter is supplied. Select only `payload_json` or `result_json`, order by the persisted nanosecond column descending with the stable ID descending as a tie-breaker, apply `LIMIT ?`, and `json.loads` every row.
 
-For decisions use `received_at_ns, result_id`; for arbitration use `created_at_ns, arbitration_id`; for analysis use `created_at_ns, analysis_id`.
+For decisions use the business timestamp in `payload_json.closed_at_ns`, then `payload_json.created_at_ns`, with `received_at_ns` as fallback and `result_id` as the final tie-breaker. For arbitration use `created_at_ns, arbitration_id`; for analysis use `created_at_ns, analysis_id`.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -191,7 +191,7 @@ Expected: all selected Cloud tests pass.
 ### Task 4: Render live session counts and persisted record lists
 
 **Files:**
-- Create: `cloud_edge_project/tests/test_frontend_realtime_views.py`
+- Create: `cloud_edge_project/frontend/test_realtime_views.py`
 - Modify: `cloud_edge_project/frontend/index.html`
 - Modify: `cloud_edge_project/frontend/arbitration.html`
 - Modify: `cloud_edge_project/frontend/analysis.html`
@@ -199,7 +199,7 @@ Expected: all selected Cloud tests pass.
 
 **Interfaces:**
 - Consumes: the three API envelopes from Task 3.
-- Consumes: network link fields `current_state`, `available`, `state_since_ns`, `desired_parameters`, and `applied_parameters`.
+- Consumes: network link fields `current_state`, `available`, `state_since_ns`, `applied_state_since_ns`, `desired_parameters`, and `applied_parameters`.
 - Produces: `fmtNs(timestampNs)` in pages that display backend nanoseconds.
 
 - [ ] **Step 1: Write failing static frontend contract tests**
@@ -233,7 +233,7 @@ def test_topology_uses_backend_state_timestamp() -> None:
 Run:
 
 ```powershell
-python -m pytest cloud_edge_project/tests/test_frontend_realtime_views.py -q
+python -m pytest cloud_edge_project/frontend/test_realtime_views.py -q
 ```
 
 Expected: assertions fail against the current pages.
@@ -252,7 +252,7 @@ In `analysis.html`, add a recent-results list fetched on load and every five sec
 
 - [ ] **Step 6: Align topology state and timestamps**
 
-In `topology.html`, derive warning state from `current_state !== "normal" || available === false`, display state label, display the formatted `state_since_ns`, and update a “刷新时间” hint after a successful fetch. Stop reading nonexistent `status`, `toxics`, and `active_toxics` fields.
+In `topology.html`, derive the displayed state from `applied_parameters.state` with `current_state` fallback and from `available`, display the formatted `applied_state_since_ns` with `state_since_ns` fallback, and update a “刷新时间” hint after a successful fetch. Stop reading nonexistent `status`, `toxics`, and `active_toxics` fields.
 
 - [ ] **Step 7: Run frontend contract tests and verify GREEN**
 
@@ -269,7 +269,7 @@ Run the Task 4 pytest command. Expected: all four static checks pass.
 - [ ] **Step 1: Run focused tests**
 
 ```powershell
-python -m pytest cloud_edge_project/sender_module/tests/test_rounds.py cloud_edge_project/cloud_service/tests/test_recent_record_queries.py cloud_edge_project/cloud_service/tests/test_v12_result_receiver.py cloud_edge_project/cloud_service/tests/test_global_analysis_service.py cloud_edge_project/tests/test_frontend_realtime_views.py -q
+python -m pytest cloud_edge_project/sender_module/tests/test_rounds.py cloud_edge_project/cloud_service/tests/test_recent_record_queries.py cloud_edge_project/cloud_service/tests/test_v12_result_receiver.py cloud_edge_project/cloud_service/tests/test_global_analysis_service.py cloud_edge_project/frontend/test_realtime_views.py -q
 ```
 
 Expected: zero failures.

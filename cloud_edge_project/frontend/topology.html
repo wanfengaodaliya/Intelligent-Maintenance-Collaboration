@@ -56,8 +56,8 @@
           </table></div>
         </div>
         <div class="card">
-          <div class="card-title">网络链路质量 <span class="hint">网络模拟器 :8090</span></div>
-          <div id="linkBox"><div class="empty">加载中…</div></div>
+          <div class="card-title">网络链路质量 <span class="hint" id="linkRefresh">刷新时间：-</span></div>
+          <div id="linkBox" style="max-height:520px;overflow:auto;"><div class="empty">加载中…</div></div>
         </div>
       </div>
     </div>
@@ -116,6 +116,12 @@ function kvRows(pairs) {
   ).join("") + "</div>";
 }
 
+function fmtNs(value) {
+  const ns = Number(value);
+  if (!Number.isFinite(ns) || ns <= 0) return "-";
+  return new Date(ns / 1e6).toLocaleString("zh-CN", { hour12: false });
+}
+
 async function refresh() {
   // 1. 各服务健康（决定拓扑节点颜色）
   const probes = [
@@ -170,6 +176,7 @@ async function refresh() {
   try {
     const links = await Api.get("network/api/v1/network/links");
     renderLinks(links);
+    el("linkRefresh").textContent = "刷新时间：" + new Date().toLocaleTimeString("zh-CN", { hour12: false });
   } catch {
     el("linkBox").innerHTML = '<div class="empty">网络模拟器（:8090）不可用</div>';
   }
@@ -200,22 +207,35 @@ function renderLinks(data) {
     el("linkBox").innerHTML = '<div class="empty">暂无链路数据</div>';
     return;
   }
-  const rows = items.slice(0, 12).map((l) => {
+  const rows = items.map((l) => {
     const id = l.link_id || l.id || "-";
-    const toxic = l.toxics || l.active_toxics || [];
-    const down = l.status === "down" || l.available === false || toxic.length > 0;
+    const parameters = l.applied_parameters || {};
+    const state = String(parameters.state ?? l.current_state ?? "-").toUpperCase();
+    const effectiveState = l.available === false ? "DISCONNECTED" : state;
+    const stateText = {
+      GOOD: "良好",
+      MEDIUM: "一般",
+      BAD: "较差",
+      DISCONNECTED: "断开",
+    }[effectiveState] || effectiveState;
+    const stateClass = effectiveState === "GOOD" ? "ok" : effectiveState === "MEDIUM" ? "warn" : "danger";
+    const loss = Number(parameters.packet_loss_percent);
+    const quality = [
+      parameters.latency_ms === null || parameters.latency_ms === undefined ? null : "延迟 " + parameters.latency_ms + "ms",
+      Number.isFinite(loss) ? "丢包 " + loss.toFixed(2) + "%" : null,
+    ].filter(Boolean).join(" · ") || "-";
     return "<tr><td class='mono trunc' title='" + fmt.escape(id) + "'>" + fmt.escape(id) +
-      "</td><td>" + (down ? badge("受干扰", "warn") : badge("正常", "ok")) +
+      "</td><td>" + badge(fmt.escape(stateText), stateClass) +
+      "</td><td style='white-space:nowrap;font-size:11px;color:var(--text-dim)'>" + fmt.escape(fmtNs(l.applied_state_since_ns ?? l.state_since_ns)) +
       "</td><td class='trunc' style='font-size:11px;color:var(--text-dim)'>" +
-      fmt.escape(toxic.map((t) => t.name || t.type).join(", ") || "-") + "</td></tr>";
+      fmt.escape(quality) + "</td></tr>";
   });
   el("linkBox").innerHTML =
-    '<div class="table-wrap"><table class="list"><thead><tr><th>链路 ID</th><th>状态</th><th>干扰</th></tr></thead><tbody>' +
+    '<div class="table-wrap"><table class="list"><thead><tr><th>链路 ID</th><th>状态</th><th>状态开始时间</th><th>链路参数</th></tr></thead><tbody>' +
     rows.join("") + "</tbody></table></div>";
 }
 
 drawTopo();
-refresh();
 startPolling(refresh, 5000);
 </script>
 </body>

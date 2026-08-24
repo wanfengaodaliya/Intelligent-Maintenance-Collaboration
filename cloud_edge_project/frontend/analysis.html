@@ -48,6 +48,11 @@
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-title">最近保存的分析 <span class="hint" id="recentMeta">每 5 秒刷新</span></div>
+      <div id="recentList" style="max-height:480px;overflow:auto;"><div class="empty">加载中…</div></div>
+    </div>
+
     <!-- 结果 -->
     <div id="resultWrap" style="display:none;">
       <div class="grid grid-4" id="summaryMetrics"></div>
@@ -65,6 +70,14 @@
 <script src="js/common.js"></script>
 <script>
 "use strict";
+
+let recentAnalyses = [];
+
+function fmtNs(value) {
+  const ns = Number(value);
+  if (!Number.isFinite(ns) || ns <= 0) return "-";
+  return new Date(ns / 1e6).toLocaleString("zh-CN", { hour12: false });
+}
 
 function kvRows(pairs) {
   return '<div class="kv">' + pairs.map(
@@ -127,6 +140,48 @@ function renderResult(data, metaText) {
   el("detailBox").innerHTML = renderTree(r);
 }
 
+function renderRecentAnalyses(items) {
+  if (!items.length) {
+    el("recentList").innerHTML = '<div class="empty">数据库中暂无全局分析记录</div>';
+    return;
+  }
+  el("recentList").innerHTML = items.map((item, index) => {
+    const health = item.device_health_analysis || {};
+    const count = item.analysis_window && item.analysis_window.actual_task_count;
+    const trend = { stable: "稳定", improving: "改善", degrading: "恶化" }[health.trend] || health.trend || "-";
+    return '<div class="item" role="button" tabindex="0" onclick="showRecentAnalysis(' + index + ')">' +
+      '<span class="time">' + fmt.escape(fmtNs(item.created_at_ns)) + '</span>' +
+      '<div class="body"><div class="row1">' +
+      badge(fmt.stateText(health.latest_state), fmt.stateClass(health.latest_state)) +
+      '设备 <b>' + fmt.escape(item.subject_id || "-") + '</b></div>' +
+      '<div class="row2">趋势 ' + fmt.escape(trend) +
+      ' · 任务数 ' + fmt.escape(String(count ?? "-")) +
+      ' · ' + fmt.escape(item.analysis_id || "-") + '</div></div></div>';
+  }).join("");
+}
+
+function showRecentAnalysis(index) {
+  const item = recentAnalyses[index];
+  if (!item) return;
+  el("subjectId").value = item.subject_id || "";
+  renderResult({ result: item }, "数据库记录 · " + fmtNs(item.created_at_ns));
+}
+
+async function loadRecentAnalyses() {
+  const scenario = el("scenarioType").value;
+  const subjectId = el("subjectId").value.trim();
+  const query = "?scenario_type=" + encodeURIComponent(scenario) + "&limit=50" +
+    (subjectId ? "&subject_id=" + encodeURIComponent(subjectId) : "");
+  try {
+    const data = await Api.get("cloud/cloud/global-analysis/recent" + query);
+    recentAnalyses = data.items || [];
+    renderRecentAnalyses(recentAnalyses);
+    el("recentMeta").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  } catch (error) {
+    el("recentList").innerHTML = '<div class="empty">读取失败：' + fmt.escape(error.message) + '</div>';
+  }
+}
+
 async function runAnalysis() {
   const body = {
     scenario_type: el("scenarioType").value,
@@ -141,6 +196,7 @@ async function runAnalysis() {
   try {
     const data = await Api.post("cloud/cloud/global-analysis", body);
     renderResult(data, "本次执行 · " + new Date().toLocaleString("zh-CN"));
+    loadRecentAnalyses();
     toast("分析完成", "ok");
   } catch (e) {
     toast("分析失败：" + e.message, "danger");
@@ -157,7 +213,7 @@ async function loadLatest() {
   try {
     const data = await Api.get("cloud/cloud/global-analysis/" + st + "/" + encodeURIComponent(sid) + "/latest");
     const r = data.result || data;
-    renderResult(data, "最近一次 · " + (r.created_at ? String(r.created_at).replace("T", " ").slice(0, 19) : ""));
+    renderResult(data, "最近一次 · " + fmtNs(r.created_at_ns));
   } catch (e) {
     toast(e.status === 404 ? "该对象暂无已保存的分析结果，请先执行分析" : "读取失败：" + e.message, "warn");
   }
@@ -165,6 +221,8 @@ async function loadLatest() {
 
 el("runBtn").addEventListener("click", runAnalysis);
 el("latestBtn").addEventListener("click", loadLatest);
+el("subjectId").addEventListener("keydown", (event) => { if (event.key === "Enter") loadRecentAnalyses(); });
+startPolling(loadRecentAnalyses, 5000);
 </script>
 </body>
 </html>

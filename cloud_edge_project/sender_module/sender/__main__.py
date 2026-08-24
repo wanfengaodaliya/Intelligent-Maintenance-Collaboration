@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from sender.config import load_config
@@ -32,6 +34,21 @@ def positive_int(raw: str) -> int:
     if value <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return value
+
+
+def device_id_for_round(
+    base_device_id: str, round_number: int, total_rounds: int
+) -> str:
+    if total_rounds == 1:
+        return base_device_id
+    match = re.fullmatch(r"(.*?)(\d+)", base_device_id)
+    if match is None:
+        raise ValueError(
+            "device_id must end with a numeric suffix when --rounds is greater than 1"
+        )
+    prefix, suffix = match.groups()
+    value = int(suffix) + round_number - 1
+    return prefix + str(value).zfill(len(suffix))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,12 +81,18 @@ def main() -> int:
         config = load_config(args.config)
         source_files = parse_source_files(args.source)
         summaries = []
-        for _round_number in range(1, args.rounds + 1):
+        for round_number in range(1, args.rounds + 1):
             # run_all_senders starts the three configured Senders concurrently;
             # rounds stay sequential so one formal run has a deterministic size.
+            round_config = replace(
+                config,
+                device_id=device_id_for_round(
+                    config.device_id, round_number, args.rounds
+                ),
+            )
             summaries.extend(
                 run_all_senders(
-                    config,
+                    round_config,
                     source_files,
                     realtime=not args.accelerated,
                 )
