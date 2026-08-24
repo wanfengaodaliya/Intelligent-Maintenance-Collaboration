@@ -19,6 +19,11 @@ from core.scenario_registry import (
     ScenarioNotFoundError,
     ScenarioRegistry,
     UnresolvedScenarioCapabilityError,
+    normalize_scenario_type,
+)
+from compatibility.bearing_v12.scenario_mapper import (
+    BEARING_SCENARIO_TYPE,
+    normalize_legacy_scenario_type,
 )
 from core.scenario_plugin import (
     ARBITRATION_POLICY,
@@ -51,6 +56,20 @@ class _Plugin:
 
     def validate_configuration(self) -> None:
         return None
+
+
+def test_core_requires_an_explicit_scenario_type() -> None:
+    with pytest.raises(ValueError, match="scenario_type is required"):
+        normalize_scenario_type(None)
+    with pytest.raises(ValueError, match="scenario_type is required"):
+        normalize_scenario_type("   ")
+    assert normalize_scenario_type(" Inspection ") == "inspection"
+
+
+def test_bearing_v12_compatibility_supplies_only_the_legacy_default() -> None:
+    assert normalize_legacy_scenario_type(None) == BEARING_SCENARIO_TYPE
+    assert normalize_legacy_scenario_type("") == BEARING_SCENARIO_TYPE
+    assert normalize_legacy_scenario_type(" Inspection ") == "inspection"
 
 
 def test_general_contract_is_validated_and_immutable() -> None:

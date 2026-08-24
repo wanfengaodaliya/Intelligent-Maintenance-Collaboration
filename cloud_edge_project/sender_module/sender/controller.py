@@ -17,14 +17,14 @@ from sender.mqtt_publisher import MqttPublisher
 from sender.scheduler_client import SchedulerClient, SchedulerError
 from bootstrap.scenarios import build_sender_scenario_registry
 from core.scenario_plugin import INPUT_ADAPTER
-from core.scenario_registry import DEFAULT_SCENARIO_TYPE
+from compatibility.bearing_v12.scenario_mapper import BEARING_SCENARIO_TYPE
 
 
 scenario_registry = build_sender_scenario_registry()
 input_adapter_provider = cast(
     SenderInputAdapterProvider,
     scenario_registry.require_provider(
-        DEFAULT_SCENARIO_TYPE,
+        BEARING_SCENARIO_TYPE,
         INPUT_ADAPTER,
     ),
 )

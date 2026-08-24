@@ -7,10 +7,14 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LEGACY_CORE_SHIMS = {
-    "bearing_actions.py",
-    "bearing_workflow_contracts.py",
-}
+GENERIC_PRODUCTION_ROOTS = (
+    "core",
+    "common",
+    "scheduler",
+    "edge_service",
+    "cloud_service",
+)
+NON_PRODUCTION_PARTS = {"tests", "verification", "__pycache__"}
 BEARING_INGESTION_MODULES = {
     "mat_reader.py": {
         "MatDataError",
@@ -61,7 +65,7 @@ GLOBAL_ANALYSIS_SCENARIO_MODULES = {
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             if any(alias.name.startswith("scenarios.bearing") for alias in node.names):
@@ -73,7 +77,7 @@ def _imports_bearing_plugin(path: Path) -> bool:
 
 
 def _imported_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -103,8 +107,10 @@ def _is_module_docstring(node: ast.stmt) -> bool:
 def test_core_does_not_import_bearing_plugin() -> None:
     offenders = [
         path.relative_to(PROJECT_ROOT).as_posix()
-        for path in (PROJECT_ROOT / "core").glob("*.py")
-        if path.name not in LEGACY_CORE_SHIMS and _imports_bearing_plugin(path)
+        for root_name in GENERIC_PRODUCTION_ROOTS
+        for path in (PROJECT_ROOT / root_name).rglob("*.py")
+        if NON_PRODUCTION_PARTS.isdisjoint(path.relative_to(PROJECT_ROOT).parts)
+        and _imports_bearing_plugin(path)
     ]
 
     assert offenders == []

@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from scenarios.bearing.edge.settings import (
+from compatibility.bearing_v12.edge_perception_exports import (
     ConstantDetectionConfig,
     PerceptionConfig,
     file_sha256,

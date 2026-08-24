@@ -116,9 +116,6 @@ class ScenarioRegistry:
         return binding.provider
 
 
-DEFAULT_SCENARIO_TYPE = "bearing"
-
-
 class ScenarioHandler(Protocol):
     scenario_type: str
 
@@ -149,9 +146,11 @@ def get_registered_types() -> tuple[str, ...]:
 
 def normalize_scenario_type(value: object) -> str:
     if value is None:
-        return DEFAULT_SCENARIO_TYPE
+        raise ValueError("scenario_type is required")
     scenario_type = str(value).strip().lower()
-    return scenario_type or DEFAULT_SCENARIO_TYPE
+    if not scenario_type:
+        raise ValueError("scenario_type is required")
+    return scenario_type
 
 
 def get_scenario_handler(

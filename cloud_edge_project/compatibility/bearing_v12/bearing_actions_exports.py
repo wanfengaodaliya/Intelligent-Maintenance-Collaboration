@@ -1,9 +1,6 @@
-"""Compatibility shim for the historical core import path.
+"""Explicit exports for the legacy bearing action import path."""
 
-The compatibility package owns the dependency on the bearing plugin.
-"""
-
-from compatibility.bearing_v12.bearing_actions_exports import (
+from scenarios.bearing._compat.bearing_actions import (
     ACTION_TO_GRADE,
     ACTION_TO_STATE,
     GRADE_TO_ACTION,

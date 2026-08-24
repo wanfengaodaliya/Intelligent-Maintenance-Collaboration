@@ -32,7 +32,7 @@ from core.scenario_plugin import (
     EDGE_INFERENCE,
     EdgeInferenceRuntimeRequest,
 )
-from core.scenario_registry import DEFAULT_SCENARIO_TYPE
+from compatibility.bearing_v12.scenario_mapper import BEARING_SCENARIO_TYPE
 
 from edge_task_ingress import (  # noqa: E402
     EdgeTaskIngress,
@@ -74,7 +74,7 @@ LOGGER = logging.getLogger(__name__)
 config = load_config()
 control_auth_verifier = ControlAuthVerifier.from_env()
 scenario_registry = build_edge_scenario_registry()
-edge_scenario_id = os.getenv("EDGE_SCENARIO_ID", DEFAULT_SCENARIO_TYPE).strip()
+edge_scenario_id = os.getenv("EDGE_SCENARIO_ID", BEARING_SCENARIO_TYPE).strip()
 edge_inference_provider = scenario_registry.require_provider(
     edge_scenario_id,
     EDGE_INFERENCE,

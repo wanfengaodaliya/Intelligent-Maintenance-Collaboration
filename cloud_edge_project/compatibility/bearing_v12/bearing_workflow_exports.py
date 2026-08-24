@@ -1,9 +1,6 @@
-"""Compatibility shim for the historical core workflow import path.
+"""Explicit exports for legacy bearing workflow contracts."""
 
-The compatibility package owns the dependency on the bearing plugin.
-"""
-
-from compatibility.bearing_v12.bearing_workflow_exports import (
+from scenarios.bearing._compat.bearing_workflow_contracts import (
     FINAL_CLOUD,
     FINAL_EDGE,
     JOB_FAILED,

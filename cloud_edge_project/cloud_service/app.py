@@ -65,12 +65,15 @@ from core.scenario_plugin import (
     STORAGE_PROVIDER,
 )
 from core.scenario_registry import (
-    DEFAULT_SCENARIO_TYPE,
     MissingScenarioCapabilityError,
     ScenarioNotFoundError,
     UnresolvedScenarioCapabilityError,
     normalize_scenario_type,
     register_handler,
+)
+from compatibility.bearing_v12.scenario_mapper import (
+    BEARING_SCENARIO_TYPE,
+    normalize_legacy_scenario_type,
 )
 from core.scenario_errors import UnsupportedScenarioError
 from core.arbitration_contracts import ArbitrationValidationError
@@ -94,7 +97,7 @@ def _scenario_provider(scenario_type: object, capability: str) -> object:
         raise UnsupportedScenarioError(normalized) from exc
 
 
-storage_provider = _scenario_provider(DEFAULT_SCENARIO_TYPE, STORAGE_PROVIDER)
+storage_provider = _scenario_provider(BEARING_SCENARIO_TYPE, STORAGE_PROVIDER)
 
 
 def get_scenario_handler(scenario_type: object, *, database_path: Path):
@@ -109,12 +112,12 @@ class _RegistryBackedDefaultScenarioHandler:
 
     def __new__(cls, database_path: Path):
         return get_scenario_handler(
-            DEFAULT_SCENARIO_TYPE,
+            BEARING_SCENARIO_TYPE,
             database_path=database_path,
         )
 
 
-register_handler(DEFAULT_SCENARIO_TYPE, _RegistryBackedDefaultScenarioHandler)
+register_handler(BEARING_SCENARIO_TYPE, _RegistryBackedDefaultScenarioHandler)
 
 
 def build_cloud_status_reporter() -> CloudNodeStatusReporter:
@@ -163,7 +166,7 @@ async def _run_background_workers() -> None:
 
 def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
     """Run global analysis for every known default-scenario subject."""
-    provider = _scenario_provider(DEFAULT_SCENARIO_TYPE, GLOBAL_ANALYSIS)
+    provider = _scenario_provider(BEARING_SCENARIO_TYPE, GLOBAL_ANALYSIS)
     return run_periodic_global_analysis(
         database_path,
         scenario_type=provider.scenario_id,
@@ -284,7 +287,7 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
         try:
             settings = load_cloud_settings()
             handler = get_scenario_handler(
-                request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+                normalize_legacy_scenario_type(request.get("scenario_type")),
                 database_path=settings.database_path,
             )
             return handler.infer(request)
@@ -375,7 +378,7 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
         settings = load_cloud_settings()
         request = adapted or payload
         policy = _scenario_provider(
-            request.get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            normalize_legacy_scenario_type(request.get("scenario_type")),
             ARBITRATION_POLICY,
         )
         result = DeviceArbitrationService(
@@ -402,7 +405,7 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
 def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
     try:
         policy = _scenario_provider(
-            DEFAULT_SCENARIO_TYPE,
+            BEARING_SCENARIO_TYPE,
             ARBITRATION_POLICY,
         )
         result = DeviceArbitrationService(
@@ -427,7 +430,7 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
             content={"error_code": "INVALID_GLOBAL_ANALYSIS_REQUEST"},
         )
     try:
-        scenario_type = payload.get("scenario_type", DEFAULT_SCENARIO_TYPE)
+        scenario_type = normalize_legacy_scenario_type(payload.get("scenario_type"))
         provider = _scenario_provider(scenario_type, GLOBAL_ANALYSIS)
         database_path = load_cloud_settings().database_path
         result = GlobalAnalysisService(
@@ -481,7 +484,7 @@ def _model_update_service():
 
 
 def _model_update_provider():
-    return _scenario_provider(DEFAULT_SCENARIO_TYPE, MODEL_UPDATE)
+    return _scenario_provider(BEARING_SCENARIO_TYPE, MODEL_UPDATE)
 
 
 def _model_update_error_response(error: ModelUpdateError) -> JSONResponse:
