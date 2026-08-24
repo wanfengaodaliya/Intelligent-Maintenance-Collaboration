@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单包诊断演示 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>单包诊断演示</h1>
+        <div class="desc">构造一个轴承传感器数据包，同步调用 POST /edge/infer 查看边缘端完整诊断链路</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <select id="nodeSel">
+          <option value="edge01">edge_01（8001）</option>
+          <option value="edge02">edge_02（8002）</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 这个页面是干什么的？</div>
+      <div class="usage-grid">
+        <div><b>📊 页面用途</b><br>测试单个数据包的<b>完整诊断流程</b>：从构造数据→边缘推理→得到结论，适合演示和调试</div>
+        <div><b>🔧 怎么用</b><br>① 选"正常工况"或"故障工况"<br>② 点"开始诊断"按钮<br>③ 查看左边感知输出 + 右边推理结果</div>
+        <div><b>📖 结果怎么看</b><br><b>诊断结论</b>：正常/故障<br><b>置信度</b>：越高越准（0.9以上很好）<br><b>是否需云端复核</b>：需要=不太确定</div>
+        <div><b>🎯 波形说明</b><br>上方波形图是模拟的振动信号：<br>蓝色=正常（小幅平稳）<br>红色=故障（大幅冲击）</div>
+      </div>
+    </div>
+
+    <!-- 步骤条 -->
+    <div class="steps" id="steps">
+      <div class="step" data-step="1"><div class="idx">①</div>构造数据包</div>
+      <div class="step" data-step="2"><div class="idx">②</div>边缘感知 + 推理</div>
+      <div class="step" data-step="3"><div class="idx">③</div>诊断结果</div>
+    </div>
+
+    <!-- 控制区 -->
+    <div class="card">
+      <div class="card-title">数据包构造</div>
+      <div class="form-row">
+        <label class="field">设备 ID
+          <input type="text" id="deviceId" list="deviceList" value="machine_01">
+          <datalist id="deviceList">
+            <option value="machine_01">
+            <option value="machine_02">
+            <option value="machine_03">
+            <option value="bearing_line_a">
+            <option value="bearing_line_b">
+          </datalist>
+        </label>
+        <label class="field">数据类型
+          <select id="packetType">
+            <option value="normal">正常工况（低幅值振动）</option>
+            <option value="fault">故障工况（高幅值冲击）</option>
+          </select>
+        </label>
+        <button class="btn" id="runBtn">▶ 开始诊断</button>
+      </div>
+      <div class="waveform-box">
+        <canvas id="waveCanvas" width="900" height="110"></canvas>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;" id="waveHint">波形预览：16000 Hz 采样，800 点，50ms 窗口</div>
+    </div>
+
+    <!-- 结果区 -->
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-title">边缘感知输出 <span class="hint">perception</span></div>
+        <div id="perceptionBox"><div class="empty">点击「开始诊断」后展示</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">推理与最终结果 <span class="hint">inference</span></div>
+        <div id="resultBox"><div class="empty">点击「开始诊断」后展示</div></div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+// ---------- 波形生成 ----------
+
+function genVibration(type) {
+  const n = 800;
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    if (type === "fault") {
+      // 故障：大幅值 + 周期性冲击（模拟轴承损伤）
+      const impulse = Math.sin((i / n) * Math.PI * 16) > 0.92 ? (Math.random() * 0.35 - 0.1) : 0;
+      out[i] = Math.round((Math.sin((i / n) * Math.PI * 24) * 0.045 + (Math.random() - 0.5) * 0.03 + impulse) * 1e6) / 1e6;
+    } else {
+      // 正常：小幅值平稳噪声
+      out[i] = Math.round((Math.sin((i / n) * Math.PI * 8) * 0.012 + (Math.random() - 0.5) * 0.014) * 1e6) / 1e6;
+    }
+  }
+  return out;
+}
+
+let currentWave = genVibration("normal");
+
+function drawWave(data) {
+  const canvas = el("waveCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0b0f14";
+  ctx.fillRect(0, 0, w, h);
+  // 中线
+  ctx.strokeStyle = "#1d2634";
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+  // 波形
+  const maxAbs = Math.max(0.02, ...data.map(Math.abs));
+  ctx.strokeStyle = el("packetType").value === "fault" ? "#f85149" : "#4f8cff";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h / 2 - (v / maxAbs) * (h / 2 - 8);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// ---------- 数据包构造 ----------
+
+let seq = 1;
+
+function buildPacket() {
+  const type = el("packetType").value;
+  const nowNs = BigInt(Date.now()) * 1000000n;
+  return {
+    packet_id: "demo_" + String(seq).padStart(6, "0"),
+    device_id: el("deviceId").value.trim() || "machine_01",
+    sensor_id: "sensor_" + (el("deviceId").value.trim() || "machine_01"),
+    sequence_number: seq,
+    start_timestamp_ns: Number(nowNs),
+    end_timestamp_ns: Number(nowNs + 50000000n),
+    duration_ms: 50,
+    data: {
+      data_type: "bearing_timeseries",
+      vibration_sample_rate_hz: 16000,
+      vibration_sample_count: currentWave.length,
+      vibration: currentWave,
+      current: type === "fault" ? 1.82 : 1.24,
+      temperature: type === "fault" ? 68.5 : 43.2,
+      speed: 899.7,
+      load: type === "fault" ? 0.86 : 0.54,
+    },
+  };
+}
+
+// ---------- 步骤条状态 ----------
+
+function setStep(n, cls) {
+  document.querySelectorAll("#steps .step").forEach((s) => {
+    const idx = parseInt(s.dataset.step, 10);
+    if (idx < n) s.className = "step done";
+    else if (idx === n) s.className = "step " + cls;
+    else s.className = "step";
+  });
+}
+
+function resetSteps() {
+  document.querySelectorAll("#steps .step").forEach((s) => { s.className = "step"; });
+}
+
+// ---------- 主流程 ----------
+
+async function runDiagnosis() {
+  const node = el("nodeSel").value;
+  const btn = el("runBtn");
+  btn.disabled = true;
+  btn.textContent = "诊断中…";
+  resetSteps();
+  el("perceptionBox").innerHTML = '<div class="empty">推理中…</div>';
+  el("resultBox").innerHTML = '<div class="empty">推理中…</div>';
+
+  const packet = buildPacket();
+  setStep(1, "done");
+  setStep(2, "active");
+
+  const t0 = performance.now();
+  try {
+    const result = await Api.post(node + "/edge/infer", packet);
+    const cost = performance.now() - t0;
+    setStep(2, "done");
+    setStep(3, "active");
+    renderResult(packet, result, cost);
+    setStep(3, "done");
+    seq++;
+  } catch (e) {
+    setStep(2, "error");
+    el("resultBox").innerHTML =
+      '<div class="empty" style="color:var(--danger)">推理失败：' + fmt.escape(e.message) + "<br>请确认 Edge 服务已启动。</div>";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "▶ 开始诊断";
+  }
+}
+
+function pick(obj, keys) {
+  for (const k of keys) {
+    if (obj && obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return undefined;
+}
+
+function kvRows(pairs) {
+  return '<div class="kv">' + pairs.map(
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v wrap">' + (v === null || v === undefined ? "-" : v) + "</div>"
+  ).join("") + "</div>";
+}
+
+function renderResult(packet, resp, costMs) {
+  // 兼容 {result:{...}} 或直接平铺
+  const r = resp.result || resp.data || resp;
+  const per = r.perception || r.perception_summary || null;
+  const data = packet.data;
+
+  // 感知输出
+  let perHtml;
+  if (per) {
+    perHtml = kvRows([
+      ["RMS 振动", fmt.num(pick(per, ["vibration_rms", "rms"]))],
+      ["峭度", fmt.num(pick(per, ["kurtosis"]))],
+      ["主频", fmt.num(pick(per, ["dominant_frequency_hz", "main_freq"]), 1) + " Hz"],
+      ["电流", fmt.num(pick(per, ["current"])) + " A"],
+      ["温度", fmt.num(pick(per, ["temperature"])) + " °C"],
+      ["感知质量", fmt.escape(String(pick(per, ["quality", "perception_quality", "data_quality"]) ?? "-"))],
+    ]);
+  } else {
+    perHtml = kvRows([
+      ["电流（包内）", data.current + " A"],
+      ["温度（包内）", data.temperature + " °C"],
+      ["转速（包内）", data.speed + " rpm"],
+      ["负载（包内）", data.load],
+    ]);
+  }
+  el("perceptionBox").innerHTML = perHtml;
+
+  // 推理输出
+  const edgeResult = pick(r, ["edge_result", "label", "result"]);
+  const confidence = pick(r, ["confidence", "edge_confidence"]);
+  const risk = pick(r, ["risk_level"]);
+  const needCloud = pick(r, ["need_cloud"]);
+  const latency = pick(r, ["edge_latency_ms", "latency_ms"]);
+  const modelName = pick(r, ["model_name", "model_version"]);
+  const rows = [
+    ["诊断结论", badge(fmt.stateText(edgeResult), fmt.stateClass(edgeResult))],
+    ["置信度", fmt.pct(confidence)],
+    ["风险等级", risk ? badge(String(risk), risk === "high" ? "danger" : risk === "medium" ? "warn" : "muted") : "-"],
+    ["是否需云端复核", needCloud === undefined ? "-" : (needCloud ? badge("需要", "warn") : badge("不需要", "ok"))],
+    ["推理模型", fmt.escape(String(modelName ?? "-"))],
+    ["边缘耗时", latency !== undefined ? fmt.ms(latency) : "-"],
+    ["总耗时", fmt.ms(costMs) + "（含网络）"],
+    ["packet_id", fmt.escape(packet.packet_id)],
+  ];
+  let resHtml = kvRows(rows);
+  resHtml += jsonDetails(resp, "查看推理响应 JSON");
+  el("resultBox").innerHTML = resHtml;
+}
+
+// ---------- 事件 ----------
+
+el("packetType").addEventListener("change", () => {
+  currentWave = genVibration(el("packetType").value);
+  drawWave(currentWave);
+  el("waveHint").textContent =
+    "波形预览：" + (el("packetType").value === "fault" ? "故障特征（周期冲击）" : "正常工况（平稳小幅）") +
+    " · 16000 Hz · 800 点 · 50ms";
+});
+el("runBtn").addEventListener("click", runDiagnosis);
+
+drawWave(currentWave);
+</script>
+</body>
+</html>

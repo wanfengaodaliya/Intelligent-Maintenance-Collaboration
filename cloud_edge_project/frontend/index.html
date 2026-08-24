@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>总览大屏 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>总览大屏</h1>
+        <div class="desc">实时诊断结果 / 维护建议 / 数据包推送（MQTT），服务健康每 5 秒轮询</div>
+      </div>
+      <div class="conn" id="mqttConn"><span class="led"></span><span>MQTT 实时流</span></div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 怎么看这个页面？</div>
+      <div class="usage-grid">
+        <div><b>① 核心指标（上方6个卡片）</b><br>从左到右：诊断总数、故障数、<span class="hl-green">模型置信度（准率）</span>、故障占比、维护建议数、数据包数</div>
+        <div><b>② 吞吐趋势图</b><br>显示近5分钟内数据包/诊断/建议的实时流量曲线，曲线越密集说明系统越繁忙</div>
+        <div><b>③ 服务健康</b><br>显示各后台服务的运行状态：绿色=正常，红色=离线或异常</div>
+        <div><b>④ 实时明细流（下方3个框）</b><br>每来一条新数据就显示最新的记录，<span class="hl-blue">最上面的就是刚才发生的事</span></div>
+      </div>
+    </div>
+
+    <!-- 第一层：核心 KPI（6 张，含准确率） -->
+    <div class="hero hero-6" id="heroKpi"></div>
+
+    <!-- 第二层：吞吐趋势图 + 服务健康 -->
+    <div class="grid grid-main">
+      <div class="card">
+        <div class="card-title">实时吞吐趋势 <span class="hint">近 5 分钟 · 每 5 秒采样</span></div>
+        <div class="chart-box"><canvas id="trendChart"></canvas></div>
+        <div class="chart-legend">
+          <span class="lg"><i style="background:#d97706"></i>数据包</span>
+          <span class="lg"><i style="background:#2563eb"></i>诊断结果</span>
+          <span class="lg"><i style="background:#0d9488"></i>维护建议</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">服务健康 <span class="hint">每 5 秒轮询</span></div>
+        <div class="svc-list" id="serviceList"></div>
+      </div>
+    </div>
+
+    <!-- 第三层：实时明细流（带中文说明） -->
+    <div class="section-label">实时明细流 <span class="count">MQTT</span></div>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="card-title">
+          诊断结果
+          <span class="hint">每次边缘推理的结论</span>
+        </div>
+        <div class="stream-hint">📌 这里显示每次诊断的结论：<b>设备名 + 正常/故障 + 置信度百分比</b>。有新结果会自动显示在最上面。</div>
+        <div class="stream" id="resultStream"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          维护建议
+          <span class="hint">系统自动生成的维护建议</span>
+        </div>
+        <div class="stream-hint">📌 这里显示系统给出的维护建议：<b>优先级 + 建议类型（如"立即停机"）+ 具体内容</b>。</div>
+        <div class="stream" id="suggestionStream"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          数据包
+          <span class="hint">传感器原始数据推送</span>
+        </div>
+        <div class="stream-hint">📌 这里显示接收到的传感器数据包：<b>数据包编号 + 设备 + 振动点数 + 转速/温度</b>。</div>
+        <div class="stream" id="packetStream"></div>
+      </div>
+    </div>
+
+    <!-- 调试工具（可折叠） -->
+    <div class="card debug-panel" id="debugPanel">
+      <div class="card-title" style="cursor:pointer;" onclick="document.getElementById('debugBody').style.display=document.getElementById('debugBody').style.display==='none'?'block':'none'">
+        🔧 调试工具 <span class="hint">点击展开/收起</span>
+      </div>
+      <div id="debugBody">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;" id="debugStatus">持久化状态：加载中…</div>
+        <div class="form-row">
+          <button class="btn ghost small" onclick="addMockData()">➕ 添加模拟数据</button>
+          <button class="btn ghost small" onclick="clearAllData()">🗑️ 清空所有数据</button>
+          <button class="btn ghost small" onclick="manualSave()">💾 立即保存</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
+          提示：添加模拟数据后，切换到其他页面再切回来，数据应该保留
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+/* ================= 配色 ================= */
+const C = { blue: "#2563eb", teal: "#0d9488", gold: "#d97706", danger: "#dc2626", ok: "#16a34a", violet: "#7c3aed" };
+
+/* ================= localStorage 持久化 ================= */
+const STORE_KEY = "omni_dashboard_v2";
+
+// 保存原始数据（而非innerHTML，减小体积）
+const streamData = { result: [], suggestion: [], packet: [] };
+const MAX_STREAM_SAVE = 20; // 只保存最近20条
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    // 检查数据完整性
+    if (!d || typeof d !== "object") return null;
+    return d;
+  } catch { return null; }
+}
+
+function saveStore() {
+  try {
+    // 只保存精简数据，避免超出 localStorage 限制
+    const data = {
+      stats: { ...stats },
+      series: {
+        packets: series.packets.slice(-MAX_BUCKETS),
+        results: series.results.slice(-MAX_BUCKETS),
+        faults: series.faults.slice(-MAX_BUCKETS),
+        suggestions: series.suggestions.slice(-MAX_BUCKETS),
+      },
+      bucketTimes: bucketTimes.slice(-MAX_BUCKETS),
+      gConf: { sum: gConf.sum, count: gConf.count, faultSum: gConf.faultSum, faultCount: gConf.faultCount },
+      stream: {
+        result: streamData.result.slice(-MAX_STREAM_SAVE),
+        suggestion: streamData.suggestion.slice(-MAX_STREAM_SAVE),
+        packet: streamData.packet.slice(-MAX_STREAM_SAVE),
+      },
+      savedAt: Date.now(),
+    };
+    const json = JSON.stringify(data);
+    // 检查大小（localStorage 通常 5MB）
+    if (json.length > 4 * 1024 * 1024) {
+      console.warn("[store] 数据过大，可能保存失败:", json.length, "bytes");
+    }
+    localStorage.setItem(STORE_KEY, json);
+  } catch (e) {
+    console.error("[store] 保存失败:", e.message);
+  }
+}
+
+// 节流保存（避免频繁写入）
+let saveTimer = null;
+function throttleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveStore();
+  }, 300);
+}
+
+// 多种保存时机，确保数据不丢失
+// 1. 页面隐藏时保存
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    saveStore();
+  }
+});
+
+// 2. 页面卸载前保存（同步）
+window.addEventListener("beforeunload", () => {
+  // 立即同步保存
+  saveStore();
+  // 清除可能的节流定时器
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+});
+
+// 3. 页面隐藏时保存（兼容性）
+window.addEventListener("pagehide", () => {
+  saveStore();
+});
+
+/* ================= Hero KPI ================= */
+
+const KPIS = [
+  { id: "results",     label: "诊断总数",     unit: "条", cls: "c-blue",   color: C.blue },
+  { id: "faults",      label: "故障检出",     unit: "条", cls: "c-danger", color: C.danger },
+  { id: "accuracy",    label: "模型置信度",   unit: "%", cls: "c-green", color: C.ok },
+  { id: "faultRate",   label: "故障占比",     unit: "%", cls: "c-gold",  color: C.gold },
+  { id: "suggestions", label: "维护建议",     unit: "条", cls: "c-teal",   color: C.teal },
+  { id: "packets",     label: "数据包数",     unit: "个", cls: "c-violet", color: C.violet },
+];
+
+const stats = { results: 0, faults: 0, suggestions: 0, packets: 0 };
+
+/* 置信度累积（用于计算准确率） */
+const gConf = { sum: 0, count: 0, faultSum: 0, faultCount: 0 };
+
+/* ================= 5 秒分桶 ================= */
+
+const BUCKET_MS = 5000;
+const MAX_BUCKETS = 60;
+const series = { packets: [], results: [], faults: [], suggestions: [], accuracy: [] };
+const bucketTimes = [];
+let windowCount = { packets: 0, results: 0, faults: 0, suggestions: 0 };
+
+/* 从 localStorage 恢复 */
+const saved = loadStore();
+if (saved) {
+  Object.assign(stats, saved.stats || {});
+  if (saved.series) {
+    series.packets = saved.series.packets || [];
+    series.results = saved.series.results || [];
+    series.faults = saved.series.faults || [];
+    series.suggestions = saved.series.suggestions || [];
+  }
+  Object.assign(bucketTimes, saved.bucketTimes || []);
+  if (saved.gConf) {
+    gConf.sum = saved.gConf.sum || 0;
+    gConf.count = saved.gConf.count || 0;
+    gConf.faultSum = saved.gConf.faultSum || 0;
+    gConf.faultCount = saved.gConf.faultCount || 0;
+  }
+  // 恢复 stream 数据（兼容旧格式：旧格式是字符串，新格式是数组）
+  if (saved.stream) {
+    ["result", "suggestion", "packet"].forEach((key) => {
+      const val = saved.stream[key];
+      if (Array.isArray(val)) {
+        streamData[key] = val;
+      } else if (typeof val === "string" && val.length > 0) {
+        // 旧格式：保存的是 innerHTML，清空它（我们用新格式重建）
+        // 但保留一个标记，让 init 时跳过重建
+        streamData[key] = [];
+      }
+    });
+  }
+}
+
+function renderHero() {
+  el("heroKpi").innerHTML = KPIS.map((k) =>
+    '<div class="kpi ' + k.cls + '" id="kpi-' + k.id + '">' +
+    '<div class="label">' + k.label + '<span class="tag">实时</span></div>' +
+    '<div class="value"><span id="kpi-val-' + k.id + '">0</span><span class="unit">' + k.unit + "</span></div>" +
+    '<div class="spark"><canvas id="kpi-spark-' + k.id + '"></canvas></div>' +
+    '<div class="sub" id="kpi-sub-' + k.id + '">等待数据…</div>' +
+    "</div>"
+  ).join("");
+}
+
+function setKpiVal(id, v) {
+  const node = el("kpi-val-" + id);
+  if (!node || node.textContent === String(v)) return;
+  node.textContent = v;
+  const box = node.parentElement;
+  box.classList.remove("bump");
+  void box.offsetWidth;
+  box.classList.add("bump");
+}
+
+function updateKpis() {
+  KPIS.forEach((k) => {
+    if (k.id === "accuracy") {
+      // 平均置信度
+      const avg = gConf.count > 0 ? (gConf.sum / gConf.count) * 100 : 0;
+      setKpiVal(k.id, avg.toFixed(1));
+    } else if (k.id === "faultRate") {
+      // 故障占比
+      const rate = stats.results > 0 ? (stats.faults / stats.results) * 100 : 0;
+      setKpiVal(k.id, rate.toFixed(1));
+    } else if (k.id === "packets") {
+      // 数据包数：显示实际保留的数据包数量（而非无限累加）
+      setKpiVal(k.id, streamData.packet.length);
+    } else if (k.id === "suggestions") {
+      // 维护建议：显示实际保留的建议数量
+      setKpiVal(k.id, streamData.suggestion.length);
+    } else {
+      setKpiVal(k.id, stats[k.id] || 0);
+    }
+  });
+}
+
+function deltaHtml(key) {
+  const s = series[key];
+  if (!s.length) return "等待数据…";
+  const cur = s.slice(-12).reduce((a, b) => a + b, 0);
+  const prev = s.slice(-24, -12).reduce((a, b) => a + b, 0);
+  if (cur === 0 && prev === 0) return "近 1 分钟无新增";
+  if (prev === 0) return '近 1 分钟 <span class="up">+' + cur + "</span>";
+  const pct = Math.round(((cur - prev) / prev) * 100);
+  const cls = pct >= 0 ? "up" : "down";
+  const arrow = pct >= 0 ? "▲" : "▼";
+  return '近 1 分钟 ' + cur + ' <span class="' + cls + '">' + arrow + " " + Math.abs(pct) + "%</span>";
+}
+
+/* ================= Canvas 绘制 ================= */
+
+function setupCanvas(canvas, cssH) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 300;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.height = cssH + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h: cssH };
+}
+
+function drawSpark(canvas, data, color) {
+  if (!canvas || !data.length) return;
+  const { ctx, w, h } = setupCanvas(canvas, 34);
+  ctx.clearRect(0, 0, w, h);
+  const max = Math.max(1, ...data);
+  const step = w / Math.max(1, data.length - 1);
+  const y = (v) => h - 3 - (v / max) * (h - 9);
+
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(i * step, y(v)) : ctx.moveTo(0, y(v))));
+  ctx.lineTo((data.length - 1) * step, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, color + "4d");
+  g.addColorStop(1, color + "00");
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(i * step, y(v)) : ctx.moveTo(0, y(v))));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  const lx = (data.length - 1) * step, ly = y(data[data.length - 1]);
+  ctx.beginPath();
+  ctx.arc(lx, ly, 2.4, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 7;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function niceMax(v) {
+  if (v <= 1) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+function drawTrend() {
+  const canvas = el("trendChart");
+  const { ctx, w, h } = setupCanvas(canvas, 216);
+  ctx.clearRect(0, 0, w, h);
+  const padL = 38, padR = 12, padT = 14, padB = 24;
+  const iw = w - padL - padR, ih = h - padT - padB;
+
+  if (!bucketTimes.length) {
+    ctx.fillStyle = "rgba(93,107,130,0.7)";
+    ctx.font = "13px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("等待实时数据…", w / 2, h / 2);
+    return;
+  }
+
+  const lines = [
+    { key: "packets", color: C.gold },
+    { key: "results", color: C.blue },
+    { key: "suggestions", color: C.teal },
+  ];
+  let max = 1;
+  lines.forEach((l) => series[l.key].forEach((v) => { if (v > max) max = v; }));
+  const yMax = niceMax(max);
+  const len = series.packets.length;
+  const x = (i) => padL + (iw * (MAX_BUCKETS - len + i)) / (MAX_BUCKETS - 1);
+  const y = (v) => padT + ih * (1 - v / yMax);
+
+  ctx.font = "10px 'Cascadia Code', Consolas, monospace";
+  for (let k = 0; k <= 4; k++) {
+    const Y = padT + ih * (1 - k / 4);
+    ctx.strokeStyle = k === 0 ? "rgba(30,42,59,0.16)" : "rgba(30,42,59,0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, Y);
+    ctx.lineTo(w - padR, Y);
+    ctx.stroke();
+    const val = (yMax * k) / 4;
+    ctx.fillStyle = "#8a97ab";
+    ctx.textAlign = "right";
+    ctx.fillText(val % 1 === 0 ? String(val) : val.toFixed(1), padL - 7, Y + 3);
+  }
+
+  ctx.textAlign = "center";
+  for (let i = 0; i < len; i++) {
+    if ((len - 1 - i) % 12 !== 0) continue;
+    const d = new Date(bucketTimes[i]);
+    const label = String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+    ctx.fillStyle = "#8a97ab";
+    ctx.fillText(label, x(i), h - 7);
+  }
+
+  lines.forEach((l) => {
+    const data = series[l.key];
+    if (!data.length) return;
+    ctx.beginPath();
+    data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(0), y(v))));
+    ctx.lineTo(x(data.length - 1), padT + ih);
+    ctx.lineTo(x(0), padT + ih);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, padT, 0, padT + ih);
+    g.addColorStop(0, l.color + "3a");
+    g.addColorStop(1, l.color + "00");
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    ctx.beginPath();
+    data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(0), y(v))));
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    const lx = x(data.length - 1), ly = y(data[data.length - 1]);
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+    ctx.fillStyle = l.color;
+    ctx.shadowColor = l.color;
+    ctx.shadowBlur = 9;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+}
+
+function redrawAll() {
+  drawTrend();
+  KPIS.forEach((k) => {
+    if (k.id === "accuracy" || k.id === "faultRate") return;
+    drawSpark(el("kpi-spark-" + k.id), series[k.id], k.color);
+    const sub = el("kpi-sub-" + k.id);
+    if (sub) sub.innerHTML = deltaHtml(k.id);
+  });
+}
+
+/* ================= 服务健康 ================= */
+
+async function refreshServices() {
+  const targets = [
+    { key: "edge01", name: "Edge 节点 01", path: "edge01/health" },
+    { key: "edge02", name: "Edge 节点 02", path: "edge02/health" },
+    { key: "scheduler", name: "Scheduler 调度", path: "scheduler/health" },
+    { key: "cloud", name: "Cloud 云端", path: "cloud/health" },
+  ];
+  const items = await Promise.all(
+    targets.map(async (t) => {
+      try {
+        const h = await Api.get(t.path);
+        return svcItem(t, h);
+      } catch (e) {
+        return (
+          '<div class="svc-item down"><span class="svc-led"></span>' +
+          '<div class="svc-body"><div class="svc-name">' + t.name + "</div>" +
+          '<div class="svc-sub">' + fmt.escape(e.message) + "</div></div>" +
+          '<span class="badge danger">不可达</span></div>'
+        );
+      }
+    })
+  );
+  el("serviceList").innerHTML = items.join("");
+}
+
+function svcItem(t, h) {
+  const status = h.status || h.state || "ok";
+  const isOk = String(status).toLowerCase() === "ok" || h.ready === true;
+  let sub = "";
+  const tags = [];
+  if (t.key.startsWith("edge")) {
+    sub = "模型 " + (h.model_version || h.model_backend || "-");
+    tags.push(h.mqtt_connected ? badge("MQTT 已连接", "ok") : badge("MQTT 断开", "danger"));
+    if ((h.readiness && h.readiness.ready) || h.ready) tags.push(badge("就绪", "ok"));
+  } else if (t.key === "scheduler") {
+    const nodes = h.edge_nodes || {};
+    const total = Object.values(nodes).reduce((a, b) => a + b, 0);
+    sub = "边缘节点 " + total + " 个";
+  } else {
+    sub = "模型 " + (h.model_backend || "-");
+  }
+  return (
+    '<div class="svc-item ' + (isOk ? "ok" : "down") + '"><span class="svc-led"></span>' +
+    '<div class="svc-body"><div class="svc-name">' + t.name + "</div>" +
+    '<div class="svc-sub">' + fmt.escape(sub) + "</div>" +
+    (tags.length ? '<div class="svc-tags">' + tags.join("") + "</div>" : "") +
+    "</div>" +
+    '<span class="badge ' + (isOk ? "ok" : "danger") + '">' + (isOk ? "运行中" : "异常") + "</span></div>"
+  );
+}
+
+/* ================= 实时流渲染 ================= */
+
+/* ================= 渲染函数（保存原始数据） ================= */
+
+const MAX_STREAM = 200;
+
+function prepend(container, html, dataKey, data) {
+  container.insertAdjacentHTML("afterbegin", html);
+  while (container.children.length > MAX_STREAM) {
+    container.removeChild(container.lastChild);
+  }
+  // 保存原始数据
+  if (dataKey && data) {
+    streamData[dataKey].push(data);
+    if (streamData[dataKey].length > MAX_STREAM) {
+      streamData[dataKey] = streamData[dataKey].slice(-MAX_STREAM);
+    }
+  }
+  throttleSave();
+}
+
+// 用保存的数据重建 stream
+function rebuildStream(container, dataKey, renderFn, emptyMsg) {
+  const dataList = streamData[dataKey];
+  if (!Array.isArray(dataList) || dataList.length === 0) {
+    showEmpty(container, emptyMsg);
+    return;
+  }
+  // 从最新到最旧重建
+  const html = dataList.slice().reverse().map(renderFn).join("");
+  container.innerHTML = html;
+}
+
+function renderResult(ev) {
+  const p = ev.payload || {};
+  stats.results++;
+  windowCount.results++;
+  const state = p.final_state || p.status || "-";
+  const isFault = String(state).toLowerCase() === "fault";
+  if (isFault) { stats.faults++; windowCount.faults++; }
+
+  // 累积置信度
+  const conf = Number(p.confidence);
+  if (!isNaN(conf) && conf > 0) {
+    gConf.sum += conf;
+    gConf.count++;
+    if (isFault) { gConf.faultSum += conf; gConf.faultCount++; }
+  }
+
+  updateKpis();
+
+  // 保存原始数据
+  const record = {
+    ts: ev.ts,
+    state, isFault, conf,
+    device_id: p.device_id,
+    risk_level: p.risk_level,
+    has_conflict: p.has_conflict,
+    final_action_grade: p.final_action_grade,
+    decision_round_id: p.decision_round_id,
+  };
+
+  const html = renderResultItem(record);
+  prepend(el("resultStream"), html, "result", record);
+}
+
+function renderResultItem(r) {
+  const stateCN = r.isFault ? "⚠ 故障" : (String(r.state).toLowerCase() === "warning" ? "⚠ 预警" : "✓ 正常");
+  const riskCN = r.risk_level ? ({ high: "高危", medium: "中危", low: "低危" })[r.risk_level] || r.risk_level : "";
+  const confHtml = r.conf ? '<span class="badge muted">置信度 ' + (r.conf * 100).toFixed(1) + '%</span>' : "";
+  const riskHtml = riskCN ? badge(riskCN, r.risk_level === "high" ? "danger" : r.risk_level === "medium" ? "warn" : "muted") : "";
+  return (
+    '<div class="item' + (r.isFault ? " fault" : "") + '">' +
+    '<span class="time">' + fmt.timeS(r.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    '<b>' + stateCN + "</b>" +
+    "设备 <b>" + fmt.escape(r.device_id || "-") + "</b>" +
+    confHtml + riskHtml +
+    "</div>" +
+    '<div class="row2">' +
+    (r.has_conflict ? '<span style="color:var(--danger)">⚠ 存在冲突</span> · ' : "") +
+    "动作 " + (r.final_action_grade !== undefined ? r.final_action_grade : "-") +
+    " · 轮次 " + fmt.escape(r.decision_round_id || "-") +
+    "</div>" +
+    "</div></div>"
+  );
+}
+
+function renderSuggestion(ev) {
+  const p = ev.payload || {};
+  stats.suggestions++;
+  windowCount.suggestions++;
+  updateKpis();
+
+  const record = {
+    ts: ev.ts,
+    priority: p.priority,
+    device_id: p.device_id,
+    suggestion_type: p.suggestion_type,
+    suggestion: p.suggestion,
+  };
+
+  const html = renderSuggestionItem(record);
+  prepend(el("suggestionStream"), html, "suggestion", record);
+}
+
+function renderSuggestionItem(r) {
+  const priorityCN = { high: "高", medium: "中", low: "低", urgent: "紧急" }[r.priority] || r.priority || "-";
+  const typeCN = ({
+    "continue_operation": "继续运行",
+    "inspect_soon": "尽快检查",
+    "schedule_maintenance": "安排维护",
+    "immediate_shutdown": "立即停机",
+    "monitor_closely": "密切监控",
+  })[r.suggestion_type] || r.suggestion_type || "-";
+  return (
+    '<div class="item">' +
+    '<span class="time">' + fmt.timeS(r.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    badge("优先级：" + priorityCN, fmt.priorityClass(r.priority)) +
+    "设备 <b>" + fmt.escape(r.device_id || "-") + "</b>" +
+    '<span class="badge accent">' + typeCN + "</span>" +
+    "</div>" +
+    '<div class="row2">' + fmt.escape(r.suggestion || "-") + "</div>" +
+    "</div></div>"
+  );
+}
+
+function renderPacket(ev) {
+  const p = ev.payload || {};
+  stats.packets++;
+  windowCount.packets++;
+  updateKpis();
+  const d = p.data || {};
+
+  const hasFaultHint = String(p.edge_result || p.label || "").toLowerCase() === "fault";
+
+  const record = {
+    ts: ev.ts,
+    device_id: p.device_id,
+    packet_id: p.packet_id,
+    hasFaultHint,
+    vibration_sample_count: d.vibration_sample_count,
+    speed: d.speed,
+    temperature: d.temperature,
+  };
+
+  const html = renderPacketItem(record);
+  prepend(el("packetStream"), html, "packet", record);
+}
+
+function renderPacketItem(r) {
+  const stateTag = r.hasFaultHint
+    ? '<span class="badge danger">疑似故障</span>'
+    : '<span class="badge ok">正常</span>';
+  return (
+    '<div class="item">' +
+    '<span class="time">' + fmt.timeS(r.ts) + "</span>" +
+    '<div class="body">' +
+    '<div class="row1">' +
+    stateTag +
+    "设备 <b>" + fmt.escape(r.device_id || "-") + "</b>" +
+    '<span class="badge muted">ID ' + fmt.escape(r.packet_id || "-") + "</span>" +
+    "</div>" +
+    '<div class="row2">' +
+    (r.vibration_sample_count ? r.vibration_sample_count + " 点振动 " : "") +
+    (r.speed !== undefined ? "转速 " + fmt.num(r.speed) + " rpm " : "") +
+    (r.temperature !== undefined ? "温度 " + fmt.num(r.temperature) + "°C" : "") +
+    "</div>" +
+    "</div></div>"
+  );
+}
+
+/* ================= 初始化 ================= */
+
+function setMqttStatus(on) {
+  const c = el("mqttConn");
+  c.className = "conn " + (on ? "on" : "off");
+  c.querySelector("span:last-child").textContent = on ? "MQTT 实时流已连接" : "MQTT 实时流未连接";
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(redrawAll, 150);
+});
+
+function init() {
+  renderHero();
+
+  // 恢复持久化的流数据
+  const hasStreamData = streamData.result.length > 0 || streamData.suggestion.length > 0 || streamData.packet.length > 0;
+
+  if (hasStreamData) {
+    // 新格式：用原始数据重建HTML
+    rebuildStream(el("resultStream"), "result", renderResultItem, "等待实时诊断结果…（需 Sender 发送数据）");
+    rebuildStream(el("suggestionStream"), "suggestion", renderSuggestionItem, "等待维护建议…");
+    rebuildStream(el("packetStream"), "packet", renderPacketItem, "等待传感器数据包…");
+  } else {
+    showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+    showEmpty(el("suggestionStream"), "等待维护建议…");
+    showEmpty(el("packetStream"), "等待传感器数据包…");
+  }
+
+  updateKpis();
+  setMqttStatus(false);
+
+  connectEvents({
+    "device-result": renderResult,
+    suggestion: renderSuggestion,
+    "input-packet": renderPacket,
+    "mqtt-status": (d) => setMqttStatus(!!d.connected),
+  });
+
+  // 分桶推进
+  setInterval(() => {
+    const t = Date.now();
+    Object.keys(series).forEach((k) => {
+      series[k].push(windowCount[k]);
+      if (series[k].length > MAX_BUCKETS) series[k].shift();
+      windowCount[k] = 0;
+    });
+    bucketTimes.push(t);
+    if (bucketTimes.length > MAX_BUCKETS) bucketTimes.shift();
+    redrawAll();
+    throttleSave();
+  }, BUCKET_MS);
+
+  refreshServices();
+  startPolling(refreshServices, 5000);
+
+  // 更新调试状态
+  updateDebugStatus();
+}
+
+/* ================= 调试函数 ================= */
+
+function updateDebugStatus() {
+  const el = document.getElementById("debugStatus");
+  if (!el) return;
+  const saved = loadStore();
+  if (saved) {
+    const size = Math.round(JSON.stringify(saved).length / 1024);
+    const time = saved.savedAt ? new Date(saved.savedAt).toLocaleTimeString() : "-";
+    el.innerHTML = '✅ 数据已保存：' + size + ' KB · 上次保存 ' + time +
+      ' · 记录数：诊断' + (saved.stream?.result?.length || 0) +
+      '/建议' + (saved.stream?.suggestion?.length || 0) +
+      '/数据包' + (saved.stream?.packet?.length || 0);
+  } else {
+    el.innerHTML = '⚠️ 暂无持久化数据';
+  }
+}
+
+function addMockData() {
+  const now = Math.floor(Date.now() / 1000);
+  const devices = ["machine_01", "machine_02", "bearing_line_a", "bearing_line_b"];
+  const types = ["normal", "fault"];
+  
+  for (let i = 0; i < 5; i++) {
+    const dev = devices[Math.floor(Math.random() * devices.length)];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const isFault = type === "fault";
+    const conf = 0.7 + Math.random() * 0.3;
+    
+    // 模拟诊断结果
+    const rec = {
+      ts: now - i * 10,
+      state: isFault ? "fault" : "normal",
+      isFault,
+      conf,
+      device_id: dev,
+      risk_level: isFault ? (Math.random() > 0.5 ? "high" : "medium") : "low",
+      has_conflict: false,
+      final_action_grade: isFault ? "stop" : "continue",
+      decision_round_id: "round_" + Date.now(),
+    };
+    streamData.result.push(rec);
+    
+    // 模拟维护建议（有故障时）
+    if (isFault) {
+      streamData.suggestion.push({
+        ts: now - i * 10,
+        priority: Math.random() > 0.5 ? "high" : "urgent",
+        device_id: dev,
+        suggestion_type: "immediate_shutdown",
+        suggestion: "检测到异常振动，建议立即停机检查轴承",
+      });
+    }
+    
+    // 模拟数据包
+    streamData.packet.push({
+      ts: now - i * 10,
+      device_id: dev,
+      packet_id: "pkt_" + Date.now() + "_" + i,
+      hasFaultHint: isFault,
+      vibration_sample_count: 800,
+      speed: 899.7,
+      temperature: isFault ? 68.5 : 43.2,
+    });
+    
+    // 更新统计
+    stats.results++;
+    if (isFault) stats.faults++;
+    stats.suggestions = streamData.suggestion.length;
+    stats.packets++;
+    
+    gConf.sum += conf;
+    gConf.count++;
+    if (isFault) { gConf.faultSum += conf; gConf.faultCount++; }
+  }
+  
+  // 限制大小
+  ["result", "suggestion", "packet"].forEach((k) => {
+    if (streamData[k].length > MAX_STREAM) {
+      streamData[k] = streamData[k].slice(-MAX_STREAM);
+    }
+  });
+  
+  // 重建显示
+  rebuildStream(el("resultStream"), "result", renderResultItem, "等待实时诊断结果…");
+  rebuildStream(el("suggestionStream"), "suggestion", renderSuggestionItem, "等待维护建议…");
+  rebuildStream(el("packetStream"), "packet", renderPacketItem, "等待传感器数据包…");
+  
+  updateKpis();
+  // 立即保存（不使用节流，确保数据不丢失）
+  saveStore();
+  updateDebugStatus();
+}
+
+function clearAllData() {
+  if (!confirm("确定要清空所有数据吗？")) return;
+  localStorage.removeItem(STORE_KEY);
+  streamData.result = [];
+  streamData.suggestion = [];
+  streamData.packet = [];
+  stats.results = 0;
+  stats.faults = 0;
+  stats.suggestions = 0;
+  stats.packets = 0;
+  gConf.sum = 0;
+  gConf.count = 0;
+  gConf.faultSum = 0;
+  gConf.faultCount = 0;
+  
+  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+  showEmpty(el("suggestionStream"), "等待维护建议…");
+  showEmpty(el("packetStream"), "等待传感器数据包…");
+  updateKpis();
+  updateDebugStatus();
+  toast("已清空所有数据", "ok");
+}
+
+function manualSave() {
+  saveStore();
+  updateDebugStatus();
+  toast("数据已保存", "ok");
+}
+
+init();
+</script>
+</body>
+</html>

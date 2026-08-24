@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>调度拓扑 · 智能运维协作平台</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>调度与拓扑</h1>
+        <div class="desc">节点在线状态、路由策略与网络链路质量（每 5 秒刷新）</div>
+      </div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div class="card usage-tip">
+      <div class="usage-title">💡 这个页面是干什么的？</div>
+      <div class="usage-grid">
+        <div><b>📊 页面用途</b><br>显示系统各节点的<b>连接关系和运行状态</b>，可以直观看到数据流向和服务健康情况</div>
+        <div><b>🔧 怎么看拓扑图</b><br>• <b class="hl-green">绿色流动线</b> = 数据正常传输中<br>• <b class="hl-red">红色线</b> = 该链路不通<br>• 节点边框颜色 = 该节点状态</div>
+        <div><b>📖 节点说明</b><br>• <b>Sender</b>：数据发送端<br>• <b>edge_01/02</b>：边缘计算节点<br>• <b>Scheduler</b>：调度器<br>• <b>Cloud</b>：云端分析</div>
+        <div><b>⚠️ 异常排查</b><br>如果某节点是红色边框 → 点击下方"边缘节点"页查看详情<br>如果链路断了 → 说明对应的服务没启动</div>
+      </div>
+    </div>
+
+    <!-- 拓扑图 -->
+    <div class="card">
+      <div class="card-title">系统拓扑 <span class="hint">链路颜色：绿=正常流动 红=不可达</span></div>
+      <svg class="topo-svg" viewBox="0 0 900 240" id="topoSvg"></svg>
+    </div>
+
+    <div class="grid grid-2">
+      <!-- 调度器 -->
+      <div>
+        <div class="card">
+          <div class="card-title">Scheduler 调度器（:8003）</div>
+          <div id="schedulerBox"><div class="empty">加载中…</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">路由策略 <span class="hint">GET /scheduler/routing-policy</span></div>
+          <div id="policyBox"><div class="empty">加载中…</div></div>
+        </div>
+      </div>
+      <!-- 边缘节点 + 链路 -->
+      <div>
+        <div class="card">
+          <div class="card-title">边缘节点注册状态</div>
+          <div class="table-wrap"><table class="list" id="nodeTable">
+            <thead><tr><th>节点</th><th>状态</th><th class="num">就绪</th><th class="num">在线</th></tr></thead>
+            <tbody><tr><td colspan="4"><div class="empty">加载中…</div></td></tr></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-title">网络链路质量 <span class="hint">网络模拟器 :8090</span></div>
+          <div id="linkBox"><div class="empty">加载中…</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/common.js"></script>
+<script>
+"use strict";
+
+const NODES = {
+  sender: { x: 60, y: 120, label: "Sender", sub: "数据发送端" },
+  edge01: { x: 300, y: 60, label: "edge_01", sub: "边缘节点 :8001" },
+  edge02: { x: 300, y: 180, label: "edge_02", sub: "边缘节点 :8002" },
+  scheduler: { x: 560, y: 120, label: "Scheduler", sub: "调度器 :8003" },
+  cloud: { x: 800, y: 120, label: "Cloud", sub: "云端 :8004" },
+};
+
+const LINKS = [
+  { from: "sender", to: "edge01", label: "MQTT" },
+  { from: "sender", to: "edge02", label: "MQTT" },
+  { from: "edge01", to: "scheduler", label: "HTTP" },
+  { from: "edge02", to: "scheduler", label: "HTTP" },
+  { from: "scheduler", to: "cloud", label: "仲裁/复核" },
+];
+
+let nodeStatus = {};
+
+function drawTopo() {
+  const svg = el("topoSvg");
+  let s = "";
+  // 链路
+  LINKS.forEach((l) => {
+    const a = NODES[l.from], b = NODES[l.to];
+    const alive = nodeStatus[l.from] !== "down" && nodeStatus[l.to] !== "down";
+    const cls = nodeStatus[l.from] === "down" || nodeStatus[l.to] === "down" ? "dead" : "active";
+    s += '<line class="link ' + cls + '" x1="' + (a.x + 70) + '" y1="' + a.y + '" x2="' + (b.x - 70) + '" y2="' + b.y + '"/>';
+    const mx = ((a.x + 70) + (b.x - 70)) / 2, my = (a.y + b.y) / 2 - 8;
+    s += '<text class="link-label" x="' + mx + '" y="' + my + '" text-anchor="middle">' + l.label + "</text>";
+    void alive;
+  });
+  // 节点
+  Object.entries(NODES).forEach(([id, n]) => {
+    const st = nodeStatus[id];
+    const stroke = st === "down" ? "var(--danger)" : st === "ok" ? "var(--ok)" : "var(--border)";
+    s +=
+      '<g class="node"><rect x="' + (n.x - 70) + '" y="' + (n.y - 28) + '" width="140" height="56" rx="10" style="stroke:' + stroke + '"/>' +
+      '<text x="' + n.x + '" y="' + (n.y - 6) + '" text-anchor="middle">' + n.label + "</text>" +
+      '<text class="sub" x="' + n.x + '" y="' + (n.y + 14) + '" text-anchor="middle">' + n.sub + "</text></g>";
+  });
+  svg.innerHTML = s;
+}
+
+function kvRows(pairs) {
+  return '<div class="kv">' + pairs.map(
+    ([k, v]) => '<div class="k">' + k + '</div><div class="v">' + (v === null || v === undefined ? "-" : v) + "</div>"
+  ).join("") + "</div>";
+}
+
+async function refresh() {
+  // 1. 各服务健康（决定拓扑节点颜色）
+  const probes = [
+    ["edge01", "edge01/health"],
+    ["edge02", "edge02/health"],
+    ["scheduler", "scheduler/health"],
+    ["cloud", "cloud/health"],
+  ];
+  await Promise.all(
+    probes.map(async ([key, path]) => {
+      try {
+        const h = await Api.get(path);
+        const ok = String(h.status || "ok").toLowerCase() === "ok" || h.ready === true;
+        nodeStatus[key] = ok ? "ok" : "warn";
+      } catch {
+        nodeStatus[key] = "down";
+      }
+    })
+  );
+  nodeStatus.sender = "ok"; // 本地演示假设 Sender 可用
+  drawTopo();
+
+  // 2. Scheduler 详情
+  try {
+    const h = await Api.get("scheduler/health");
+    const nodes = h.edge_nodes || {};
+    const counts = Object.entries(nodes).map(
+      ([k, v]) => k + ": " + v
+    ).join(" · ") || "-";
+    el("schedulerBox").innerHTML = kvRows([
+      ["状态", h.status === "ok" ? "运行中" : fmt.escape(String(h.status))],
+      ["模型", fmt.escape(String(h.model_backend || "-")) + (h.model_loaded ? "（已加载）" : "")],
+      ["推理设备", fmt.escape(String(h.device || "-"))],
+      ["端口", h.port || "8003"],
+      ["边缘节点统计", fmt.escape(counts)],
+    ]);
+    renderNodeTable(nodes);
+  } catch (e) {
+    el("schedulerBox").innerHTML = '<div class="empty">不可达：' + fmt.escape(e.message) + "</div>";
+    renderNodeTable(null);
+  }
+
+  // 3. 路由策略
+  try {
+    const p = await Api.get("scheduler/scheduler/routing-policy");
+    el("policyBox").innerHTML = jsonDetails(p, "路由策略 JSON");
+  } catch {
+    el("policyBox").innerHTML = '<div class="empty">路由策略接口不可用</div>';
+  }
+
+  // 4. 网络链路质量（网络模拟器）
+  try {
+    const links = await Api.get("network/api/v1/network/links");
+    renderLinks(links);
+  } catch {
+    el("linkBox").innerHTML = '<div class="empty">网络模拟器（:8090）不可用</div>';
+  }
+}
+
+function renderNodeTable(nodes) {
+  const tbody = el("nodeTable").querySelector("tbody");
+  if (!nodes) {
+    tbody.innerHTML = '<tr><td colspan="4"><div class="empty">无法获取节点注册表</div></td></tr>';
+    return;
+  }
+  const rows = [];
+  ["edge_01", "edge_02"].forEach((nid) => {
+    const st = nodeStatus[nid === "edge_01" ? "edge01" : "edge02"];
+    rows.push(
+      "<tr><td>" + nid + "</td><td>" +
+      (st === "ok" ? badge("在线", "ok") : st === "warn" ? badge("降级", "warn") : badge("离线", "danger")) +
+      '</td><td class="num">' + (st === "ok" ? "✓" : "-") + '</td><td class="num">' +
+      (st === "ok" ? "✓" : "-") + "</td></tr>"
+    );
+  });
+  tbody.innerHTML = rows.join("");
+}
+
+function renderLinks(data) {
+  const items = Array.isArray(data) ? data : (data && (data.links || data.items)) || [];
+  if (!items.length) {
+    el("linkBox").innerHTML = '<div class="empty">暂无链路数据</div>';
+    return;
+  }
+  const rows = items.slice(0, 12).map((l) => {
+    const id = l.link_id || l.id || "-";
+    const toxic = l.toxics || l.active_toxics || [];
+    const down = l.status === "down" || l.available === false || toxic.length > 0;
+    return "<tr><td class='mono trunc' title='" + fmt.escape(id) + "'>" + fmt.escape(id) +
+      "</td><td>" + (down ? badge("受干扰", "warn") : badge("正常", "ok")) +
+      "</td><td class='trunc' style='font-size:11px;color:var(--text-dim)'>" +
+      fmt.escape(toxic.map((t) => t.name || t.type).join(", ") || "-") + "</td></tr>";
+  });
+  el("linkBox").innerHTML =
+    '<div class="table-wrap"><table class="list"><thead><tr><th>链路 ID</th><th>状态</th><th>干扰</th></tr></thead><tbody>' +
+    rows.join("") + "</tbody></table></div>";
+}
+
+drawTopo();
+refresh();
+startPolling(refresh, 5000);
+</script>
+</body>
+</html>
