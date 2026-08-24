@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
@@ -127,7 +128,11 @@ class InferenceWorker:
         self._consecutive_failures = 0
         self._breaker_open_until: Optional[float] = None
         self.breaker_state = "closed"
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="edge-model-worker")
+        self._consumer_count = max(1, int(cfg.inference_workers))
+        self._state_lock = threading.Lock()
+        self._threads: List[threading.Thread] = []
+        self._consumer_processed = [0] * self._consumer_count
+        self._successful_inference_latencies_ms = deque(maxlen=512)
         self._running = False
         # H4：固定推理线程池，替代每任务新建线程，从结构上消除超时后的僵尸线程。
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -138,16 +143,29 @@ class InferenceWorker:
     def start(self):
         self._running = True
         if self._executor is None:
+            # 每个消费者在等待一次推理时都需要一个执行槽，额外两个槽用于超时后
+            # 尚在协作取消的调用，避免其短暂占满线程池而阻塞后续任务。
             self._executor = ThreadPoolExecutor(
-                max_workers=self.cfg.inference_workers,
+                max_workers=self._consumer_count + 2,
                 thread_name_prefix="edge-infer",
             )
-        self._thread.start()
+        self._threads = [
+            threading.Thread(
+                target=self._loop,
+                args=(consumer_index,),
+                daemon=True,
+                name="edge-model-worker-%d" % consumer_index,
+            )
+            for consumer_index in range(self._consumer_count)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def stop(self, join_s: float = 5.0):
         self._running = False
         self.queue.stop()
-        self._thread.join(timeout=join_s)
+        for thread in self._threads:
+            thread.join(timeout=join_s)
         executor = self._executor
         self._executor = None
         if executor is not None:
@@ -158,30 +176,77 @@ class InferenceWorker:
     @property
     def worker_alive(self) -> bool:
         """H2：worker 线程是否存活（liveness 判定依据之一）。"""
-        return self._thread is not None and self._thread.is_alive()
+        return bool(self._threads) and all(thread.is_alive() for thread in self._threads)
+
+    @property
+    def consumer_count(self) -> int:
+        return self._consumer_count
+
+    @property
+    def consumer_snapshot(self) -> List[dict]:
+        """每个消费者的存活状态与已处理任务数，供健康检查和压测读取。"""
+        with self._state_lock:
+            processed = list(self._consumer_processed)
+        return [
+            {
+                "id": index,
+                "alive": index < len(self._threads) and self._threads[index].is_alive(),
+                "processed": processed[index],
+            }
+            for index in range(self._consumer_count)
+        ]
+
+    @property
+    def inference_latency_snapshot(self) -> dict:
+        """最近成功本地推理的时延聚合，不含任务内容或身份数据。"""
+        with self._state_lock:
+            samples = sorted(self._successful_inference_latencies_ms)
+        if not samples:
+            return {"count": 0, "mean": None, "p50": None, "p95": None, "max": None}
+
+        def percentile(percent: float) -> float:
+            index = max(0, int(len(samples) * percent + 0.999999) - 1)
+            return samples[index]
+
+        return {
+            "count": len(samples),
+            "mean": round(sum(samples) / len(samples), 2),
+            "p50": round(percentile(0.50), 2),
+            "p95": round(percentile(0.95), 2),
+            "max": round(samples[-1], 2),
+        }
+
+    def _record_successful_inference_latency(self, latency_ms: Optional[float]) -> None:
+        if latency_ms is None:
+            return
+        with self._state_lock:
+            self._successful_inference_latencies_ms.append(float(latency_ms))
 
     def _note_failure(self):
         if not self.cfg.breaker.enabled:
             return
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.cfg.breaker.consecutive_failure_threshold:
-            self._breaker_open_until = self._clock() + self.cfg.breaker.recovery_probe_interval_s
-            self.breaker_state = "open"
+        with self._state_lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.cfg.breaker.consecutive_failure_threshold:
+                self._breaker_open_until = self._clock() + self.cfg.breaker.recovery_probe_interval_s
+                self.breaker_state = "open"
 
     def _note_success(self):
-        self._consecutive_failures = 0
-        self._breaker_open_until = None
-        self.breaker_state = "closed"
+        with self._state_lock:
+            self._consecutive_failures = 0
+            self._breaker_open_until = None
+            self.breaker_state = "closed"
 
     def _breaker_allows_model(self) -> bool:
-        if not self.cfg.breaker.enabled or self._breaker_open_until is None:
+        with self._state_lock:
+            if not self.cfg.breaker.enabled or self._breaker_open_until is None:
+                return True
+            if self._clock() < self._breaker_open_until:
+                return False
+            self._breaker_open_until = None
             return True
-        if self._clock() < self._breaker_open_until:
-            return False
-        self._breaker_open_until = None
-        return True
 
-    def _loop(self):
+    def _loop(self, consumer_index: int):
         # H2：单任务异常不得杀死 worker 线程——记日志、计数并继续消费下一个任务。
         while self._running or not self.queue.idle():
             task = self.queue.get(timeout_s=self._poll_s)
@@ -190,10 +255,13 @@ class InferenceWorker:
             try:
                 self._process(task)
             except Exception as exc:  # noqa: BLE001
-                self.loop_error_count += 1
-                self.last_loop_error = "%s: %s" % (type(exc).__name__, exc)
+                with self._state_lock:
+                    self.loop_error_count += 1
+                    self.last_loop_error = "%s: %s" % (type(exc).__name__, exc)
                 _logger.exception("edge-model-worker 任务处理异常(线程继续运行): %s", exc)
             finally:
+                with self._state_lock:
+                    self._consumer_processed[consumer_index] += 1
                 self.queue.done()
 
     @staticmethod
@@ -258,6 +326,7 @@ class InferenceWorker:
                              result.latency_ms, breaker_state, "model_result_late")
             return
 
+        self._record_successful_inference_latency(result.latency_ms)
         self._note_success()
         self.on_model(task, result.edge, queue_wait_ms, result.latency_ms or 0.0,
                       total_ms, False, result.edge.model_version)

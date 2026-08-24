@@ -1,0 +1,42 @@
+{
+  "device_id": "machine_01",
+  "senders": [
+    {
+      "sender_id": "sender_01",
+      "bearing_id": "bearing_01",
+      "scheduler_url": "http://127.0.0.1:18031/scheduler/decide",
+      "mqtt_host": "127.0.0.1",
+      "mqtt_port": 18831,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18831,
+        "edge_02": 18832
+      }
+    },
+    {
+      "sender_id": "sender_02",
+      "bearing_id": "bearing_02",
+      "scheduler_url": "http://127.0.0.1:18032/scheduler/decide",
+      "mqtt_host": "127.0.0.1",
+      "mqtt_port": 18931,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18931,
+        "edge_02": 18932
+      }
+    }
+  ],
+  "scheduler_timeout_seconds": 2.0,
+  "schedule_max_retries": 3,
+  "mqtt_keepalive_seconds": 30,
+  "qos": 1,
+  "retain": false,
+  "puback_warning_timeout_ms": 500,
+  "packet_delivery_timeout_ms": 1000,
+  "max_publish_retries": 2,
+  "recovery_window_seconds": 5.0,
+  "pending_queue_max_packets": 80,
+  "task_duration_ms": 4000,
+  "packet_interval_ms": 50,
+  "expected_packet_count": 80,
+  "log_dir": "../runtime/logs",
+  "state_dir": "../runtime/state"
+}

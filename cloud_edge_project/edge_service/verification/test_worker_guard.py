@@ -104,6 +104,86 @@ def test_inference_workers_config_default_and_validation() -> None:
     assert "inference_workers" in "\n".join(cfg.validate())
 
 
+def test_multiple_consumers_share_queue_and_record_work() -> None:
+    """多个消费者必须能并行取同一个队列中的任务，且暴露各自处理数。"""
+    cfg = EdgeModelConfig()
+    cfg.diagnostic_backend = "http"
+    cfg.inference_workers = 2
+    cfg.timeout.queue_wait_ms = 2_000
+    cfg.timeout.inference_ms = 1_000
+    cfg.timeout.total_ms = 4_000
+    queue = ModelTaskQueue(4, "reject")
+    barrier = threading.Barrier(2)
+    started_lock = threading.Lock()
+    started_ids: set[str] = set()
+    both_started = threading.Event()
+
+    def infer_fn(perception, timeout_ms, request_id=None,
+                 remaining_timeout_ms=None, cancel_event=None):
+        with started_lock:
+            started_ids.add(request_id)
+            if len(started_ids) == 2:
+                both_started.set()
+        try:
+            barrier.wait(timeout=2.0)
+        except threading.BrokenBarrierError:
+            pass
+        return _ok_result(request_id)
+
+    worker = InferenceWorker(
+        queue, infer_fn, cfg,
+        on_model=lambda *a, **k: None,
+        on_fallback=lambda *a, **k: None,
+    )
+    worker.start()
+    try:
+        assert worker.consumer_count == 2
+        queue.submit(_task("req-1"))
+        queue.submit(_task("req-2"))
+        assert both_started.wait(1.0), "两个消费者没有并行开始推理"
+        assert queue.wait_until_idle(timeout_s=5.0)
+        consumers = worker.consumer_snapshot
+        assert len(consumers) == 2
+        assert sum(item["processed"] for item in consumers) == 2
+    finally:
+        barrier.abort()
+        worker.stop()
+
+
+def test_successful_inference_latency_snapshot_is_aggregated() -> None:
+    """健康指标应聚合成功本地推理的耗时，且不需要保存原始包。"""
+    cfg = EdgeModelConfig()
+    cfg.diagnostic_backend = "http"
+    queue = ModelTaskQueue(4, "reject")
+    latencies = iter((10.0, 30.0))
+
+    def infer_fn(perception, timeout_ms, request_id=None,
+                 remaining_timeout_ms=None, cancel_event=None):
+        result = _ok_result(request_id)
+        result.latency_ms = next(latencies)
+        return result
+
+    worker = InferenceWorker(
+        queue, infer_fn, cfg,
+        on_model=lambda *a, **k: None,
+        on_fallback=lambda *a, **k: None,
+    )
+    worker.start()
+    try:
+        queue.submit(_task("req-1"))
+        queue.submit(_task("req-2"))
+        assert queue.wait_until_idle(timeout_s=5.0)
+        assert worker.inference_latency_snapshot == {
+            "count": 2,
+            "mean": 20.0,
+            "p50": 10.0,
+            "p95": 30.0,
+            "max": 30.0,
+        }
+    finally:
+        worker.stop()
+
+
 def test_infer_task_forwards_cancel_event_to_model() -> None:
     """H4：local_h5 的 infer_task 把 cancel_event 透传给模型 run。"""
     client = LocalH5ModelClient()

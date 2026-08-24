@@ -5,6 +5,7 @@ from pathlib import Path
 
 EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = EDGE_SERVICE_ROOT / "compose.multi-edge.yml"
+ENV_EXAMPLE_PATH = Path(__file__).resolve().parents[3] / ".env.example"
 DELETED_NETWORK_SIM_COMPOSE = EDGE_SERVICE_ROOT / "compose.network-sim.yml"
 MODEL_SERVICE_APP_PATH = EDGE_SERVICE_ROOT / "src" / "model_service" / "app.py"
 EDGE_APP_PATH = EDGE_SERVICE_ROOT / "app.py"
@@ -113,6 +114,47 @@ def test_suggestion_llm_targets_host_llama_service() -> None:
     for name, block in _service_blocks(text).items():
         env = _environment(block)
         assert _compose_default(env["EDGE_SUGGESTION_LLM_BASE_URL"]) == EXPECTED_LLM_BASE_URL, name
+
+
+def test_both_edges_accept_deployment_timeout_overrides() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_QUEUE_WAIT_MS"] == "${EDGE_MODEL_QUEUE_WAIT_MS:-250}", name
+        assert env["EDGE_MODEL_TOTAL_TIMEOUT_MS"] == "${EDGE_MODEL_TOTAL_TIMEOUT_MS:-2000}", name
+
+
+def test_both_edges_accept_inference_worker_override() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_INFERENCE_WORKERS"] == "${EDGE_MODEL_INFERENCE_WORKERS:-1}", name
+
+
+def test_both_edges_limit_local_h5_torch_threads_by_default() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_TORCH_INTRAOP_THREADS"] == "${EDGE_TORCH_INTRAOP_THREADS:-1}", name
+        assert env["EDGE_TORCH_INTEROP_THREADS"] == "${EDGE_TORCH_INTEROP_THREADS:-1}", name
+
+
+def test_both_edges_accept_model_run_log_override() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_RUN_LOG"] == (
+            "${EDGE_MODEL_RUN_LOG:-/app/data/edge_model_runs.jsonl}"
+        ), name
+
+
+def test_new_edge_runtime_overrides_are_documented() -> None:
+    env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    for assignment in (
+        "EDGE_MODEL_RUN_LOG=/app/data/edge_model_runs.jsonl",
+        "EDGE_MODEL_QUEUE_WAIT_MS=250",
+        "EDGE_MODEL_TOTAL_TIMEOUT_MS=2000",
+        "EDGE_MODEL_INFERENCE_WORKERS=1",
+        "EDGE_TORCH_INTRAOP_THREADS=1",
+        "EDGE_TORCH_INTEROP_THREADS=1",
+    ):
+        assert assignment in env_example.splitlines()
 
 
 def test_topology_addresses_have_defaults_and_are_env_overridable() -> None:

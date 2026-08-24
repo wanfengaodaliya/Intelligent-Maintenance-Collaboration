@@ -62,6 +62,10 @@
           </select>
         </label>
         <button class="btn" id="runBtn">▶ 开始诊断</button>
+        <button class="btn ghost small" id="resetDeviceBtn" title="重置设备ID到 machine_01">🔄 重置ID</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
+        💡 使用默认格式 machine_NN 时，每次诊断后设备ID会自动+1（如 machine_01 → machine_02）
       </div>
       <div class="waveform-box">
         <canvas id="waveCanvas" width="900" height="110"></canvas>
@@ -136,13 +140,30 @@ function drawWave(data) {
 
 let seq = 1;
 
+function getNextDeviceId() {
+  const input = el("deviceId");
+  const current = input.value.trim();
+
+  // 如果用户使用的是默认格式 machine_NN，自动递增
+  const match = current.match(/^machine_(\d+)$/);
+  if (match) {
+    const nextNum = parseInt(match[1]) + 1;
+    input.value = "machine_" + String(nextNum).padStart(2, "0");
+    return current; // 返回当前值（递增前的）
+  }
+
+  // 如果用户输入的是其他格式，保持不变
+  return current || "machine_01";
+}
+
 function buildPacket() {
   const type = el("packetType").value;
   const nowNs = BigInt(Date.now()) * 1000000n;
+  const deviceId = getNextDeviceId();
   return {
     packet_id: "demo_" + String(seq).padStart(6, "0"),
-    device_id: el("deviceId").value.trim() || "machine_01",
-    sensor_id: "sensor_" + (el("deviceId").value.trim() || "machine_01"),
+    device_id: deviceId,
+    sensor_id: "sensor_" + deviceId,
     sequence_number: seq,
     start_timestamp_ns: Number(nowNs),
     end_timestamp_ns: Number(nowNs + 50000000n),
@@ -281,6 +302,12 @@ el("packetType").addEventListener("change", () => {
     " · 16000 Hz · 800 点 · 50ms";
 });
 el("runBtn").addEventListener("click", runDiagnosis);
+
+// 重置设备ID按钮
+el("resetDeviceBtn").addEventListener("click", () => {
+  el("deviceId").value = "machine_01";
+  alert("设备ID已重置为 machine_01");
+});
 
 drawWave(currentWave);
 </script>

@@ -43,6 +43,7 @@ from edge_validation_cache import (  # noqa: E402
     ValidationCacheConfig,
 )
 from edge_model.config import EdgeModelConfig, ModelClientConfig  # noqa: E402
+from edge_model.contracts import RunRecord  # noqa: E402
 from edge_model.model_client import ModelClient  # noqa: E402
 from edge_model.model_store import (  # noqa: E402
     ModelStoreBootstrapError,
@@ -204,12 +205,30 @@ def _load_runtime_config() -> EdgeRuntimeConfig:
     return EdgeRuntimeConfig.from_env()
 
 
+def _apply_model_runtime_env(model_config: EdgeModelConfig) -> None:
+    """Apply optional deployment-specific model timeout budgets."""
+    model_config.timeout.queue_wait_ms = int(
+        os.getenv("EDGE_MODEL_QUEUE_WAIT_MS", str(model_config.timeout.queue_wait_ms))
+    )
+    model_config.timeout.total_ms = int(
+        os.getenv("EDGE_MODEL_TOTAL_TIMEOUT_MS", str(model_config.timeout.total_ms))
+    )
+
+
+def _record_failed_model_run(
+    recorder: PacketRouteErrorRecorder, record: RunRecord
+) -> None:
+    if not record.output_valid:
+        recorder(record.as_dict())
+
+
 def _build_runtime(review_store: CloudReviewStore | None = None):
     if review_store is None:
         review_store = cloud_review_store
 
     runtime_config = _load_runtime_config()
     model_config = EdgeModelConfig()
+    _apply_model_runtime_env(model_config)
     # 阶段 7：推理队列容量/满载策略可配置（方案 6.2 满载策略细化）。
     # 默认容量 64：双 Sender 50ms 节奏 ≈ 40 窗口/秒时提供 >1.5s 突发缓冲；
     # 原默认 1 会在任何突发下把窗口全部打入降级失败，任务无法收敛。
@@ -248,12 +267,18 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
             )
         )
         evidence_builder = PerceptionEvidenceBuilder().build_evidence
-    # 降级语义（两种路线一致）："诊断不可用"，等待云复核，不产生伪诊断。
+    model_run_recorder = PacketRouteErrorRecorder(
+        os.getenv(
+            "EDGE_MODEL_RUN_LOG",
+            str(Path(__file__).resolve().parents[1] / "data" / "edge_model_runs.jsonl"),
+        )
+    )
+    # 降级语义（两种路线一致）：“诊断不可用”，等待云复核，不产生伪诊断。
     pipeline = EdgeModelPipeline(
         model_config,
         model_client,
         DiagnosisUnavailableRunner(),
-        on_run_record=lambda _: None,
+        on_run_record=lambda record: _record_failed_model_run(model_run_recorder, record),
         on_packet_result=lambda _: None,
         evidence_builder=evidence_builder,
     )

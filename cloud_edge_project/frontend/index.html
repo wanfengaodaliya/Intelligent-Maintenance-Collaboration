@@ -109,7 +109,7 @@ const STORE_KEY = "omni_dashboard_v2";
 
 // 保存原始数据（而非innerHTML，减小体积）
 const streamData = { result: [], suggestion: [], packet: [] };
-const MAX_STREAM_SAVE = 20; // 只保存最近20条
+const MAX_STREAM_SAVE = 200; // 保存最近200条（与MAX_STREAM一致）
 
 function loadStore() {
   try {
@@ -758,7 +758,15 @@ function updateDebugStatus() {
 
 function addMockData() {
   const now = Math.floor(Date.now() / 1000);
-  const devices = ["machine_01", "machine_02", "bearing_line_a", "bearing_line_b"];
+  // 使用编号递增的设备ID，每次调用都会产生不同的设备
+  const baseNum = (window._mockDeviceBase || 0) + 1;
+  window._mockDeviceBase = baseNum + 4;
+  const devices = [
+    "machine_" + String(baseNum).padStart(2, "0"),
+    "machine_" + String(baseNum + 1).padStart(2, "0"),
+    "machine_" + String(baseNum + 2).padStart(2, "0"),
+    "bearing_" + String(baseNum + 3).padStart(2, "0"),
+  ];
   const types = ["normal", "fault"];
   
   for (let i = 0; i < 5; i++) {

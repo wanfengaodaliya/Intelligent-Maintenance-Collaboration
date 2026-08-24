@@ -14,6 +14,9 @@ import pytest
 from sender.config import ConfigError, SenderNodeConfig, load_config
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "local.json"
+TWO_SENDER_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "local.two-senders.json"
+)
 
 EXPECTED_PROXY_PORTS = {
     "sender_01": {"edge_01": 18831, "edge_02": 18832},
@@ -125,6 +128,19 @@ def test_blank_identity_fields_are_rejected(tmp_path: Path, field: str):
 
     with pytest.raises(ConfigError, match=f"{field} must be a non-empty string"):
         load_config(_write_config(tmp_path, blank_identity))
+
+
+def test_two_sender_config_loads_the_two_configured_senders():
+    config = load_config(TWO_SENDER_CONFIG_PATH)
+
+    assert [node.sender_id for node in config.senders] == [
+        "sender_01",
+        "sender_02",
+    ]
+    assert [node.bearing_id for node in config.senders] == [
+        "bearing_01",
+        "bearing_02",
+    ]
 
 
 def test_every_sender_maps_both_edge_mqtt_proxy_ports():

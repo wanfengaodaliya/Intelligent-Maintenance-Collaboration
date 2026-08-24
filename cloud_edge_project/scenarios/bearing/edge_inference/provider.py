@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,6 +12,24 @@ from core.scenario_plugin import (
     EdgeInferenceRuntime,
     EdgeInferenceRuntimeRequest,
 )
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def configure_local_h5_torch_threads() -> dict[str, int]:
+    """Limit PyTorch internal parallelism for the bearing H5 runtime."""
+    intraop = int(os.getenv("EDGE_TORCH_INTRAOP_THREADS", "1"))
+    interop = int(os.getenv("EDGE_TORCH_INTEROP_THREADS", "1"))
+    if intraop < 1 or interop < 1:
+        raise ValueError(
+            "EDGE_TORCH_INTRAOP_THREADS and EDGE_TORCH_INTEROP_THREADS must be >= 1"
+        )
+    import torch
+
+    torch.set_num_threads(intraop)
+    torch.set_num_interop_threads(interop)
+    return {"intraop": intraop, "interop": interop}
 
 
 class BearingEdgeModelProvider:
@@ -100,6 +120,8 @@ class BearingEdgeInferenceProvider:
                 "local_h5 requires v12.diagnosis_window_ms=50, got %d"
                 % request.observation_window_ms
             )
+        thread_config = configure_local_h5_torch_threads()
+        LOGGER.info("configured local H5 PyTorch threads: %s", thread_config)
         client = self.model_provider.build_client(
             model_root=request.model_root,
             bundled_model_root=request.bundled_model_root,

@@ -149,6 +149,37 @@ def test_deferred_task_persists_v12_identity(tmp_path) -> None:
     assert task["window_end_sequence"] == 1
 
 
+def test_failed_edge_packets_are_final_and_never_create_cloud_reviews(tmp_path) -> None:
+    """本地失败没有有效诊断结果，必须终止在 Scheduler，不能进入云复核。"""
+    service = PacketRoutingService(
+        _router(), DeferredCloudRepository(tmp_path / "scheduler.db")
+    )
+    for status, error, reason in (
+        ("TIMEOUT", "QUEUE_TIMEOUT", "EDGE_TIMEOUT"),
+        ("FAILED", "MODEL_UNAVAILABLE", "EDGE_FAILED"),
+    ):
+        request = _packet_route_request()
+        request["status"] = status
+        request["error"] = error
+        request.pop("output")
+        request["input_ref"]["packet_id"] = f"packet_{status.lower()}"
+
+        decision = service.route(request)
+
+        assert decision["route"] == "EDGE"
+        assert decision["legacy_route"] == "DIRECT_FINAL_TO_SUMMARY"
+        assert decision["needs_cloud_review"] is False
+        assert decision["deferred_cloud_review"] is False
+        assert decision["reason_codes"] == [reason]
+        assert decision["result_instruction"] == {
+            "result_status": "FINAL",
+            "decision_source": "EDGE",
+            "review_status": "NOT_REQUIRED",
+            "degraded": False,
+        }
+        assert service.repository.get(decision["decision_id"]) is None
+
+
 def test_deferred_packet_route_rechecks_network_and_recovers_identity(tmp_path) -> None:
     service = PacketRoutingService(
         _router_with_registry(_UnavailableRegistry()),
