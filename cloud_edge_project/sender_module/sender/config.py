@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -147,6 +148,8 @@ def load_config(path: Path | str) -> SenderConfig:
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid config value: {exc}") from exc
 
+    if re.fullmatch(r".*\d+", config.device_id) is None:
+        raise ConfigError("device_id must end with a numeric suffix")
     if config.qos != 1 or config.retain:
         raise ConfigError("current contract requires qos=1 and retain=false")
     if config.schedule_max_retries < 0 or config.max_publish_retries < 0:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from sender.config import load_config
+from sender.config import SenderConfig, load_config
 from sender.controller import run_all_senders
+from sender.scheduler_client import SchedulerClient
 
 
 def _default_config_path() -> Path:
@@ -32,6 +34,18 @@ def positive_int(raw: str) -> int:
     if value <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return value
+
+
+def allocate_batch_config(config: SenderConfig) -> SenderConfig:
+    scheduler = SchedulerClient(
+        url=config.senders[0].scheduler_url,
+        timeout_seconds=config.scheduler_timeout_seconds,
+        max_retries=config.schedule_max_retries,
+    )
+    return replace(
+        config,
+        device_id=scheduler.allocate_device_id(config.device_id),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,9 +81,14 @@ def main() -> int:
         for _round_number in range(1, args.rounds + 1):
             # run_all_senders starts the three configured Senders concurrently;
             # rounds stay sequential so one formal run has a deterministic size.
+            round_config = (
+                allocate_batch_config(config)
+                if isinstance(config, SenderConfig)
+                else config
+            )
             summaries.extend(
                 run_all_senders(
-                    config,
+                    round_config,
                     source_files,
                     realtime=not args.accelerated,
                 )

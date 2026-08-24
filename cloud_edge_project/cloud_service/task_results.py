@@ -37,6 +37,33 @@ class TaskResultService:
             ).fetchone()
         return None if row is None else json.loads(row["payload_json"])
 
+    def list_recent_device_decisions(
+        self, device_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        with connect(self.database_path) as connection:
+            if device_id is None:
+                rows = connection.execute(
+                    """SELECT payload_json FROM cloud_device_decision_result
+                       ORDER BY COALESCE(
+                           json_extract(payload_json, '$.closed_at_ns'),
+                           json_extract(payload_json, '$.created_at_ns'),
+                           received_at_ns
+                       ) DESC, result_id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT payload_json FROM cloud_device_decision_result
+                       WHERE device_id=?
+                       ORDER BY COALESCE(
+                           json_extract(payload_json, '$.closed_at_ns'),
+                           json_extract(payload_json, '$.created_at_ns'),
+                           received_at_ns
+                       ) DESC, result_id DESC LIMIT ?""",
+                    (device_id, limit),
+                ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
     def _ingest_v12(self, table: str, payload: dict[str, Any], contract: Any) -> dict[str, Any]:
         required = {field.name for field in fields(contract)}
         if not isinstance(payload, dict) or set(payload) != required:

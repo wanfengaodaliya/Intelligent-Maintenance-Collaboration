@@ -22,6 +22,26 @@ class DeviceArbitrationRepository:
             return None
         return json.loads(row["result_json"])
 
+    def list_recent(
+        self, device_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        with connect(self.database_path) as connection:
+            if device_id is None:
+                rows = connection.execute(
+                    """SELECT result_json FROM device_arbitration_record
+                       WHERE result_json IS NOT NULL
+                       ORDER BY created_at_ns DESC, arbitration_id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT result_json FROM device_arbitration_record
+                       WHERE subject_id=? AND result_json IS NOT NULL
+                       ORDER BY created_at_ns DESC, arbitration_id DESC LIMIT ?""",
+                    (device_id, limit),
+                ).fetchall()
+        return [json.loads(row["result_json"]) for row in rows]
+
     def save(
         self, *, request: dict[str, Any], result: dict[str, Any]
     ) -> dict[str, Any]:

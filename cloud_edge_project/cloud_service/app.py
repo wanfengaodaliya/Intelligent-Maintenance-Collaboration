@@ -57,6 +57,7 @@ from cloud_service.device_arbitration.v12_contract import (
     attach_v12_identity,
     is_v12_device_arbitration_request,
 )
+from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.runtime_status import CloudRuntimeState
 from cloud_service.errors import CloudServiceError
@@ -343,6 +344,42 @@ def device_decision_results(payload: dict) -> dict | JSONResponse:
         )
 
 
+def _recent_limit(limit: int | str) -> int:
+    if isinstance(limit, bool):
+        raise ValueError("INVALID_RECENT_LIMIT")
+    raw_limit = str(limit).strip()
+    if not raw_limit.isdigit():
+        raise ValueError("INVALID_RECENT_LIMIT")
+    parsed_limit = int(raw_limit)
+    if not 1 <= parsed_limit <= 200:
+        raise ValueError("INVALID_RECENT_LIMIT")
+    return parsed_limit
+
+
+@app.get("/cloud/device-decision-results/recent", response_model=None)
+def list_recent_device_decisions(
+    device_id: str | None = None, limit: str = "50"
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = TaskResultService(
+            load_cloud_settings().database_path
+        ).list_recent_device_decisions(
+            device_id.strip() if device_id and device_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
+        )
+
+
 @app.post("/cloud/raw-analysis-samples", response_model=None)
 async def raw_analysis_samples(
     metadata: str = Form(...), payload: UploadFile = File(...)
@@ -398,6 +435,30 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
 
 
+@app.get("/cloud/device-arbitration/recent", response_model=None)
+def list_recent_device_arbitrations(
+    device_id: str | None = None, limit: str = "50"
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = DeviceArbitrationRepository(
+            load_cloud_settings().database_path
+        ).list_recent(
+            device_id.strip() if device_id and device_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
+        )
+
+
 @app.get("/cloud/device-arbitration/{conflict_id}", response_model=None)
 def get_device_arbitration(conflict_id: str) -> dict | JSONResponse:
     try:
@@ -449,6 +510,33 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"error_code": "SERVICE_UNAVAILABLE"},
+        )
+
+
+@app.get("/cloud/global-analysis/recent", response_model=None)
+def list_recent_global_analyses(
+    scenario_type: str = DEFAULT_SCENARIO_TYPE,
+    subject_id: str | None = None,
+    limit: str = "50",
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = GlobalAnalysisService(
+            load_cloud_settings().database_path
+        ).repository.list_recent(
+            scenario_type,
+            subject_id.strip() if subject_id and subject_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
         )
 
 

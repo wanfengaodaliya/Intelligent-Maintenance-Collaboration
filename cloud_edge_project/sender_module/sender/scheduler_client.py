@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,6 +72,40 @@ class SchedulerClient:
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
         self.session = session or requests.Session()
+
+    def allocate_device_id(
+        self, base_device_id: str, *, request_id: str | None = None
+    ) -> str:
+        if not isinstance(base_device_id, str) or not base_device_id.strip():
+            raise SchedulerError("base device ID must be a non-empty string")
+        allocation_request_id = request_id or uuid.uuid4().hex
+        allocation_url = self.url.rsplit("/", 1)[0] + "/device-id/next"
+        last_error = "device ID allocation failed"
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.post(
+                    allocation_url,
+                    json={
+                        "base_device_id": base_device_id.strip(),
+                        "request_id": allocation_request_id,
+                    },
+                    timeout=self.timeout_seconds,
+                )
+                if not 200 <= response.status_code < 300:
+                    last_error = _format_scheduler_error(response)
+                else:
+                    payload = response.json()
+                    device_id = payload.get("device_id") if isinstance(payload, dict) else None
+                    if isinstance(device_id, str) and device_id.strip():
+                        return device_id.strip()
+                    last_error = "scheduler response device_id is missing"
+            except (requests.RequestException, ValueError) as exc:
+                last_error = f"device ID allocation failed: {exc}"
+
+            if attempt < self.max_retries and self.retry_delay_seconds:
+                time.sleep(self.retry_delay_seconds * (2 ** attempt))
+
+        raise SchedulerError(last_error, self.max_retries)
 
     def assign(self, request: dict[str, Any]) -> ScheduleAssignment:
         string_fields = ("device_id", "sender_id", "task_id", "bearing_id")

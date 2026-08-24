@@ -7,6 +7,7 @@ services:
   scheduler:
     host: "0.0.0.0"
     port: 8003
+    device_id_base: "machine_01"
   cloud:
     host: "0.0.0.0"
     port: 8004

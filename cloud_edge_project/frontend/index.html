@@ -78,23 +78,6 @@
       </div>
     </div>
 
-    <!-- 调试工具（可折叠） -->
-    <div class="card debug-panel" id="debugPanel">
-      <div class="card-title" style="cursor:pointer;" onclick="document.getElementById('debugBody').style.display=document.getElementById('debugBody').style.display==='none'?'block':'none'">
-        🔧 调试工具 <span class="hint">点击展开/收起</span>
-      </div>
-      <div id="debugBody">
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;" id="debugStatus">持久化状态：加载中…</div>
-        <div class="form-row">
-          <button class="btn ghost small" onclick="addMockData()">➕ 添加模拟数据</button>
-          <button class="btn ghost small" onclick="clearAllData()">🗑️ 清空所有数据</button>
-          <button class="btn ghost small" onclick="manualSave()">💾 立即保存</button>
-        </div>
-        <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
-          提示：添加模拟数据后，切换到其他页面再切回来，数据应该保留
-        </div>
-      </div>
-    </div>
   </main>
 </div>
 <script src="js/common.js"></script>
@@ -104,88 +87,8 @@
 /* ================= 配色 ================= */
 const C = { blue: "#2563eb", teal: "#0d9488", gold: "#d97706", danger: "#dc2626", ok: "#16a34a", violet: "#7c3aed" };
 
-/* ================= localStorage 持久化 ================= */
-const STORE_KEY = "omni_dashboard_v2";
-
-// 保存原始数据（而非innerHTML，减小体积）
+/* ================= 本次页面会话数据 ================= */
 const streamData = { result: [], suggestion: [], packet: [] };
-const MAX_STREAM_SAVE = 200; // 保存最近200条（与MAX_STREAM一致）
-
-function loadStore() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw);
-    // 检查数据完整性
-    if (!d || typeof d !== "object") return null;
-    return d;
-  } catch { return null; }
-}
-
-function saveStore() {
-  try {
-    // 只保存精简数据，避免超出 localStorage 限制
-    const data = {
-      stats: { ...stats },
-      series: {
-        packets: series.packets.slice(-MAX_BUCKETS),
-        results: series.results.slice(-MAX_BUCKETS),
-        faults: series.faults.slice(-MAX_BUCKETS),
-        suggestions: series.suggestions.slice(-MAX_BUCKETS),
-      },
-      bucketTimes: bucketTimes.slice(-MAX_BUCKETS),
-      gConf: { sum: gConf.sum, count: gConf.count, faultSum: gConf.faultSum, faultCount: gConf.faultCount },
-      stream: {
-        result: streamData.result.slice(-MAX_STREAM_SAVE),
-        suggestion: streamData.suggestion.slice(-MAX_STREAM_SAVE),
-        packet: streamData.packet.slice(-MAX_STREAM_SAVE),
-      },
-      savedAt: Date.now(),
-    };
-    const json = JSON.stringify(data);
-    // 检查大小（localStorage 通常 5MB）
-    if (json.length > 4 * 1024 * 1024) {
-      console.warn("[store] 数据过大，可能保存失败:", json.length, "bytes");
-    }
-    localStorage.setItem(STORE_KEY, json);
-  } catch (e) {
-    console.error("[store] 保存失败:", e.message);
-  }
-}
-
-// 节流保存（避免频繁写入）
-let saveTimer = null;
-function throttleSave() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    saveStore();
-  }, 300);
-}
-
-// 多种保存时机，确保数据不丢失
-// 1. 页面隐藏时保存
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    saveStore();
-  }
-});
-
-// 2. 页面卸载前保存（同步）
-window.addEventListener("beforeunload", () => {
-  // 立即同步保存
-  saveStore();
-  // 清除可能的节流定时器
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-});
-
-// 3. 页面隐藏时保存（兼容性）
-window.addEventListener("pagehide", () => {
-  saveStore();
-});
 
 /* ================= Hero KPI ================= */
 
@@ -211,45 +114,14 @@ const series = { packets: [], results: [], faults: [], suggestions: [], accuracy
 const bucketTimes = [];
 let windowCount = { packets: 0, results: 0, faults: 0, suggestions: 0 };
 
-/* 从 localStorage 恢复 */
-const saved = loadStore();
-if (saved) {
-  Object.assign(stats, saved.stats || {});
-  if (saved.series) {
-    series.packets = saved.series.packets || [];
-    series.results = saved.series.results || [];
-    series.faults = saved.series.faults || [];
-    series.suggestions = saved.series.suggestions || [];
-  }
-  Object.assign(bucketTimes, saved.bucketTimes || []);
-  if (saved.gConf) {
-    gConf.sum = saved.gConf.sum || 0;
-    gConf.count = saved.gConf.count || 0;
-    gConf.faultSum = saved.gConf.faultSum || 0;
-    gConf.faultCount = saved.gConf.faultCount || 0;
-  }
-  // 恢复 stream 数据（兼容旧格式：旧格式是字符串，新格式是数组）
-  if (saved.stream) {
-    ["result", "suggestion", "packet"].forEach((key) => {
-      const val = saved.stream[key];
-      if (Array.isArray(val)) {
-        streamData[key] = val;
-      } else if (typeof val === "string" && val.length > 0) {
-        // 旧格式：保存的是 innerHTML，清空它（我们用新格式重建）
-        // 但保留一个标记，让 init 时跳过重建
-        streamData[key] = [];
-      }
-    });
-  }
-}
-
 function renderHero() {
   el("heroKpi").innerHTML = KPIS.map((k) =>
     '<div class="kpi ' + k.cls + '" id="kpi-' + k.id + '">' +
     '<div class="label">' + k.label + '<span class="tag">实时</span></div>' +
     '<div class="value"><span id="kpi-val-' + k.id + '">0</span><span class="unit">' + k.unit + "</span></div>" +
     '<div class="spark"><canvas id="kpi-spark-' + k.id + '"></canvas></div>' +
-    '<div class="sub" id="kpi-sub-' + k.id + '">等待数据…</div>' +
+    '<div class="sub" id="kpi-sub-' + k.id + '">' +
+    (k.id === "packets" ? "本次页面会话" : "等待数据…") + "</div>" +
     "</div>"
   ).join("");
 }
@@ -275,11 +147,9 @@ function updateKpis() {
       const rate = stats.results > 0 ? (stats.faults / stats.results) * 100 : 0;
       setKpiVal(k.id, rate.toFixed(1));
     } else if (k.id === "packets") {
-      // 数据包数：显示实际保留的数据包数量（而非无限累加）
-      setKpiVal(k.id, streamData.packet.length);
+      setKpiVal(k.id, stats.packets);
     } else if (k.id === "suggestions") {
-      // 维护建议：显示实际保留的建议数量
-      setKpiVal(k.id, streamData.suggestion.length);
+      setKpiVal(k.id, stats.suggestions);
     } else {
       setKpiVal(k.id, stats[k.id] || 0);
     }
@@ -444,7 +314,9 @@ function redrawAll() {
     if (k.id === "accuracy" || k.id === "faultRate") return;
     drawSpark(el("kpi-spark-" + k.id), series[k.id], k.color);
     const sub = el("kpi-sub-" + k.id);
-    if (sub) sub.innerHTML = deltaHtml(k.id);
+    if (sub) {
+      sub.innerHTML = (k.id === "packets" ? "本次页面会话 · " : "") + deltaHtml(k.id);
+    }
   });
 }
 
@@ -519,19 +391,6 @@ function prepend(container, html, dataKey, data) {
       streamData[dataKey] = streamData[dataKey].slice(-MAX_STREAM);
     }
   }
-  throttleSave();
-}
-
-// 用保存的数据重建 stream
-function rebuildStream(container, dataKey, renderFn, emptyMsg) {
-  const dataList = streamData[dataKey];
-  if (!Array.isArray(dataList) || dataList.length === 0) {
-    showEmpty(container, emptyMsg);
-    return;
-  }
-  // 从最新到最旧重建
-  const html = dataList.slice().reverse().map(renderFn).join("");
-  container.innerHTML = html;
 }
 
 function renderResult(ev) {
@@ -692,20 +551,9 @@ window.addEventListener("resize", () => {
 
 function init() {
   renderHero();
-
-  // 恢复持久化的流数据
-  const hasStreamData = streamData.result.length > 0 || streamData.suggestion.length > 0 || streamData.packet.length > 0;
-
-  if (hasStreamData) {
-    // 新格式：用原始数据重建HTML
-    rebuildStream(el("resultStream"), "result", renderResultItem, "等待实时诊断结果…（需 Sender 发送数据）");
-    rebuildStream(el("suggestionStream"), "suggestion", renderSuggestionItem, "等待维护建议…");
-    rebuildStream(el("packetStream"), "packet", renderPacketItem, "等待传感器数据包…");
-  } else {
-    showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
-    showEmpty(el("suggestionStream"), "等待维护建议…");
-    showEmpty(el("packetStream"), "等待传感器数据包…");
-  }
+  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+  showEmpty(el("suggestionStream"), "等待维护建议…");
+  showEmpty(el("packetStream"), "等待传感器数据包…");
 
   updateKpis();
   setMqttStatus(false);
@@ -728,145 +576,10 @@ function init() {
     bucketTimes.push(t);
     if (bucketTimes.length > MAX_BUCKETS) bucketTimes.shift();
     redrawAll();
-    throttleSave();
   }, BUCKET_MS);
 
   refreshServices();
   startPolling(refreshServices, 5000);
-
-  // 更新调试状态
-  updateDebugStatus();
-}
-
-/* ================= 调试函数 ================= */
-
-function updateDebugStatus() {
-  const el = document.getElementById("debugStatus");
-  if (!el) return;
-  const saved = loadStore();
-  if (saved) {
-    const size = Math.round(JSON.stringify(saved).length / 1024);
-    const time = saved.savedAt ? new Date(saved.savedAt).toLocaleTimeString() : "-";
-    el.innerHTML = '✅ 数据已保存：' + size + ' KB · 上次保存 ' + time +
-      ' · 记录数：诊断' + (saved.stream?.result?.length || 0) +
-      '/建议' + (saved.stream?.suggestion?.length || 0) +
-      '/数据包' + (saved.stream?.packet?.length || 0);
-  } else {
-    el.innerHTML = '⚠️ 暂无持久化数据';
-  }
-}
-
-function addMockData() {
-  const now = Math.floor(Date.now() / 1000);
-  // 使用编号递增的设备ID，每次调用都会产生不同的设备
-  const baseNum = (window._mockDeviceBase || 0) + 1;
-  window._mockDeviceBase = baseNum + 4;
-  const devices = [
-    "machine_" + String(baseNum).padStart(2, "0"),
-    "machine_" + String(baseNum + 1).padStart(2, "0"),
-    "machine_" + String(baseNum + 2).padStart(2, "0"),
-    "bearing_" + String(baseNum + 3).padStart(2, "0"),
-  ];
-  const types = ["normal", "fault"];
-  
-  for (let i = 0; i < 5; i++) {
-    const dev = devices[Math.floor(Math.random() * devices.length)];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const isFault = type === "fault";
-    const conf = 0.7 + Math.random() * 0.3;
-    
-    // 模拟诊断结果
-    const rec = {
-      ts: now - i * 10,
-      state: isFault ? "fault" : "normal",
-      isFault,
-      conf,
-      device_id: dev,
-      risk_level: isFault ? (Math.random() > 0.5 ? "high" : "medium") : "low",
-      has_conflict: false,
-      final_action_grade: isFault ? "stop" : "continue",
-      decision_round_id: "round_" + Date.now(),
-    };
-    streamData.result.push(rec);
-    
-    // 模拟维护建议（有故障时）
-    if (isFault) {
-      streamData.suggestion.push({
-        ts: now - i * 10,
-        priority: Math.random() > 0.5 ? "high" : "urgent",
-        device_id: dev,
-        suggestion_type: "immediate_shutdown",
-        suggestion: "检测到异常振动，建议立即停机检查轴承",
-      });
-    }
-    
-    // 模拟数据包
-    streamData.packet.push({
-      ts: now - i * 10,
-      device_id: dev,
-      packet_id: "pkt_" + Date.now() + "_" + i,
-      hasFaultHint: isFault,
-      vibration_sample_count: 800,
-      speed: 899.7,
-      temperature: isFault ? 68.5 : 43.2,
-    });
-    
-    // 更新统计
-    stats.results++;
-    if (isFault) stats.faults++;
-    stats.suggestions = streamData.suggestion.length;
-    stats.packets++;
-    
-    gConf.sum += conf;
-    gConf.count++;
-    if (isFault) { gConf.faultSum += conf; gConf.faultCount++; }
-  }
-  
-  // 限制大小
-  ["result", "suggestion", "packet"].forEach((k) => {
-    if (streamData[k].length > MAX_STREAM) {
-      streamData[k] = streamData[k].slice(-MAX_STREAM);
-    }
-  });
-  
-  // 重建显示
-  rebuildStream(el("resultStream"), "result", renderResultItem, "等待实时诊断结果…");
-  rebuildStream(el("suggestionStream"), "suggestion", renderSuggestionItem, "等待维护建议…");
-  rebuildStream(el("packetStream"), "packet", renderPacketItem, "等待传感器数据包…");
-  
-  updateKpis();
-  // 立即保存（不使用节流，确保数据不丢失）
-  saveStore();
-  updateDebugStatus();
-}
-
-function clearAllData() {
-  if (!confirm("确定要清空所有数据吗？")) return;
-  localStorage.removeItem(STORE_KEY);
-  streamData.result = [];
-  streamData.suggestion = [];
-  streamData.packet = [];
-  stats.results = 0;
-  stats.faults = 0;
-  stats.suggestions = 0;
-  stats.packets = 0;
-  gConf.sum = 0;
-  gConf.count = 0;
-  gConf.faultSum = 0;
-  gConf.faultCount = 0;
-  
-  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
-  showEmpty(el("suggestionStream"), "等待维护建议…");
-  showEmpty(el("packetStream"), "等待传感器数据包…");
-  updateKpis();
-  updateDebugStatus();
-  toast("已清空所有数据", "ok");
-}
-
-function manualSave() {
-  saveStore();
-  updateDebugStatus();
-  toast("数据已保存", "ok");
 }
 
 init();
