@@ -155,14 +155,14 @@ class CloudReviewService:
 
         review_id = checkpoint.get("review_id") if checkpoint is not None else None
         if checkpoint is None or checkpoint["phase"] != "CLOUD_SUCCEEDED":
-            cloud_request = {
-                "schema_version": "cloud-infer/2.0",
-                "decision_round_id": control["decision_round_id"],
-                "diagnosis_window_id": control["diagnosis_window_id"],
-                "edge_perception_result": record["edge_perception_result"],
-                "cloud_raw_window": _cloud_raw_window(control, record["raw_packet"]),
-            }
             try:
+                cloud_request = {
+                    "schema_version": "cloud-infer/2.0",
+                    "decision_round_id": control["decision_round_id"],
+                    "diagnosis_window_id": control["diagnosis_window_id"],
+                    "edge_perception_result": record["edge_perception_result"],
+                    "cloud_raw_window": _cloud_raw_window(control, record["raw_packet"]),
+                }
                 cloud_response = self.cloud_client.infer(
                     control["target"]["cloud_node_id"],
                     control["target"]["endpoint"],
@@ -185,6 +185,29 @@ class CloudReviewService:
                 self.store.save_decision(control, phase="CLOUD_SUCCEEDED", review_id=review_id)
             except CloudUploadError as error:
                 return self._report_failure(control, error)
+            except CloudReviewError as error:
+                # A 2xx response whose result violates the Cloud/Edge contract is
+                # permanent.  Previously retry_due swallowed this exception while
+                # leaving the checkpoint in CLOUD_RETRY_WAIT, so the same window
+                # was uploaded forever even though Cloud had already replied 200.
+                return self._report_failure(
+                    control,
+                    CloudUploadError(error.code, retryable=False),
+                )
+            except ValueError:
+                # Lifecycle/identity rejection is deterministic for this response;
+                # repeating the HTTP upload cannot make it applicable.
+                return self._report_failure(
+                    control,
+                    CloudUploadError("CLOUD_RESULT_REJECTED", retryable=False),
+                )
+            except Exception:
+                # Bound unexpected local failures with the same persisted retry
+                # budget instead of silently retrying without incrementing it.
+                return self._report_failure(
+                    control,
+                    CloudUploadError("CLOUD_RESULT_PROCESSING_FAILED", retryable=True),
+                )
 
         report = self._result_report(
             control,
