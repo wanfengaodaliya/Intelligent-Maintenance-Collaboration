@@ -26,6 +26,16 @@ _LEGACY_REASON_CODES = {
 }
 
 
+def _legacy_bearing_results_ref(value: Any) -> Any:
+    if (
+        isinstance(value, str)
+        and value.startswith("summary-store://")
+        and value.endswith("/units")
+    ):
+        return f"{value[:-len('/units')]}/bearings"
+    return value
+
+
 class SchedulerMappingError(ValueError):
     pass
 
@@ -198,6 +208,10 @@ def device_payload_to_legacy(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = _legacy_alias(result, "received_unit_count", "received_bearing_count")
     result = _legacy_alias(result, "unit_result_ids", "bearing_result_ids")
     result = _legacy_alias(result, "unit_results_ref", "bearing_results_ref")
+    if "bearing_results_ref" in result:
+        result["bearing_results_ref"] = _legacy_bearing_results_ref(
+            result["bearing_results_ref"]
+        )
     bearing_results = result.get("bearing_results")
     if isinstance(bearing_results, list):
         result["bearing_results"] = [
@@ -220,11 +234,16 @@ def device_payload_to_legacy(payload: Mapping[str, Any]) -> dict[str, Any]:
     for field in ("source", "source_refs"):
         source = result.get(field)
         if isinstance(source, Mapping):
-            result[field] = _legacy_alias(
+            legacy_source = _legacy_alias(
                 source,
                 "unit_results_ref",
                 "bearing_results_ref",
             )
+            if "bearing_results_ref" in legacy_source:
+                legacy_source["bearing_results_ref"] = _legacy_bearing_results_ref(
+                    legacy_source["bearing_results_ref"]
+                )
+            result[field] = legacy_source
     for field in ("reason_codes", "trigger_reasons"):
         reasons = result.get(field)
         if isinstance(reasons, list):

@@ -33,6 +33,7 @@ def test_check_config_is_a_read_only_full_preflight():
     assert completion < stage_one
     assert "no secret was created during preflight" in script
     assert "read-only preflight will not stop containers" in script
-    assert "docker network inspect network_simulator_default" in script
+    assert '$NetworkSimNetwork = Get-EnvValue "NETWORK_SIM_NETWORK"' in script
+    assert "docker network inspect $NetworkSimNetwork" in script
     assert "conda run -n $CondaEnvName python --version" in script
     assert "docker compose -f compose.multi-edge.yml config --quiet" in script

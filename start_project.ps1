@@ -66,6 +66,7 @@ $CloudEdge = Join-Path $ProjectRoot "cloud_edge_project"
 $NetSim = Join-Path $CloudEdge "internet_service\network_simulator"
 $EdgeService = Join-Path $CloudEdge "edge_service"
 $NetSimProject = Get-EnvValue "NETWORK_COMPOSE_PROJECT" "network_simulator"
+$NetworkSimNetwork = Get-EnvValue "NETWORK_SIM_NETWORK" "network_simulator_default"
 $LLM_DIR = Get-EnvValue "LLAMA_CPP_DIR" (Join-Path $ProjectRoot "tools\llama.cpp")
 if (-not [System.IO.Path]::IsPathRooted($LLM_DIR)) { $LLM_DIR = Join-Path $ProjectRoot $LLM_DIR }
 $CondaEnvName = Get-EnvValue "PROJECT_CONDA_ENV" "moment"
@@ -209,10 +210,10 @@ $dockerInfo = docker info 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "  Docker not running, start Docker Desktop first"; exit 1 }
 Write-Host "  Docker OK"
 
-Write-Host "[Check] External Docker network network_simulator_default ..."
-$null = docker network inspect network_simulator_default 2>&1
+Write-Host "[Check] External Docker network $NetworkSimNetwork ..."
+$null = docker network inspect $NetworkSimNetwork 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Network missing. Create it with: docker network create network_simulator_default"
+    Write-Host "  Network missing. Create it with: docker network create $NetworkSimNetwork"
     exit 1
 }
 Write-Host "  External network OK"

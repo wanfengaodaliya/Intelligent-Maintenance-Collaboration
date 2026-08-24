@@ -112,10 +112,16 @@ def test_v12_device_route_and_deferred_task_preserve_round_identity(tmp_path) ->
     assert decision["device_result_revision"] == 2
     assert decision["bearing_result_ids"] == ["bearing_a_r2", "bearing_b_r2"]
     assert decision["conflict_id"]
+    assert decision["source"]["bearing_results_ref"] == (
+        f"summary-store://{request['task_id']}/bearings"
+    )
     assert task is not None
     assert task["decision_round_id"] == request["decision_round_id"]
     assert task["device_result_revision"] == 2
     assert task["bearing_result_ids"] == ["bearing_a_r2", "bearing_b_r2"]
+    assert task["bearing_results_ref"] == (
+        f"summary-store://{request['task_id']}/bearings"
+    )
 
 
 def test_deferred_device_dispatcher_delivers_v12_cloud_arbitration_contract(tmp_path) -> None:
