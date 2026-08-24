@@ -31,10 +31,19 @@ H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权
 当前单机完整系统统一使用仓库根目录的 `start_project.ps1` 启动。脚本会检查 Docker、Conda、MOMENT、H5 和可选 LLM 模型，启动网络模拟器及 Edge、Scheduler、Cloud，并执行健康检查：
 
 ```powershell
+Copy-Item .env.example .env
+# 按新机器的目录、IP、端口和节点信息修改 .env，然后先校验配置：
+.\start_project.ps1 -CheckConfig
+# 正式启动：
 .\start_project.ps1
 # 如果暂时不启动可选 LLM：
 .\start_project.ps1 -SkipLLM
 ```
+
+Sender 数量、身份和链路使用 `cloud_edge_project/sender_module/config/local.json`；
+Network 的链路监听/上游与 Reporter 周期使用
+`cloud_edge_project/internet_service/network_simulator/config/`。这些都是部署配置，
+更换环境无需修改 Python 源码。
 
 启动后可检查：
 

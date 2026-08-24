@@ -77,9 +77,9 @@ def test_edge_01_business_traffic_uses_confirmed_proxy_ports():
         )
     )
 
-    assert '18011:18011' in compose
-    assert '18021:18021' in compose
-    assert '18831:18831' in compose
+    assert '${TOXIPROXY_HOST_PORT_18011:-18011}:18011' in compose
+    assert '${TOXIPROXY_HOST_PORT_18021:-18021}:18021' in compose
+    assert '${TOXIPROXY_HOST_PORT_18831:-18831}:18831' in compose
     assert 'host.docker.internal:${NETWORK_HOST_GATEWAY:-host-gateway}' in compose
     # AUD-02: the reporter must target the batch endpoint, not a single-link URL.
     assert "/scheduler/network-reports" in reporter

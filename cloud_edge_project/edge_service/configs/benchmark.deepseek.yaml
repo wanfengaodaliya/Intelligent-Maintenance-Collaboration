@@ -2,8 +2,8 @@
 # 运行环境：WSL。模型只加载一次，压测时不要改动本文件中的固定生成参数。
 
 model:
-  # WSL 内模型绝对路径
-  path: /home/unic/models/DeepSeek-R1-Distill-Qwen-1.5B
+  # 相对项目目录；也可在专用部署配置中改为实际模型目录。
+  path: models/DeepSeek-R1-Distill-Qwen-1.5B
   dtype: bfloat16            # RTX 5060 8GiB，BF16 下 1.5B 约 3.2GB
   device: auto               # cuda / auto / cpu
   low_cpu_mem_usage: true

@@ -48,6 +48,23 @@ def _write_config(tmp_path: Path, transform) -> Path:
     return path
 
 
+def test_sender_count_is_deployment_configurable(tmp_path: Path):
+    def keep_one_sender(raw):
+        raw["senders"] = raw["senders"][:1]
+
+    config = load_config(_write_config(tmp_path, keep_one_sender))
+
+    assert [node.sender_id for node in config.senders] == ["sender_01"]
+
+
+def test_sender_list_cannot_be_empty(tmp_path: Path):
+    def remove_senders(raw):
+        raw["senders"] = []
+
+    with pytest.raises(ConfigError, match="at least one"):
+        load_config(_write_config(tmp_path, remove_senders))
+
+
 def test_new_unit_id_config_keeps_bearing_compatibility_view(tmp_path: Path):
     def use_unit_id(raw):
         for sender in raw["senders"]:

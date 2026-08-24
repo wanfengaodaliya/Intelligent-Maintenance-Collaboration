@@ -70,6 +70,6 @@ USER 10001:10001
 # 阶段 5：容器健康探针使用 liveness（关键线程存活），
 # readiness（/health/ready）用于调度与流量控制，短暂断连不应标记容器 unhealthy。
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=6 \
-    CMD ["python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health/live', timeout=3)); assert data.get('alive', False)"]
+    CMD ["python", "-c", "import json, os, urllib.request; port=os.environ.get('EDGE_SERVICE_PORT', '8001'); data=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/health/live', timeout=3)); assert data.get('alive', False)"]
 
-CMD ["python", "edge_service/run_edge_service.py", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "edge_service/run_edge_service.py"]

@@ -4,11 +4,12 @@
 调用本机 llama.cpp 服务（OpenAI 兼容 API），将结构化规则结果
 翻译为一句通顺的中文维护建议。
 
-服务地址默认为 http://127.0.0.1:8002，与边缘诊断模型（8001）不同端口。
+服务地址可由 EDGE_SUGGESTION_LLM_BASE_URL 配置。
 """
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -31,11 +32,13 @@ class SuggestionClient:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:8002",
+        base_url: str | None = None,
         timeout_seconds: float = 3.0,
         fallback_text: str = "",
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or os.getenv(
+            "EDGE_SUGGESTION_LLM_BASE_URL", "http://127.0.0.1:8002"
+        )).rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.fallback_text = fallback_text or "设备异常，建议关注。"
 

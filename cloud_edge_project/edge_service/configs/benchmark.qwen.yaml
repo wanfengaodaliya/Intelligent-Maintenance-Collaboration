@@ -2,7 +2,7 @@
 # 当前阶段只开 warmup + single_baseline（并发/固定速率等 Qwen 单请求结果合格后再启用）。
 
 model:
-  path: /home/unic/models/Qwen2.5-1.5B-Instruct
+  path: models/Qwen2.5-1.5B-Instruct
   dtype: bfloat16
   device: auto
   low_cpu_mem_usage: true

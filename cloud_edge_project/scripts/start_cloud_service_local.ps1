@@ -1,6 +1,7 @@
 param(
     [string]$VllmUrl = "http://127.0.0.1:6006/v1/chat/completions",
     [string]$ModelName = "qwen3.5-2b-local",
+    [string]$BindHost = "127.0.0.1",
     [int]$Port = 6008,
     [int]$TimeoutSeconds = 60
 )
@@ -27,4 +28,4 @@ $env:VLLM_TIMEOUT_SECONDS = "$TimeoutSeconds"
 $env:CLOUD_SERVICE_PORT = "$Port"
 
 Set-Location $projectDirectory
-& $python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port $Port
+& $python -m uvicorn cloud_service.app:app --host $BindHost --port $Port
