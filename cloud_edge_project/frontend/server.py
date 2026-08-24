@@ -27,7 +27,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from dashboard_state import BinaryAccuracyEvaluator, DashboardSession
+
 FRONTEND_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = FRONTEND_ROOT.parent
 
 # 后端服务映射（与 start_project.ps1 / README.md 的端口约定一致）
 BACKENDS: dict[str, str] = {
@@ -68,20 +71,22 @@ def classify_topic(topic: str) -> str:
 class MqttBridge:
     """后台 MQTT 订阅者：把消息广播给所有 SSE 客户端队列。"""
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, dashboard: DashboardSession) -> None:
         self._host = host
         self._port = port
+        self._dashboard = dashboard
         self._lock = threading.Lock()
         self._subscribers: list[queue.Queue[dict]] = []
         self.connected = False
         self._client = None
         threading.Thread(target=self._run, name="mqtt-bridge", daemon=True).start()
 
-    def subscribe(self) -> queue.Queue[dict]:
+    def subscribe(self) -> tuple[queue.Queue[dict], dict]:
         q: queue.Queue[dict] = queue.Queue(maxsize=1000)
         with self._lock:
             self._subscribers.append(q)
-        return q
+            snapshot = self._dashboard.snapshot()
+        return q, snapshot
 
     def unsubscribe(self, q: queue.Queue[dict]) -> None:
         with self._lock:
@@ -90,11 +95,24 @@ class MqttBridge:
 
     def _broadcast(self, event: dict) -> None:
         with self._lock:
+            self._dashboard.record(event)
             for q in self._subscribers:
                 try:
                     q.put_nowait(event)
                 except queue.Full:
-                    pass  # 慢客户端丢消息，保证实时性
+                    # 慢客户端直接恢复到当前权威快照，避免累计 KPI 永久少算。
+                    while True:
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            break
+                    q.put_nowait(
+                        {
+                            "type": "session-snapshot",
+                            "payload": self._dashboard.snapshot(),
+                            "ts": time.time(),
+                        }
+                    )
 
     def _run(self) -> None:
         try:
@@ -145,7 +163,13 @@ class MqttBridge:
         )
 
 
-BRIDGE = MqttBridge(MQTT_HOST, MQTT_PORT)
+DASHBOARD = DashboardSession()
+ACCURACY = BinaryAccuracyEvaluator(
+    PROJECT_ROOT / "sender_module" / "runtime" / "state" / "packet_source_mapping.db",
+    PROJECT_ROOT / "data" / "cloud_review.db",
+    started_at_ns=DASHBOARD.started_at_ns,
+)
+BRIDGE = MqttBridge(MQTT_HOST, MQTT_PORT, DASHBOARD)
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -174,6 +198,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/events":
             self._handle_sse()
+        elif path == "/api/dashboard/accuracy":
+            self._send_json(200, ACCURACY.evaluate())
         elif path.startswith("/api/"):
             self._handle_proxy()
         else:
@@ -191,7 +217,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     # ---------- SSE 实时流 ----------
 
     def _handle_sse(self) -> None:
-        q = BRIDGE.subscribe()
+        q, snapshot = BRIDGE.subscribe()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -203,6 +229,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.wfile.write(
                 b"event: mqtt-status\ndata: {\"connected\": %s}\n\n"
                 % (b"true" if BRIDGE.connected else b"false")
+            )
+            snapshot_event = {
+                "type": "session-snapshot",
+                "payload": snapshot,
+                "ts": time.time(),
+            }
+            self.wfile.write(
+                (
+                    "event: session-snapshot\ndata: %s\n\n"
+                    % json.dumps(snapshot_event, ensure_ascii=False)
+                ).encode("utf-8")
             )
             self.wfile.flush()
             while True:
