@@ -22,14 +22,9 @@ class BearingEdgeModelProvider:
 
     @property
     def default_model_version(self) -> str:
-        try:
-            from edge_model.local_h5_client import H5_RUNTIME_MODEL_VERSION
-        except ModuleNotFoundError as exc:
-            if exc.name != "edge_model":
-                raise
-            from edge_service.src.edge_model.local_h5_client import (
-                H5_RUNTIME_MODEL_VERSION,
-            )
+        from scenarios.bearing.edge_inference.local_h5_client import (
+            H5_RUNTIME_MODEL_VERSION,
+        )
 
         return H5_RUNTIME_MODEL_VERSION
 
@@ -48,19 +43,15 @@ class BearingEdgeModelProvider:
         bundled_model_root: Path,
         pinned_model_version: str | None,
     ) -> object:
+        from scenarios.bearing.edge_inference.local_h5_client import (
+            LocalH5ClientConfig,
+            LocalH5ModelClient,
+        )
         try:
-            from edge_model.local_h5_client import (
-                LocalH5ClientConfig,
-                LocalH5ModelClient,
-            )
             from edge_model.model_store import initialize_model_store
         except ModuleNotFoundError as exc:
             if exc.name != "edge_model":
                 raise
-            from edge_service.src.edge_model.local_h5_client import (
-                LocalH5ClientConfig,
-                LocalH5ModelClient,
-            )
             from edge_service.src.edge_model.model_store import initialize_model_store
 
         selection = initialize_model_store(

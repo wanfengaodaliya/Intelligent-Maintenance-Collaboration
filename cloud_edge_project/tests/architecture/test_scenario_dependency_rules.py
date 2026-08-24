@@ -41,6 +41,20 @@ EDGE_H5_MODULES = {
         {"H5ModelArtifactError", "DistilledH5DiagnosticModel"},
     ),
 }
+EDGE_H5_RUNTIME_MODULES = {
+    "local_h5_client.py": {
+        "H5ActivationError",
+        "LocalH5ClientConfig",
+        "LocalH5ModelClient",
+    },
+    "h5_probe.py": {
+        "H5ProbeError",
+        "default_probe_dir",
+        "load_h5_probe",
+        "load_h5_probe_task",
+        "read_probe_manifest",
+    },
+}
 CLOUD_MOMENT_MODULES = {
     "moment_backbone.py": (
         "moment_backbone.py",
@@ -430,6 +444,31 @@ def test_edge_image_copies_compatibility_boundary() -> None:
     )
 
     assert "COPY compatibility ./compatibility" in dockerfile.splitlines()
+
+
+@pytest.mark.parametrize("filename", EDGE_H5_RUNTIME_MODULES)
+def test_legacy_h5_runtime_modules_use_compatibility_boundary(filename: str) -> None:
+    legacy_path = PROJECT_ROOT / "edge_service" / "src" / "edge_model" / filename
+    imported_modules = _imported_modules(legacy_path)
+
+    assert "compatibility.bearing_v12.edge_h5_runtime_exports" in imported_modules
+    assert not any(module.startswith("scenarios.bearing") for module in imported_modules)
+
+
+@pytest.mark.parametrize(
+    ("filename", "business_names"), EDGE_H5_RUNTIME_MODULES.items()
+)
+def test_bearing_h5_runtime_definitions_have_one_owner(
+    filename: str,
+    business_names: set[str],
+) -> None:
+    scenario_path = (
+        PROJECT_ROOT / "scenarios" / "bearing" / "edge_inference" / filename
+    )
+    legacy_path = PROJECT_ROOT / "edge_service" / "src" / "edge_model" / filename
+
+    assert business_names.issubset(_defined_names(scenario_path))
+    assert _defined_names(legacy_path).isdisjoint(business_names)
 
 
 @pytest.mark.parametrize("legacy_filename", CLOUD_MOMENT_MODULES)
