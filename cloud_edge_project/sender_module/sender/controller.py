@@ -241,7 +241,10 @@ def run_sender_task(
                 packet=packet,
                 task_id=task_id,
                 unit_id=node.unit_id,
-                source_path=prepared_input.source_path,
+                source_path=prepared_input.window_source_paths.get(
+                    sequence_number,
+                    prepared_input.source_path,
+                ),
                 window=window,
             )
             mqtt_publisher.publish(
@@ -310,7 +313,10 @@ def run_all_senders(
 ) -> list[dict[str, Any]]:
     expected_sender_ids = {node.sender_id for node in config.senders}
     if set(source_files) != expected_sender_ids:
-        raise ValueError("source files must provide exactly one MAT path for every configured sender")
+        raise ValueError(
+            "source paths must provide exactly one MAT file or directory "
+            "for every configured sender"
+        )
 
     sink = LocalLogSink(config.log_dir)
     with ThreadPoolExecutor(max_workers=len(config.senders), thread_name_prefix="sender") as executor:

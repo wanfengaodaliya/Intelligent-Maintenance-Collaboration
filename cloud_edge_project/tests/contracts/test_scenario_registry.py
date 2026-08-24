@@ -29,6 +29,7 @@ from core.scenario_plugin import (
     ARBITRATION_POLICY,
     CLOUD_DIAGNOSIS,
     CONSISTENCY_POLICY,
+    DECISION_POLICY,
     EDGE_INFERENCE,
     GLOBAL_ANALYSIS,
     INPUT_ADAPTER,
@@ -99,6 +100,7 @@ def test_registry_registers_bearing_plugin_and_exposes_all_capabilities() -> Non
     plugin = registry.get("bearing")
 
     assert plugin.manifest.scenario_id == "bearing"
+    assert DECISION_POLICY in BEARING_CAPABILITIES
     assert registry.scenario_ids() == ("bearing",)
     assert registry.capabilities("bearing") == tuple(sorted(BEARING_CAPABILITIES))
     for capability in BEARING_CAPABILITIES:
@@ -114,23 +116,32 @@ def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:
     cloud_registry = build_cloud_scenario_registry()
     sender_registry = build_sender_scenario_registry()
 
-    for capability in {EDGE_INFERENCE, MODEL_PROVIDER, CONSISTENCY_POLICY}:
+    for capability in {
+        EDGE_INFERENCE,
+        MODEL_PROVIDER,
+        DECISION_POLICY,
+        CONSISTENCY_POLICY,
+    }:
         assert edge_registry.get_capability("bearing", capability).resolved
-        assert not cloud_registry.get_capability("bearing", capability).resolved
+        if capability != DECISION_POLICY:
+            assert not cloud_registry.get_capability("bearing", capability).resolved
     for capability in {
         CLOUD_DIAGNOSIS,
+        DECISION_POLICY,
         GLOBAL_ANALYSIS,
         MODEL_UPDATE,
         ARBITRATION_POLICY,
         STORAGE_PROVIDER,
     }:
         assert cloud_registry.get_capability("bearing", capability).resolved
-        assert not edge_registry.get_capability("bearing", capability).resolved
+        if capability != DECISION_POLICY:
+            assert not edge_registry.get_capability("bearing", capability).resolved
     assert sender_registry.get_capability("bearing", INPUT_ADAPTER).resolved
     for capability in {
         EDGE_INFERENCE,
         MODEL_PROVIDER,
         CLOUD_DIAGNOSIS,
+        DECISION_POLICY,
         GLOBAL_ANALYSIS,
         MODEL_UPDATE,
         CONSISTENCY_POLICY,

@@ -7,7 +7,7 @@ import pytest
 
 from bootstrap.scenarios import build_sender_scenario_registry
 from core.scenario_plugin import INPUT_ADAPTER
-from sender.mat_reader import SignalWindow
+from sender.mat_reader import MatDataError, SignalWindow
 from sender.packet import build_sensor_packet, serialize_packet
 from sender.source_mapping import PacketSourceMappingStore
 from scenarios.bearing.ingestion import (
@@ -34,6 +34,166 @@ def _window() -> SignalWindow:
     signals["phase_current_2_A"]["unit"] = "A"
     signals["bearing_module_temperature_c"] = 25.0
     return SignalWindow(1, 0.0, 0.05, 0, 3200, 0, signals)
+
+
+def _complete_window() -> SignalWindow:
+    window = _window()
+    data = dict(window.data)
+    for name, value in tuple(data.items()):
+        if not isinstance(value, dict) or "sample_rate_hz" not in value:
+            continue
+        channel = dict(value)
+        count = round(channel["sample_rate_hz"] * 0.05)
+        channel["sample_count"] = count
+        channel["values"] = [1.0] * count
+        data[name] = channel
+    return SignalWindow(1, 0.0, 0.05, 0, 3200, 0, data)
+
+
+def test_bearing_input_adapter_replays_directory_in_natural_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "K004"
+    source_dir.mkdir()
+    for name in (
+        "N09_M07_F10_K004_10.mat",
+        "N09_M07_F10_K004_2.mat",
+        "N09_M07_F10_K004_1.mat",
+    ):
+        (source_dir / name).touch()
+
+    loaded_paths: list[Path] = []
+
+    def load_record(path: Path | str) -> SimpleNamespace:
+        resolved = Path(path).resolve()
+        loaded_paths.append(resolved)
+        return SimpleNamespace(
+            source_path=resolved,
+            windows=lambda **kwargs: iter([_complete_window()]),
+        )
+
+    monkeypatch.setattr(ingestion_module, "load_mat_record", load_record)
+    adapter = BearingInputAdapter(
+        PacketSourceMappingStore(tmp_path / "mapping.db")
+    )
+
+    prepared = adapter.prepare(
+        source_dir,
+        unit_id="bearing_01",
+        duration_ms=50,
+        count=3,
+    )
+    windows = list(prepared.windows)
+
+    assert [path.name for path in loaded_paths] == [
+        "N09_M07_F10_K004_1.mat",
+        "N09_M07_F10_K004_2.mat",
+        "N09_M07_F10_K004_10.mat",
+    ]
+    assert [window.sequence_number for window in windows] == [1, 2, 3]
+    assert [window.window_index for window in windows] == [0, 1, 2]
+    assert [prepared.window_source_paths[index].name for index in (1, 2, 3)] == [
+        "N09_M07_F10_K004_1.mat",
+        "N09_M07_F10_K004_2.mat",
+        "N09_M07_F10_K004_10.mat",
+    ]
+
+
+def test_bearing_input_adapter_keeps_condition_groups_separate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "KA09"
+    source_dir.mkdir()
+    names = (
+        "N15_M07_F10_KA09_1.mat",
+        "N09_M07_F10_KA09_20.mat",
+        "N15_M01_F10_KA09_1.mat",
+        "N15_M07_F04_KA09_20.mat",
+        "N15_M07_F04_KA09_1.mat",
+    )
+    for name in names:
+        (source_dir / name).touch()
+
+    loaded_paths: list[Path] = []
+
+    def load_record(path: Path | str) -> SimpleNamespace:
+        resolved = Path(path).resolve()
+        loaded_paths.append(resolved)
+        return SimpleNamespace(
+            source_path=resolved,
+            windows=lambda **kwargs: iter([_complete_window()]),
+        )
+
+    monkeypatch.setattr(ingestion_module, "load_mat_record", load_record)
+    adapter = BearingInputAdapter(
+        PacketSourceMappingStore(tmp_path / "mapping.db")
+    )
+
+    adapter.prepare(
+        source_dir,
+        unit_id="bearing_01",
+        duration_ms=50,
+        count=len(names),
+    )
+
+    assert [path.name for path in loaded_paths] == [
+        "N09_M07_F10_KA09_20.mat",
+        "N15_M01_F10_KA09_1.mat",
+        "N15_M07_F04_KA09_1.mat",
+        "N15_M07_F04_KA09_20.mat",
+        "N15_M07_F10_KA09_1.mat",
+    ]
+
+
+def test_bearing_input_adapter_requires_exact_directory_mat_count(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "K004"
+    source_dir.mkdir()
+    (source_dir / "N09_M07_F10_K004_1.mat").touch()
+    (source_dir / "N09_M07_F10_K004_2.mat").touch()
+    adapter = BearingInputAdapter(
+        PacketSourceMappingStore(tmp_path / "mapping.db")
+    )
+
+    with pytest.raises(MatDataError, match="exactly 3 MAT files"):
+        adapter.prepare(
+            source_dir,
+            unit_id="bearing_01",
+            duration_ms=50,
+            count=3,
+        )
+
+
+def test_bearing_input_adapter_rejects_incomplete_directory_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "K004"
+    source_dir.mkdir()
+    source_file = source_dir / "N09_M07_F10_K004_1.mat"
+    source_file.touch()
+    monkeypatch.setattr(
+        ingestion_module,
+        "load_mat_record",
+        lambda path: SimpleNamespace(
+            source_path=Path(path).resolve(),
+            windows=lambda **kwargs: iter([_window()]),
+        ),
+    )
+    adapter = BearingInputAdapter(
+        PacketSourceMappingStore(tmp_path / "mapping.db")
+    )
+
+    with pytest.raises(MatDataError, match="complete 50 ms window"):
+        adapter.prepare(
+            source_dir,
+            unit_id="bearing_01",
+            duration_ms=50,
+            count=1,
+        )
 
 
 def test_bearing_input_adapter_preserves_packet_bytes_and_source_mapping(

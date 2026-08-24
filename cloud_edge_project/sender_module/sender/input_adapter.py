@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Iterator, Mapping, Protocol
 
 
 class InputWindow(Protocol):
@@ -20,6 +20,7 @@ class PreparedScenarioInput:
     source_path: Path
     first_window: InputWindow
     windows: Iterator[InputWindow]
+    window_source_paths: Mapping[int, Path] = field(default_factory=dict)
 
 
 class SenderInputAdapter(Protocol):

@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar="SENDER_ID=MAT_PATH",
-        help="repeat once for each configured sender",
+        help="repeat once for each configured sender; path may be a MAT file or directory",
     )
     parser.add_argument(
         "--accelerated",

@@ -8,6 +8,7 @@ from typing import Mapping
 from core.scenario_plugin import (
     ARBITRATION_POLICY,
     CONSISTENCY_POLICY,
+    DECISION_POLICY,
     EDGE_INFERENCE,
     CLOUD_DIAGNOSIS,
     GLOBAL_ANALYSIS,
@@ -25,6 +26,7 @@ _IMPLEMENTATION_AREAS = {
     "input_adapter": "scenarios.bearing.ingestion.BearingInputAdapterProvider",
     "edge_inference": "scenarios.bearing.edge",
     "cloud_diagnosis": "scenarios.bearing.cloud",
+    "decision_policy": "scenarios.bearing.decision.BearingDecisionPolicy",
     "consistency_policy": "scenarios.bearing.decision.BearingConsistencyPolicy",
     "arbitration_policy": "scenarios.bearing.arbitration.BearingArbitrationPolicy",
     "global_analysis": "scenarios.bearing.cloud.global_analysis",
@@ -44,6 +46,7 @@ class BearingScenarioPlugin:
                 EDGE_INFERENCE,
                 MODEL_PROVIDER,
                 CLOUD_DIAGNOSIS,
+                DECISION_POLICY,
                 GLOBAL_ANALYSIS,
                 MODEL_UPDATE,
                 CONSISTENCY_POLICY,
@@ -87,10 +90,16 @@ class BearingScenarioPlugin:
             )
 
             resolved_providers[MODEL_UPDATE] = BearingModelUpdateProvider()
-        if CONSISTENCY_POLICY in requested:
-            from scenarios.bearing.decision import BearingConsistencyPolicy
+        if requested.intersection({DECISION_POLICY, CONSISTENCY_POLICY}):
+            from scenarios.bearing.decision import (
+                BearingConsistencyPolicy,
+                BearingDecisionPolicy,
+            )
 
-            resolved_providers[CONSISTENCY_POLICY] = BearingConsistencyPolicy()
+            if DECISION_POLICY in requested:
+                resolved_providers[DECISION_POLICY] = BearingDecisionPolicy()
+            if CONSISTENCY_POLICY in requested:
+                resolved_providers[CONSISTENCY_POLICY] = BearingConsistencyPolicy()
         if ARBITRATION_POLICY in requested:
             from scenarios.bearing.arbitration import BearingArbitrationPolicy
 

@@ -118,16 +118,23 @@ python tools/mock_scheduler.py
 python tools/test_subscriber.py
 ```
 
-终端三启动三个发送器：
+终端三启动三个发送器。目录模式下，每个 Sender 选择一个目录；目录直属层级
+必须恰好包含配置要求的 80 个 `.mat` 文件。Sender 按自然文件名顺序读取，
+每个 MAT 文件产生一个 50 ms 数据包。排序按完整文件名进行：不同工况组保持
+分组，组内尾号按 `1, 2, ..., 10, ..., 20` 排列，不会把各组相同尾号交叉：
 
 ```powershell
 python -m sender --config config/local.json `
-  --source "sender_01=D:\data\bearing_01.mat" `
-  --source "sender_02=D:\data\bearing_02.mat" `
-  --source "sender_03=D:\data\bearing_03.mat"
+  --source "sender_01=D:\1.项目\数据集\K004" `
+  --source "sender_02=D:\1.项目\数据集\KA09" `
+  --source "sender_03=D:\1.项目\数据集\KI08"
 ```
 
 正常运行约 4 秒。三个发送器各发送 80 包，总计 240 包。快速测试可增加 `--accelerated`，但加速模式不能用于计算真实端到端时延。
+
+为兼容旧流程，`--source` 仍可指向单个 MAT 文件；单文件模式继续从该文件
+切分 80 个连续窗口。目录模式不会递归读取子目录，MAT 数量不等于 80 时会在
+调度和发送前直接报错。
 
 正式 3,600 窗口实验使用 15 轮；每轮仍并发启动三个 Sender，
 每个 Sender 发送 80 个 50 ms 窗口：
@@ -135,9 +142,9 @@ python -m sender --config config/local.json `
 ```powershell
 python -m sender --config config/local.json `
   --rounds 15 `
-  --source "sender_01=D:\data\bearing_01.mat" `
-  --source "sender_02=D:\data\bearing_02.mat" `
-  --source "sender_03=D:\data\bearing_03.mat"
+  --source "sender_01=D:\1.项目\数据集\K004" `
+  --source "sender_02=D:\1.项目\数据集\KA09" `
+  --source "sender_03=D:\1.项目\数据集\KI08"
 ```
 
 ## 5. 调度接口

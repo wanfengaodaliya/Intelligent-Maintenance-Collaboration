@@ -1,5 +1,8 @@
-"""Bearing consistency policy exposed through the scenario plugin."""
+"""Bearing decision policies exposed through the scenario plugin."""
 
-from scenarios.bearing.decision.provider import BearingConsistencyPolicy
+from scenarios.bearing.decision.provider import (
+    BearingConsistencyPolicy,
+    BearingDecisionPolicy,
+)
 
-__all__ = ["BearingConsistencyPolicy"]
+__all__ = ["BearingConsistencyPolicy", "BearingDecisionPolicy"]

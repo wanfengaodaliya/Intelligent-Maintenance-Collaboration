@@ -2,8 +2,28 @@
 
 from __future__ import annotations
 
-from core.bearing_actions import ACTION_TO_STATE, action_for_grade
 from core.consistency_engine import ConsistencyDecision, ConsistencyRequest
+from core.scenario_contracts import ScenarioDecision, ScenarioDiagnosis
+from scenarios.bearing._compat.bearing_actions import ACTION_TO_STATE, action_for_grade
+
+
+class BearingDecisionPolicy:
+    scenario_id = "bearing"
+
+    def decide(self, diagnosis: ScenarioDiagnosis) -> ScenarioDecision:
+        if diagnosis.scenario_id != self.scenario_id:
+            raise ValueError("scenario_id must be bearing")
+        return ScenarioDecision(
+            scenario_id=diagnosis.scenario_id,
+            task_id=diagnosis.task_id,
+            unit_id=diagnosis.unit_id,
+            state=diagnosis.state,
+            confidence=diagnosis.confidence,
+            risk_level=diagnosis.risk_level,
+            action_level=diagnosis.action_level,
+            decision=action_for_grade(diagnosis.action_level),
+            evidence=diagnosis.evidence,
+        )
 
 
 class BearingConsistencyPolicy:
