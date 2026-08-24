@@ -151,9 +151,9 @@ def test_device_response_mapper_converts_nested_source_and_reason_codes() -> Non
 
     legacy = device_payload_to_legacy(domain)
 
-    assert legacy["source"]["bearing_results_ref"] == (
-        "summary-store://task_1/bearings"
-    )
+    assert legacy["source"]["bearing_results_ref"] == domain["source"][
+        "unit_results_ref"
+    ]
     assert "unit_results_ref" not in legacy["source"]
     assert legacy["reason_codes"] == [
         "INCOMPLETE_BEARING_RESULTS",
@@ -164,7 +164,14 @@ def test_device_response_mapper_converts_nested_source_and_reason_codes() -> Non
     task = device_payload_to_legacy(
         {"unit_results_ref": "summary-store://task_1/units"}
     )
-    assert task["bearing_results_ref"] == "summary-store://task_1/bearings"
+    assert task["bearing_results_ref"] == "summary-store://task_1/units"
+
+    source_refs = device_payload_to_legacy(
+        {"source_refs": {"unit_results_ref": "custom://opaque/units"}}
+    )
+    assert source_refs["source_refs"]["bearing_results_ref"] == (
+        "custom://opaque/units"
+    )
 
 
 def test_assignment_validation_is_identical_for_legacy_and_generic_input() -> None:

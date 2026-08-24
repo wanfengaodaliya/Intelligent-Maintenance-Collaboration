@@ -286,7 +286,7 @@ def _validate_device_request(
         if source_refs is None:
             task_id = _text(item.get("task_id"), "task_id")
             source_refs = {
-                "unit_results_ref": f"summary-store://{task_id}/units",
+                "unit_results_ref": f"summary-store://{task_id}/bearings",
                 "provisional_result_ref": f"summary-store://{task_id}/device-result-v1",
             }
         else:
