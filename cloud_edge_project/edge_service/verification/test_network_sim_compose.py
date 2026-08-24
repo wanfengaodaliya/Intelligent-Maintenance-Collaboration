@@ -109,6 +109,16 @@ def test_outbound_http_goes_through_matching_toxiproxy_links() -> None:
         assert _compose_default(env["EDGE_MQTT_HOST"]) == "mqtt-broker", name
 
 
+def test_status_reporters_target_the_real_scheduler_and_cloud_routes() -> None:
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    for name, block in _service_blocks(text).items():
+        env = _environment(block)
+        scheduler_url = _compose_default(env["EDGE_STATUS_SCHEDULER_URL"])
+        cloud_url = _compose_default(env["EDGE_STATUS_CLOUD_URL"])
+        assert scheduler_url.endswith("/scheduler/edge-nodes/status"), name
+        assert cloud_url.endswith("/cloud/edge-status"), name
+
+
 def test_suggestion_llm_targets_host_llama_service() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
