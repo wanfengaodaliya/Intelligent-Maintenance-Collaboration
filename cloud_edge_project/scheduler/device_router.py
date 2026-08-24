@@ -195,7 +195,7 @@ class DeviceArbitrationRouter:
             "defer_reason": defer_reason,
             "source": {
                 "holder_id": request["summary_module_id"],
-                "bearing_results_ref": request["source_refs"]["bearing_results_ref"],
+                "unit_results_ref": request["source_refs"]["unit_results_ref"],
                 "provisional_result_ref": request["source_refs"]["provisional_result_ref"],
             },
             "input_snapshot": {
@@ -286,7 +286,7 @@ def _validate_device_request(
         if source_refs is None:
             task_id = _text(item.get("task_id"), "task_id")
             source_refs = {
-                "bearing_results_ref": f"summary-store://{task_id}/bearings",
+                "unit_results_ref": f"summary-store://{task_id}/units",
                 "provisional_result_ref": f"summary-store://{task_id}/device-result-v1",
             }
         else:
@@ -338,9 +338,9 @@ def _validate_device_request(
                 "local_arbitration_supported",
             ),
             "source_refs": {
-                "bearing_results_ref": _text(
-                    source_refs.get("bearing_results_ref"),
-                    "bearing_results_ref",
+                "unit_results_ref": _text(
+                    source_refs.get("unit_results_ref"),
+                    "unit_results_ref",
                 ),
                 "provisional_result_ref": _text(
                     source_refs.get("provisional_result_ref"),
@@ -394,11 +394,11 @@ def _business_reasons(
         not comparison["data_complete"]
         or request["received_unit_count"] != request["expected_unit_count"]
     ):
-        reasons.append("INCOMPLETE_BEARING_RESULTS")
+        reasons.append("INCOMPLETE_UNIT_RESULTS")
     if not request["local_arbitration_supported"]:
         reasons.append("LOCAL_ARBITRATION_UNSUPPORTED")
     if comparison["provisional_unit_count"] > 0:
-        reasons.append("HAS_PROVISIONAL_BEARING_RESULT")
+        reasons.append("HAS_PROVISIONAL_UNIT_RESULT")
     return reasons
 
 

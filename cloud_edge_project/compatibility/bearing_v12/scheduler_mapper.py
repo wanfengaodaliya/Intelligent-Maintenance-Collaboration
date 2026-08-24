@@ -9,6 +9,7 @@ EDGE_INFERENCE = "edge_inference"
 LEGACY_EDGE_INFERENCE = "BEARING_EDGE_INFERENCE"
 
 _FIELD_ALIASES = (
+    ("unit_results_ref", "bearing_results_ref"),
     ("low_confidence_unit_count", "low_confidence_bearing_count"),
     ("provisional_unit_count", "provisional_bearing_count"),
     ("expected_unit_count", "expected_bearing_count"),
@@ -19,6 +20,10 @@ _FIELD_ALIASES = (
     ("unit_id", "bearing_id"),
 )
 _GENERIC_FIELDS = frozenset(generic for generic, _legacy in _FIELD_ALIASES)
+_LEGACY_REASON_CODES = {
+    "INCOMPLETE_UNIT_RESULTS": "INCOMPLETE_BEARING_RESULTS",
+    "HAS_PROVISIONAL_UNIT_RESULT": "HAS_PROVISIONAL_BEARING_RESULT",
+}
 
 
 class SchedulerMappingError(ValueError):
@@ -164,6 +169,13 @@ def device_request_to_domain(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = _replace_alias(result, "received_unit_count", "received_bearing_count")
     if "bearing_result_ids" in result or "unit_result_ids" in result:
         result = _replace_alias(result, "unit_result_ids", "bearing_result_ids")
+    source_refs = result.get("source_refs")
+    if isinstance(source_refs, Mapping):
+        result["source_refs"] = _replace_alias(
+            source_refs,
+            "unit_results_ref",
+            "bearing_results_ref",
+        )
     comparison = result.get("comparison")
     if isinstance(comparison, Mapping):
         domain_comparison = _replace_alias(
@@ -185,6 +197,7 @@ def device_payload_to_legacy(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = _legacy_alias(result, "expected_unit_count", "expected_bearing_count")
     result = _legacy_alias(result, "received_unit_count", "received_bearing_count")
     result = _legacy_alias(result, "unit_result_ids", "bearing_result_ids")
+    result = _legacy_alias(result, "unit_results_ref", "bearing_results_ref")
     bearing_results = result.get("bearing_results")
     if isinstance(bearing_results, list):
         result["bearing_results"] = [
@@ -204,6 +217,20 @@ def device_payload_to_legacy(payload: Mapping[str, Any]) -> dict[str, Any]:
             "provisional_bearing_count",
         )
         result["comparison"] = legacy_comparison
+    for field in ("source", "source_refs"):
+        source = result.get(field)
+        if isinstance(source, Mapping):
+            result[field] = _legacy_alias(
+                source,
+                "unit_results_ref",
+                "bearing_results_ref",
+            )
+    for field in ("reason_codes", "trigger_reasons"):
+        reasons = result.get(field)
+        if isinstance(reasons, list):
+            result[field] = [
+                _LEGACY_REASON_CODES.get(reason, reason) for reason in reasons
+            ]
     return result
 
 

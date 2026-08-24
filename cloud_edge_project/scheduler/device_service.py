@@ -44,7 +44,7 @@ class DeviceArbitrationService:
                 "defer_reason": decision["defer_reason"],
                 "cloud_status_message_id": decision["input_snapshot"]["cloud_status_message_id"],
                 "network_snapshot_id": decision["input_snapshot"]["network_snapshot_id"],
-                "bearing_results_ref": decision["source"]["bearing_results_ref"],
+                "unit_results_ref": decision["source"]["unit_results_ref"],
                 "provisional_result_ref": decision["source"]["provisional_result_ref"],
                 "cloud_node_id": decision["target"]["cloud_node_id"],
                 "endpoint": decision["target"]["endpoint"],

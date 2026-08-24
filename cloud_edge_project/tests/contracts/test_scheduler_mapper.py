@@ -63,6 +63,10 @@ def test_device_mapper_preserves_result_order_and_round_trips() -> None:
         "expected_bearing_count": 2,
         "received_bearing_count": 2,
         "bearing_result_ids": ["result_1", "result_2"],
+        "source_refs": {
+            "bearing_results_ref": "summary-store://task_1/bearings",
+            "provisional_result_ref": "summary-store://task_1/device-result-v1",
+        },
         "bearing_results": [
             {"bearing_id": "bearing_01", "bearing_result_id": "result_1"},
             {"bearing_id": "bearing_02", "bearing_result_id": "result_2"},
@@ -83,6 +87,9 @@ def test_device_mapper_preserves_result_order_and_round_trips() -> None:
         "bearing_02",
     ]
     assert domain["comparison"]["low_confidence_unit_count"] == 1
+    assert domain["source_refs"]["unit_results_ref"] == legacy["source_refs"][
+        "bearing_results_ref"
+    ]
     assert device_payload_to_legacy(domain) == legacy
 
     reordered = {**legacy, "unit_results": list(reversed(domain["unit_results"]))}
@@ -127,6 +134,32 @@ def test_device_mapper_accepts_matching_generic_and_legacy_result_lists() -> Non
 def test_capability_mapper_preserves_legacy_edge_contract() -> None:
     assert capability_to_domain("BEARING_EDGE_INFERENCE") == "edge_inference"
     assert capability_to_legacy("edge_inference") == "BEARING_EDGE_INFERENCE"
+
+
+def test_device_response_mapper_converts_nested_source_and_reason_codes() -> None:
+    domain = {
+        "source": {
+            "unit_results_ref": "summary-store://task_1/units",
+            "provisional_result_ref": "summary-store://task_1/device-result-v1",
+        },
+        "reason_codes": [
+            "INCOMPLETE_UNIT_RESULTS",
+            "HAS_PROVISIONAL_UNIT_RESULT",
+            "NETWORK_POOR",
+        ],
+    }
+
+    legacy = device_payload_to_legacy(domain)
+
+    assert legacy["source"]["bearing_results_ref"] == domain["source"][
+        "unit_results_ref"
+    ]
+    assert "unit_results_ref" not in legacy["source"]
+    assert legacy["reason_codes"] == [
+        "INCOMPLETE_BEARING_RESULTS",
+        "HAS_PROVISIONAL_BEARING_RESULT",
+        "NETWORK_POOR",
+    ]
 
 
 def test_assignment_validation_is_identical_for_legacy_and_generic_input() -> None:

@@ -726,3 +726,17 @@ def test_generic_global_analysis_runtime_is_scenario_neutral() -> None:
         source = path.read_text(encoding="utf-8")
         assert not _imports_bearing_plugin(path)
         assert all(word not in source for word in forbidden)
+
+
+def test_generic_device_routing_runtime_is_scenario_neutral() -> None:
+    forbidden = (
+        "bearing_results_ref",
+        "INCOMPLETE_BEARING_RESULTS",
+        "HAS_PROVISIONAL_BEARING_RESULT",
+    )
+    for filename in ("device_router.py", "device_service.py"):
+        path = PROJECT_ROOT / "scheduler" / filename
+        source = path.read_text(encoding="utf-8")
+
+        assert all(word not in source for word in forbidden)
+        assert not _imports_bearing_plugin(path)
