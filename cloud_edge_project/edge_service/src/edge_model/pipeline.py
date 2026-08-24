@@ -155,6 +155,7 @@ class EdgeModelPipeline:
             "full_policy": self.queue.full_policy,
             "max_observed_queued": self.queue.max_observed_queued,
             "queue_full_total": self.queue.queue_full_total,
+            "consumer_count": self.worker.consumer_count,
         }
 
     def ingest(self, sender_id: str, model_input: dict) -> str:
@@ -221,6 +222,11 @@ class EdgeModelPipeline:
             self._emit_result(task, edge, EXECUTION_CODE_FALLBACK, reason,
                               queue_wait_ms, inference_ms, breaker_state, note)
         except Exception as exc:  # noqa: BLE001
+            # 延迟指标必须落库：降级失败的记录此前丢失 queue_wait/inference 延迟，
+            # 导致 QUEUE_TIMEOUT 批次无法从 run-records 还原真实排队时长。
+            total_ms = None
+            if task.submit_ts is not None:
+                total_ms = (self._clock() - task.submit_ts) * 1000.0
             self.on_run_record(RunRecord(
                 request_id=task.request_id,
                 device_id=task.device_id,
@@ -234,6 +240,9 @@ class EdgeModelPipeline:
                 # 降级失败的最终语义由 completed.error_code 承载。
                 fallback_reason=reason or REASON_CODE_FALLBACK_FAILED,
                 output_valid=False,
+                queue_wait_ms=round(queue_wait_ms, 2) if queue_wait_ms is not None else None,
+                inference_latency_ms=round(inference_ms, 2) if inference_ms is not None else None,
+                total_latency_ms=round(total_ms, 2) if total_ms is not None else None,
                 breaker_state=breaker_state,
                 note="model_route_reason=%s; fallback_error=%r" % (reason, exc),
             ))

@@ -1,7 +1,7 @@
 experiment:
-  experiment_id: network_markov_v3_001
-  mode: markov
-  global_seed: 20260806
+  experiment_id: nf_good_baseline
+  mode: fixed
+  global_seed: 20260823
   duration_seconds: 0
   timezone: Asia/Shanghai
   save_ground_truth: true

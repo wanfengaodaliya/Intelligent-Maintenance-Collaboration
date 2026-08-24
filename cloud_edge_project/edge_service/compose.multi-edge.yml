@@ -87,6 +87,9 @@ services:
       # 状态上报 URL 从统一基址推导，同样经过 edge→scheduler / edge→cloud 链路。
       EDGE_NETWORK_LINK_ID: edge_01__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_01__to__scheduler__http
+      # 双路输入（两路 Sender 同时发数据）时提高并行推理，避免单 worker
+      # 排队超预算导致 CODE_FALLBACK_FAILED（edge_01 如需双路则设 2）。
+      EDGE_MODEL_INFERENCE_WORKERS: ${EDGE_MODEL_INFERENCE_WORKERS:-2}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角，
       # 读取容器自身 quota/limit 而非宿主机 16 核 / 剩余内存。
       # 若节点运行在独立 VM 而非容器，可显式改为 system。
@@ -132,6 +135,9 @@ services:
       EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
       EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
       EDGE_MODEL_VERSION: ${EDGE_MODEL_VERSION:-}
+      # 双路输入（两路 Sender 同时发数据）时提高并行推理，避免单 worker
+      # 排队超预算导致 CODE_FALLBACK_FAILED（edge_02 双路必须设 2）。
+      EDGE_MODEL_INFERENCE_WORKERS: ${EDGE_MODEL_INFERENCE_WORKERS:-2}
       EDGE_NETWORK_LINK_ID: edge_02__to__scheduler__http
       EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角。

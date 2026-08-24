@@ -124,10 +124,13 @@ class InferenceWorker:
         self.on_fallback = on_fallback
         self._clock = clock
         self._poll_s = poll_s
+        # 多消费线程共享同一队列与熔断状态：可变状态统一经 _state_lock 保护。
+        self._consumer_count = max(1, int(cfg.inference_workers))
+        self._state_lock = threading.Lock()
         self._consecutive_failures = 0
         self._breaker_open_until: Optional[float] = None
         self.breaker_state = "closed"
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="edge-model-worker")
+        self._threads: List[threading.Thread] = []
         self._running = False
         # H4：固定推理线程池，替代每任务新建线程，从结构上消除超时后的僵尸线程。
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -139,15 +142,26 @@ class InferenceWorker:
         self._running = True
         if self._executor is None:
             self._executor = ThreadPoolExecutor(
-                max_workers=self.cfg.inference_workers,
+                # 每个消费线程各占一个执行位 + 少量余量：逻辑超时被弃置的任务
+                # 在协作式取消检查点退出前仍占线程，余量避免其挤占新任务。
+                max_workers=self._consumer_count + 2,
                 thread_name_prefix="edge-infer",
             )
-        self._thread.start()
+        for index in range(self._consumer_count):
+            thread = threading.Thread(
+                target=self._loop,
+                daemon=True,
+                name="edge-model-worker-%d" % index,
+            )
+            self._threads.append(thread)
+            thread.start()
 
     def stop(self, join_s: float = 5.0):
         self._running = False
         self.queue.stop()
-        self._thread.join(timeout=join_s)
+        for thread in self._threads:
+            thread.join(timeout=join_s)
+        self._threads = []
         executor = self._executor
         self._executor = None
         if executor is not None:
@@ -157,29 +171,37 @@ class InferenceWorker:
 
     @property
     def worker_alive(self) -> bool:
-        """H2：worker 线程是否存活（liveness 判定依据之一）。"""
-        return self._thread is not None and self._thread.is_alive()
+        """H2：全部消费线程存活才视为存活（任一死亡=降容，健康检查应暴露）。"""
+        return bool(self._threads) and all(t.is_alive() for t in self._threads)
+
+    @property
+    def consumer_count(self) -> int:
+        """当前配置的消费线程数（供 /health 观测实际并行度）。"""
+        return self._consumer_count
 
     def _note_failure(self):
         if not self.cfg.breaker.enabled:
             return
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.cfg.breaker.consecutive_failure_threshold:
-            self._breaker_open_until = self._clock() + self.cfg.breaker.recovery_probe_interval_s
-            self.breaker_state = "open"
+        with self._state_lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.cfg.breaker.consecutive_failure_threshold:
+                self._breaker_open_until = self._clock() + self.cfg.breaker.recovery_probe_interval_s
+                self.breaker_state = "open"
 
     def _note_success(self):
-        self._consecutive_failures = 0
-        self._breaker_open_until = None
-        self.breaker_state = "closed"
+        with self._state_lock:
+            self._consecutive_failures = 0
+            self._breaker_open_until = None
+            self.breaker_state = "closed"
 
     def _breaker_allows_model(self) -> bool:
-        if not self.cfg.breaker.enabled or self._breaker_open_until is None:
+        with self._state_lock:
+            if not self.cfg.breaker.enabled or self._breaker_open_until is None:
+                return True
+            if self._clock() < self._breaker_open_until:
+                return False
+            self._breaker_open_until = None
             return True
-        if self._clock() < self._breaker_open_until:
-            return False
-        self._breaker_open_until = None
-        return True
 
     def _loop(self):
         # H2：单任务异常不得杀死 worker 线程——记日志、计数并继续消费下一个任务。
@@ -190,8 +212,9 @@ class InferenceWorker:
             try:
                 self._process(task)
             except Exception as exc:  # noqa: BLE001
-                self.loop_error_count += 1
-                self.last_loop_error = "%s: %s" % (type(exc).__name__, exc)
+                with self._state_lock:
+                    self.loop_error_count += 1
+                    self.last_loop_error = "%s: %s" % (type(exc).__name__, exc)
                 _logger.exception("edge-model-worker 任务处理异常(线程继续运行): %s", exc)
             finally:
                 self.queue.done()

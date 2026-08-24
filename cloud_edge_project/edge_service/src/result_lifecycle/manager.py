@@ -75,6 +75,71 @@ class BearingResultLifecycleManager:
         )
         return self._repository.save_revision(draft)
 
+    def apply_failed_route(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        bearing_id: str,
+        sender_id: str,
+        decision_round_id: str,
+        diagnosis_window_id: str,
+        route_decision: dict,
+        accepted_at_ns: int,
+        window_end_ns: int,
+        model_version: str = "unavailable",
+    ) -> BearingDecisionResult:
+        """Persist a placeholder bearing decision for a packet that failed at the edge.
+
+        失败包没有真实边缘诊断；占位记录表明该轴承正等待云复核，
+        使延迟的云复核结果能按既有 apply_cloud_result 路径闭环。
+        """
+        try:
+            route = PacketRoute(route_decision["route"])
+        except (KeyError, ValueError) as exc:
+            raise ValueError("unsupported route decision") from exc
+        if route not in {PacketRoute.CLOUD_NOW, PacketRoute.DEFER}:
+            raise ValueError("failed packet route must require cloud review")
+        lifecycle_state, decision_source, review_status, degraded = _ROUTE_LIFECYCLE[route]
+        instruction = route_decision.get("result_instruction")
+        expected_instruction = {
+            "result_status": _RESULT_STATUS[route],
+            "review_status": review_status,
+            "degraded": degraded,
+        }
+        if not isinstance(instruction, dict) or any(
+            instruction.get(field) != value
+            for field, value in expected_instruction.items()
+        ):
+            raise ValueError("route decision result instruction is inconsistent")
+        draft = BearingDecisionResult(
+            result_id="pending",
+            revision=1,
+            replaces_result_id=None,
+            device_id=device_id,
+            task_id=task_id,
+            bearing_id=bearing_id,
+            sender_id=sender_id,
+            decision_round_id=decision_round_id,
+            diagnosis_window_id=diagnosis_window_id,
+            lifecycle_state=lifecycle_state,
+            bearing_state="unknown",
+            confidence=0.0,
+            data_quality_score=0.0,
+            risk_level="unknown",
+            action_grade=0,
+            recommended_action="await_cloud_review",
+            decision_source=decision_source,
+            review_status=review_status,
+            degraded=degraded,
+            edge_result_id="edge_unavailable",
+            cloud_result_id=None,
+            model_version=model_version,
+            created_at_ns=window_end_ns,
+            edge_accepted_at_ns=accepted_at_ns,
+        )
+        return self._repository.save_revision(draft)
+
     def apply_cloud_result(
         self,
         cloud_result: CloudBearingResult,

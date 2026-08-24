@@ -69,6 +69,7 @@ def test_pipeline_queue_snapshot_exposes_capacity_and_full_metrics() -> None:
         "full_policy": FULL_POLICY_REJECT,
         "max_observed_queued": 0,
         "queue_full_total": 0,
+        "consumer_count": 1,
     }
     pipeline.queue.submit(_task(1))
     pipeline.queue.submit(_task(2))

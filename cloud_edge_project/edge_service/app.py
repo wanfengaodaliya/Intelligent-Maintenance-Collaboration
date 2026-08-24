@@ -49,6 +49,7 @@ from edge_model.model_store import (  # noqa: E402
 )
 from edge_model.perception_evidence import PerceptionEvidenceBuilder  # noqa: E402
 from edge_model.pipeline import EdgeModelPipeline  # noqa: E402
+from edge_model.run_record_store import RunRecordStore  # noqa: E402
 from edge_model.unavailable_runner import DiagnosisUnavailableRunner  # noqa: E402
 from edge_runtime import (  # noqa: E402
     EdgeRuntimeConfig,
@@ -247,7 +248,7 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
         model_config,
         model_client,
         DiagnosisUnavailableRunner(),
-        on_run_record=lambda _: None,
+        on_run_record=run_record_store.record,
         on_packet_result=lambda _: None,
         evidence_builder=evidence_builder,
     )
@@ -285,6 +286,13 @@ cloud_review_config = load_cloud_review_config()
 cloud_review_store = CloudReviewStore(
     cloud_review_config.cache_directory,
     retention_ns=cloud_review_config.retention_ns,
+)
+# 方案2：每窗推理结果观测落库（模型成功与降级都经 on_run_record 汇聚）。
+run_record_store = RunRecordStore(
+    os.getenv(
+        "EDGE_RUN_RECORD_DB_PATH",
+        str(Path(__file__).resolve().parents[1] / "data" / "edge_run_records.db"),
+    )
 )
 runtime_assembly = _build_runtime(cloud_review_store)
 
@@ -635,6 +643,16 @@ def submit_cloud_review_task(payload: dict) -> dict | JSONResponse:
                 payload,
             ),
         )
+
+
+@app.get("/edge/run-records", response_model=None)
+def edge_run_records(
+    task_id: str | None = None,
+    sender_id: str | None = None,
+    limit: int = 200,
+) -> dict:
+    """方案2：查询每窗推理结果观测（按 execution_mode/fallback_reason 汇总 + 最近记录）。"""
+    return run_record_store.query(task_id=task_id, sender_id=sender_id, limit=limit)
 
 
 def _unexpected_api_error(

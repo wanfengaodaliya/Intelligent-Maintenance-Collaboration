@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from core.bearing_actions import action_for_grade
-from core.diagnosis_contracts import EdgeBearingResult
+from core.diagnosis_contracts import EdgeBearingResult, PacketRoute
 from core.diagnosis_identity import build_decision_round_id, build_diagnosis_window_id
 from edge_model.contracts import PacketExecutionCompleted
 from edge_model.pipeline import EdgeModelPipeline
@@ -232,20 +232,25 @@ class EdgeRuntimeCoordinator:
             self.cache.read(raw_ref) if raw_ref is not None else None
         )
         route_decision = self._route_packet(completion, raw_packet, diagnosis_window)
-        if self.v12_flow is not None and completion.edge is not None and route_decision is not None:
+        if self.v12_flow is not None and route_decision is not None:
             try:
                 if raw_packet is None:
                     raise ValueError("completed packet raw data is unavailable")
-                edge_result = _edge_bearing_result(
-                    completion, raw_packet, diagnosis_window=diagnosis_window
-                )
-                _, device = self.v12_flow.apply_edge_result(
-                    edge_result,
-                    route_decision,
-                    expected_bearing_ids=task.expected_bearing_ids,
-                    accepted_at_ns=self._clock_ns(),
-                )
-                self._capture_bearing_result(edge_result, route_decision, device)
+                if completion.edge is not None:
+                    edge_result = _edge_bearing_result(
+                        completion, raw_packet, diagnosis_window=diagnosis_window
+                    )
+                    _, device = self.v12_flow.apply_edge_result(
+                        edge_result,
+                        route_decision,
+                        expected_bearing_ids=task.expected_bearing_ids,
+                        accepted_at_ns=self._clock_ns(),
+                    )
+                    self._capture_bearing_result(edge_result, route_decision, device)
+                else:
+                    self._apply_failed_route(
+                        completion, raw_packet, route_decision, diagnosis_window, task
+                    )
             except Exception as error:
                 self._report_v12_error(completion, error)
                 # 聚合暂不可用：登记完成包等待维护轮回补重放（原 action 承诺的
@@ -357,6 +362,70 @@ class EdgeRuntimeCoordinator:
             "window_start_sequence": start_sequence,
             "window_end_sequence": end_sequence,
         }
+
+    def _apply_failed_route(
+        self,
+        completion: PacketExecutionCompleted,
+        raw_packet: Mapping[str, Any],
+        route_decision: Mapping[str, Any],
+        diagnosis_window: DiagnosisWindow | None,
+        task: Any,
+    ) -> None:
+        """Register the round + placeholder bearing for a failed packet (链B修复).
+
+        失败包没有真实边缘诊断，但必须注册轮次并落占位轴承记录，
+        否则延迟云复核结果到达时 apply_cloud_result 会因找不到轮次而失败。
+        """
+        route = route_decision.get("route")
+        if route not in {PacketRoute.DEFER.value, PacketRoute.CLOUD_NOW.value}:
+            return
+        start_sequence = route_decision.get("window_start_sequence") or (
+            diagnosis_window.window_start_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
+        end_sequence = route_decision.get("window_end_sequence") or (
+            diagnosis_window.window_end_sequence
+            if diagnosis_window is not None else completion.sequence_number
+        )
+        decision_round_id = route_decision.get("decision_round_id") or (
+            diagnosis_window.decision_round_id
+            if diagnosis_window is not None
+            else build_decision_round_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                window_start_sequence=start_sequence,
+                window_end_sequence=end_sequence,
+            )
+        )
+        diagnosis_window_id = route_decision.get("diagnosis_window_id") or (
+            diagnosis_window.diagnosis_window_id
+            if diagnosis_window is not None
+            else build_diagnosis_window_id(
+                device_id=completion.device_id,
+                task_id=completion.task_id,
+                bearing_id=completion.bearing_id,
+                sender_id=completion.sender_id,
+                window_start_sequence=start_sequence,
+                window_end_sequence=end_sequence,
+            )
+        )
+        end_ns = (
+            diagnosis_window.window_end_ns
+            if diagnosis_window is not None
+            else raw_packet.get("end_generate_timestamp_ns") or completion.finished_at_ns
+        )
+        self.v12_flow.apply_failed_route(
+            device_id=completion.device_id,
+            task_id=completion.task_id,
+            bearing_id=completion.bearing_id,
+            sender_id=completion.sender_id,
+            decision_round_id=decision_round_id,
+            diagnosis_window_id=diagnosis_window_id,
+            expected_bearing_ids=task.expected_bearing_ids,
+            route_decision=dict(route_decision),
+            accepted_at_ns=self._clock_ns(),
+            window_end_ns=end_ns,
+        )
 
     def _report_v12_error(self, completion: PacketExecutionCompleted, error: Exception) -> None:
         record = {

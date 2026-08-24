@@ -74,6 +74,51 @@ class V12DecisionFlow:
             edge_result.device_id, edge_result.task_id, edge_result.decision_round_id, accepted_at_ns
         )
 
+    def apply_failed_route(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        bearing_id: str,
+        sender_id: str,
+        decision_round_id: str,
+        diagnosis_window_id: str,
+        expected_bearing_ids: tuple[str, ...],
+        route_decision: dict,
+        accepted_at_ns: int,
+        window_end_ns: int,
+        model_version: str = "unavailable",
+    ):
+        """Register the round and a placeholder bearing for a packet that failed at the edge.
+
+        失败包没有真实边缘诊断，但必须注册轮次并落占位轴承记录，
+        否则延迟云复核结果到达时 apply_cloud_result 会因找不到轮次而失败（链B）。
+        """
+        self.device_rounds.register_round(
+            device_id=device_id,
+            task_id=task_id,
+            decision_round_id=decision_round_id,
+            expected_bearing_ids=expected_bearing_ids,
+            opened_at_ns=accepted_at_ns,
+            deadline_at_ns=accepted_at_ns + self.round_timeout_ns,
+        )
+        bearing = self.lifecycle.apply_failed_route(
+            device_id=device_id,
+            task_id=task_id,
+            bearing_id=bearing_id,
+            sender_id=sender_id,
+            decision_round_id=decision_round_id,
+            diagnosis_window_id=diagnosis_window_id,
+            route_decision=route_decision,
+            accepted_at_ns=accepted_at_ns,
+            window_end_ns=window_end_ns,
+            model_version=model_version,
+        )
+        self._emit_bearing_result(bearing)
+        return bearing, self._close_if_complete(
+            device_id, task_id, decision_round_id, accepted_at_ns
+        )
+
     def apply_cloud_result(
         self, cloud_result: CloudBearingResult, *, accepted_at_ns: int
     ):

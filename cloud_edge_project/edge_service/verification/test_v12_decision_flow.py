@@ -488,6 +488,96 @@ def test_cloud_now_timeout_becomes_provisional_before_round_timeout(tmp_path) ->
     assert bearing_repository.get_current("machine_01", "task_001", "round_01", "bearing_a").lifecycle_state == "PROVISIONAL"
 
 
+def test_failed_route_defer_registers_round_and_placeholder_then_cloud_closes_loop(tmp_path) -> None:
+    bearing_repository = BearingResultRepository(tmp_path / "edge-v12.db")
+    flow = V12DecisionFlow(
+        BearingResultLifecycleManager(bearing_repository),
+        DeviceDecisionRoundRepository(tmp_path / "edge-v12.db"),
+    )
+    route = {
+        "device_id": "machine_01", "task_id": "task_001", "bearing_id": "bearing_a",
+        "decision_round_id": "round_01", "diagnosis_window_id": "dw_bearing_a",
+        "route": PacketRoute.DEFER.value,
+        "result_instruction": {
+            "result_status": "PROVISIONAL",
+            "review_status": "PENDING_CLOUD",
+            "degraded": True,
+        },
+    }
+    bearing, device = flow.apply_failed_route(
+        device_id="machine_01", task_id="task_001", bearing_id="bearing_a",
+        sender_id="sender_a", decision_round_id="round_01",
+        diagnosis_window_id="dw_bearing_a", expected_bearing_ids=("bearing_a",),
+        route_decision=route, accepted_at_ns=10, window_end_ns=50_000_000,
+    )
+
+    assert bearing.lifecycle_state == "PROVISIONAL"
+    assert bearing.bearing_state == "unknown"
+    assert bearing.degraded is True
+    assert bearing.edge_result_id == "edge_unavailable"
+    assert flow.device_rounds.get_round("machine_01", "task_001", "round_01")["state"] == "CLOSED"
+    assert device is not None and device.status == "PROVISIONAL"
+
+    cloud = CloudBearingResult(
+        result_id="cloud_dw_bearing_a_v1", review_id="review_01", device_id="machine_01",
+        task_id="task_001", bearing_id="bearing_a", sender_id="sender_a",
+        decision_round_id="round_01", diagnosis_window_id="dw_bearing_a",
+        window_start_sequence=1, window_end_sequence=1,
+        window_start_ns=0, window_end_ns=50_000_000, bearing_state="warning",
+        confidence=.95, data_quality_score=.95, risk_level="medium", action_grade=2,
+        recommended_action="scheduled_inspection", model_version="cloud_model_v1",
+        created_at_ns=20,
+    )
+    corrected, _ = flow.apply_cloud_result(cloud, accepted_at_ns=21)
+
+    assert corrected.lifecycle_state == "LATE_CLOUD_CORRECTED"
+    assert corrected.bearing_state == "warning"
+    assert corrected.decision_source == "CLOUD"
+
+
+def test_failed_route_cloud_now_stays_open_until_cloud_result(tmp_path) -> None:
+    bearing_repository = BearingResultRepository(tmp_path / "edge-v12.db")
+    flow = V12DecisionFlow(
+        BearingResultLifecycleManager(bearing_repository),
+        DeviceDecisionRoundRepository(tmp_path / "edge-v12.db"),
+    )
+    route = {
+        "device_id": "machine_01", "task_id": "task_001", "bearing_id": "bearing_a",
+        "decision_round_id": "round_01", "diagnosis_window_id": "dw_bearing_a",
+        "route": PacketRoute.CLOUD_NOW.value,
+        "result_instruction": {
+            "result_status": "WAITING_CLOUD",
+            "review_status": "PENDING_CLOUD",
+            "degraded": False,
+        },
+    }
+    bearing, device = flow.apply_failed_route(
+        device_id="machine_01", task_id="task_001", bearing_id="bearing_a",
+        sender_id="sender_a", decision_round_id="round_01",
+        diagnosis_window_id="dw_bearing_a", expected_bearing_ids=("bearing_a",),
+        route_decision=route, accepted_at_ns=10, window_end_ns=50_000_000,
+    )
+
+    assert bearing.lifecycle_state == "WAITING_CLOUD"
+    assert device is None
+    assert flow.device_rounds.get_round("machine_01", "task_001", "round_01")["state"] == "OPEN"
+
+    cloud = CloudBearingResult(
+        result_id="cloud_dw_bearing_a_v1", review_id="review_01", device_id="machine_01",
+        task_id="task_001", bearing_id="bearing_a", sender_id="sender_a",
+        decision_round_id="round_01", diagnosis_window_id="dw_bearing_a",
+        window_start_sequence=1, window_end_sequence=1,
+        window_start_ns=0, window_end_ns=50_000_000, bearing_state="warning",
+        confidence=.95, data_quality_score=.95, risk_level="medium", action_grade=2,
+        recommended_action="scheduled_inspection", model_version="cloud_model_v1",
+        created_at_ns=20,
+    )
+    final, _ = flow.apply_cloud_result(cloud, accepted_at_ns=21)
+
+    assert final.lifecycle_state == "FINAL_CLOUD"
+    assert final.bearing_state == "warning"
+
+
 def test_runtime_config_rejects_round_timeout_shorter_than_cloud_now_deadline() -> None:
     errors = EdgeRuntimeConfig(v12=V12RuntimeConfig(
         cloud_now_timeout_ms=3000, round_finalize_grace_ms=500, round_timeout_ms=3499

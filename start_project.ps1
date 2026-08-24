@@ -100,6 +100,17 @@ function Wait-Gate {
     return $false
 }
 
+# 依次尝试多个 URL 下载，任一成功（文件非空）即返回 True。
+# 用于国内网络：镜像优先，官方源兜底。
+function Invoke-Download {
+    param([string]$Out, [string[]]$Urls)
+    foreach ($u in $Urls) {
+        curl.exe -L -k -o $Out $u
+        if ((Test-Path $Out) -and (Get-Item $Out -ErrorAction SilentlyContinue).Length -gt 0) { return $true }
+    }
+    return $false
+}
+
 function Show-NetSimDiagnostics {
     Write-Host "--- network simulator status ---"
     Push-Location $NetSim
@@ -206,9 +217,66 @@ if (-not $SkipLLM) {
     $lb = Join-Path $LLM_DIR "llama-server.exe"
     $lm = Join-Path $LLM_DIR "models\qwen2.5-0.5b-instruct-q3_k_m.gguf"
     $cm = Join-Path $LLM_DIR "models\qwen2.5-3b-instruct-q4_k_m.gguf"
-    if (-not (Test-Path $lb) -or -not (Test-Path $lm) -or -not (Test-Path $cm)) {
-        Write-Host "  LLM not fully deployed (need llama-server.exe + 0.5B + 3B models), use -SkipLLM to skip"
-        exit 1
+    $modelsDir = Join-Path $LLM_DIR "models"
+
+    # 检测 NVIDIA 显卡：有则用 CUDA 版并启用 GPU 卸载，无则用 CPU 版。
+    $hasNvidia = $null -ne (Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match 'NVIDIA' })
+    $GpuLayers = if ($hasNvidia) { " --n-gpu-layers 99" } else { "" }
+
+    # 1. llama.cpp 主程序缺失时自动下载（无 NVIDIA 显卡用 CPU 版）
+    #    GitHub 直连在国内可能很慢，优先走 gh-proxy.com 镜像，失败回退官方源。
+    if (-not (Test-Path $lb)) {
+        Write-Host "[LLM] llama-server.exe missing, downloading llama.cpp ..."
+        New-Item -ItemType Directory -Force -Path $LLM_DIR | Out-Null
+        $zip = Join-Path $env:TEMP "llama.zip"
+        $cudart = Join-Path $env:TEMP "llama-cudart.zip"
+        $githubBase = "https://github.com/ggml-org/llama.cpp/releases/download/b6240"
+        $mirrorBase = "https://gh-proxy.com/$githubBase"
+        if ($hasNvidia) {
+            if (-not (Invoke-Download $zip @("$mirrorBase/llama-b6240-bin-win-cuda-12.4-x64.zip", "$githubBase/llama-b6240-bin-win-cuda-12.4-x64.zip"))) {
+                Write-Host "  llama.cpp main package download failed. Check network and re-run."
+                exit 1
+            }
+            if (-not (Invoke-Download $cudart @("$mirrorBase/cudart-llama-bin-win-cuda-12.4-x64.zip", "$githubBase/cudart-llama-bin-win-cuda-12.4-x64.zip"))) {
+                Write-Host "  llama.cpp cudart download failed. Check network and re-run."
+                exit 1
+            }
+            Expand-Archive $cudart -DestinationPath $LLM_DIR -Force
+        } else {
+            if (-not (Invoke-Download $zip @("$mirrorBase/llama-b6240-bin-win-cpu-x64.zip", "$githubBase/llama-b6240-bin-win-cpu-x64.zip"))) {
+                Write-Host "  llama.cpp download failed. Check network and re-run."
+                exit 1
+            }
+        }
+        Expand-Archive $zip -DestinationPath $LLM_DIR -Force
+        Remove-Item $zip, $cudart -ErrorAction SilentlyContinue
+        if (-not (Test-Path $lb)) {
+            Write-Host "  llama.cpp download/extract failed. Check network and re-run."
+            exit 1
+        }
+        Write-Host "  llama.cpp installed at $LLM_DIR"
+    }
+
+    # 2. 两个 GGUF 模型缺失时自动下载（hf-mirror.com 优先，Hugging Face 主站兜底）
+    New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
+    if (-not (Test-Path $lm) -or (Get-Item $lm -ErrorAction SilentlyContinue).Length -eq 0) {
+        Write-Host "[LLM] 0.5B model missing, downloading (about 400MB) ..."
+        if (-not (Invoke-Download $lm @(
+            "https://hf-mirror.com/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q3_k_m.gguf",
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q3_k_m.gguf"))) {
+            Write-Host "  0.5B model download failed. Check network and re-run."
+            exit 1
+        }
+    }
+    if (-not (Test-Path $cm) -or (Get-Item $cm -ErrorAction SilentlyContinue).Length -eq 0) {
+        Write-Host "[LLM] 3B model missing, downloading (about 1.9GB) ..."
+        if (-not (Invoke-Download $cm @(
+            "https://hf-mirror.com/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"))) {
+            Write-Host "  3B model download failed. Check network and re-run."
+            exit 1
+        }
     }
     Write-Host "[Check] LLM OK (0.5B suggestion + 3B cloud model-update)"
 }
@@ -289,10 +357,11 @@ if (-not $stage2) {
 if (-not $SkipLLM) {
     Write-Host "`n========== Stage 3/4: LLM services (edge 8005 + cloud 6006) =========="
     # 边缘建议 LLM（0.5B）：Edge 容器经 host.docker.internal:8005 调用。
-    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8005 --ctx-size 2048 --n-gpu-layers 99"
+    # 有 NVIDIA 显卡时 $GpuLayers 追加 --n-gpu-layers 99，无显卡时纯 CPU 运行。
+    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8005 --ctx-size 2048$GpuLayers"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$llmCmd
     # 云端模型更新 LLM（3B）：Cloud 模型更新建议书使用（VLLM_URL 默认 6006）。
-    $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-3b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 6006 --ctx-size 4096 --n-gpu-layers 99"
+    $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-3b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 6006 --ctx-size 4096$GpuLayers"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudLlmCmd
     $stage3 = $true
     if (-not (Wait-Gate "Edge suggestion LLM /v1/models (8005)" {
