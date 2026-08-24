@@ -105,23 +105,8 @@ def test_registry_registers_bearing_plugin_and_exposes_all_capabilities() -> Non
         binding = registry.get_capability("bearing", capability)
         assert binding.capability == capability
         assert binding.implementation_ref
-        if capability in {
-            EDGE_INFERENCE,
-            INPUT_ADAPTER,
-            MODEL_PROVIDER,
-            CLOUD_DIAGNOSIS,
-            GLOBAL_ANALYSIS,
-            MODEL_UPDATE,
-            CONSISTENCY_POLICY,
-            ARBITRATION_POLICY,
-            STORAGE_PROVIDER,
-        }:
-            assert binding.resolved
-            assert registry.require_provider("bearing", capability) is binding.provider
-        else:
-            assert not binding.resolved
-            with pytest.raises(UnresolvedScenarioCapabilityError, match=capability):
-                registry.require_provider("bearing", capability)
+        assert binding.resolved
+        assert registry.require_provider("bearing", capability) is binding.provider
 
 
 def test_role_scoped_registries_only_resolve_runtime_capabilities() -> None:

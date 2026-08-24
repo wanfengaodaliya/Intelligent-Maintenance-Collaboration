@@ -25,7 +25,6 @@ _IMPLEMENTATION_AREAS = {
     "input_adapter": "scenarios.bearing.ingestion.BearingInputAdapterProvider",
     "edge_inference": "scenarios.bearing.edge",
     "cloud_diagnosis": "scenarios.bearing.cloud",
-    "decision_policy": "edge_runtime.v12_flow",
     "consistency_policy": "scenarios.bearing.decision.BearingConsistencyPolicy",
     "arbitration_policy": "scenarios.bearing.arbitration.BearingArbitrationPolicy",
     "global_analysis": "scenarios.bearing.cloud.global_analysis",

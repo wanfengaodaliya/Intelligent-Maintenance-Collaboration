@@ -156,7 +156,8 @@ def test_bootstrap_scenario_assembly_imports_bearing_plugin() -> None:
 
 def test_edge_app_uses_registry_instead_of_h5_implementation_imports() -> None:
     app_path = PROJECT_ROOT / "edge_service" / "app.py"
-    tree = ast.parse(app_path.read_text(encoding="utf-8"), filename=str(app_path))
+    source = app_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(app_path))
     imported_names = {
         alias.name
         for node in ast.walk(tree)
@@ -171,6 +172,7 @@ def test_edge_app_uses_registry_instead_of_h5_implementation_imports() -> None:
         "LocalH5ModelClient",
         "initialize_model_store",
     }.intersection(imported_names)
+    assert "local_h5" not in source.lower()
     assert not _imports_bearing_plugin(app_path)
 
 

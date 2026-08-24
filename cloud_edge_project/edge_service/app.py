@@ -85,17 +85,14 @@ consistency_policy = scenario_registry.require_provider(
 )
 edge_inference_metadata = edge_inference_provider.metadata
 scenario_backend_id = edge_inference_metadata.backend_id
-# 正式边缘诊断路线（阶段 8 起）：
-#   - local_h5：蒸馏模型 H5 三通道并行（CNN/物理特征/工况）加权融合，本地推理；
-#   - official：宿主机/远端正式模型服务（HTTP /infer），供对照与故障演练矩阵。
-# 环境变量 EDGE_DIAGNOSTIC_BACKEND 可覆盖 configs/local.yaml 的声明。
+# 场景Provider声明主推理后端；部署仍可选择通用远端模型服务进行对照演练。
 diagnostic_backend = os.getenv("EDGE_DIAGNOSTIC_BACKEND", "") or str(
     config["model"]["edge_backend"]
 )
 if diagnostic_backend not in (scenario_backend_id, "official"):
     raise ValueError(
-        "unsupported edge diagnostic backend: %s (allowed: 'local_h5' | 'official')"
-        % diagnostic_backend
+        "unsupported edge diagnostic backend: %s (allowed: %r | 'official')"
+        % (diagnostic_backend, scenario_backend_id)
     )
 pinned_model_version = (os.getenv("EDGE_MODEL_VERSION") or "").strip() or None
 scenario_backend_active = diagnostic_backend == scenario_backend_id
@@ -119,7 +116,7 @@ except ModelStoreBootstrapError as exc:
         + "\n"
     )
     raise SystemExit(78) from exc
-# 模型版本以部署时显式声明为准；local_h5 未声明时使用 H5 制品版本。
+# 模型版本以部署声明为准；场景后端未声明时使用Provider制品版本。
 runtime_model_version = pinned_model_version or (
     edge_inference_metadata.default_model_version
     if scenario_backend_active
@@ -131,7 +128,7 @@ edge_status_integration = build_edge_status_integration(
 )
 runtime_assembly = None
 cloud_review_cleanup = None
-# local_h5 复用 H5 自带的单包证据合同；official 路线用独立的 numpy 证据构建器。
+# 场景后端提供自己的证据合同；远端路线使用通用证据构建器。
 EDGE_FEATURE_EXTRACTOR_VERSION = (
     edge_inference_metadata.feature_extractor_version
     if scenario_backend_active
@@ -222,15 +219,14 @@ def _build_runtime(review_store: CloudReviewStore | None = None):
     model_config.queue.full_policy = os.getenv(
         "EDGE_MODEL_QUEUE_FULL_POLICY", "reject"
     )
-    # H4：固定推理线程池大小（默认 1 保持现行为；local_h5 可配 2 提升并行）。
+    # 固定推理线程池大小，默认1保持现有行为，可配置2提升并行。
     model_config.inference_workers = int(
         os.getenv("EDGE_MODEL_INFERENCE_WORKERS", "1")
     )
     # 阶段 7.2：EDGE_MODEL_VERSION 为版本 pin（可选）；
-    # 设置后模型路线（本地 H5 或模型服务）上报版本不一致 → readiness 不通过。
+    # 设置后模型路线版本不一致时readiness不通过。
     if scenario_backend_active:
-        # 正式路线：蒸馏模型 H5 三通道并行本地推理，与模型服务路线共用
-        # 有界队列/超时预算/熔断/就绪探针；降级语义仍为"诊断不可用"。
+        # 场景Provider构造推理运行时，并与远端路线共用有界队列和健康治理。
         scenario_runtime = edge_inference_provider.build_runtime(
             EdgeInferenceRuntimeRequest(
             model_root=runtime_config.model_update.model_root,
@@ -354,8 +350,8 @@ def _liveness_snapshot() -> dict[str, object]:
     mqtt_ingress = runtime_assembly.service.mqtt_ingress
     coordinator = runtime_assembly.coordinator
     maintenance_alive = True if maintenance is None else maintenance.running
-    # local 后端不启动推理 worker（无队列线程），不纳入判定，避免永久 503。
-    uses_model_worker = coordinator.pipeline.cfg.diagnostic_backend in ("http", "local_h5")
+    # 同步本地后端不启动推理worker，不纳入判定，避免永久503。
+    uses_model_worker = coordinator.pipeline.cfg.diagnostic_backend != "local"
     model_worker_alive = (
         bool(coordinator.pipeline.worker.worker_alive) if uses_model_worker else True
     )
@@ -396,7 +392,7 @@ def _readiness_snapshot() -> dict[str, object]:
         "mqtt_connected": bool(service.mqtt_ingress.connected),
     }
     pipeline = runtime_assembly.coordinator.pipeline
-    if pipeline.cfg.diagnostic_backend in ("http", "local_h5"):
+    if pipeline.cfg.diagnostic_backend != "local":
         probe = pipeline.model_readiness()
         checks["model_service_ready"] = bool(probe.get("probed") and probe.get("ok"))
     return {
@@ -476,7 +472,7 @@ def health() -> dict[str, object]:
             ),
         },
         # 阶段 7.4：模型路线就绪探针快照（含版本 pin 校验结论）。
-        # local_h5 路线 base_url 为空（模型在进程内）。
+        # 场景内运行时不暴露远端base_url。
         "model_service": {
             "base_url": (
                 None if scenario_backend_active
