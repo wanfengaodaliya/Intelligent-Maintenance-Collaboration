@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from core.scenario_registry import ScenarioRegistry
 from core.scenario_plugin import (
     ARBITRATION_POLICY,
@@ -13,6 +15,7 @@ from core.scenario_plugin import (
     MODEL_PROVIDER,
     MODEL_UPDATE,
     STORAGE_PROVIDER,
+    ScenarioPlugin,
 )
 from scenarios.bearing.plugin import BearingScenarioPlugin
 
@@ -32,23 +35,36 @@ CLOUD_CAPABILITIES = frozenset(
 SENDER_CAPABILITIES = frozenset({INPUT_ADAPTER})
 
 
-def _build_registry(resolved_capabilities: frozenset[str] | None) -> ScenarioRegistry:
+def _build_registry(
+    resolved_capabilities: frozenset[str] | None,
+    plugins: Iterable[ScenarioPlugin] = (),
+) -> ScenarioRegistry:
     registry = ScenarioRegistry()
     registry.register(BearingScenarioPlugin(resolved_capabilities))
+    for plugin in plugins:
+        registry.register(plugin)
     return registry
 
 
-def build_scenario_registry() -> ScenarioRegistry:
-    return _build_registry(None)
+def build_scenario_registry(
+    *, plugins: Iterable[ScenarioPlugin] = ()
+) -> ScenarioRegistry:
+    return _build_registry(None, plugins)
 
 
-def build_edge_scenario_registry() -> ScenarioRegistry:
-    return _build_registry(EDGE_CAPABILITIES)
+def build_edge_scenario_registry(
+    *, plugins: Iterable[ScenarioPlugin] = ()
+) -> ScenarioRegistry:
+    return _build_registry(EDGE_CAPABILITIES, plugins)
 
 
-def build_cloud_scenario_registry() -> ScenarioRegistry:
-    return _build_registry(CLOUD_CAPABILITIES)
+def build_cloud_scenario_registry(
+    *, plugins: Iterable[ScenarioPlugin] = ()
+) -> ScenarioRegistry:
+    return _build_registry(CLOUD_CAPABILITIES, plugins)
 
 
-def build_sender_scenario_registry() -> ScenarioRegistry:
-    return _build_registry(SENDER_CAPABILITIES)
+def build_sender_scenario_registry(
+    *, plugins: Iterable[ScenarioPlugin] = ()
+) -> ScenarioRegistry:
+    return _build_registry(SENDER_CAPABILITIES, plugins)

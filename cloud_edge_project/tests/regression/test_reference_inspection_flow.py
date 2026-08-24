@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from bootstrap.scenarios import build_scenario_registry
 from core.arbitration_engine import ArbitrationEngine
 from core.consistency_engine import (
     ConsistencyEngine,
@@ -26,9 +27,7 @@ from tests.fixtures.scenarios.reference_inspection import ReferenceInspectionPlu
 
 
 def _registry() -> ScenarioRegistry:
-    registry = ScenarioRegistry()
-    registry.register(ReferenceInspectionPlugin())
-    return registry
+    return build_scenario_registry(plugins=(ReferenceInspectionPlugin(),))
 
 
 def _payload(request) -> dict:

@@ -9,6 +9,8 @@ from bootstrap.scenarios import (
     build_scenario_registry,
     build_sender_scenario_registry,
 )
+from core.scenario_plugin import CLOUD_DIAGNOSIS, EDGE_INFERENCE, INPUT_ADAPTER
+from tests.fixtures.scenarios.reference_inspection import ReferenceInspectionPlugin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +71,22 @@ def test_production_registry_builders_do_not_load_reference_fixture() -> None:
     )
 
     assert all(registry.scenario_ids() == ("bearing",) for registry in registries)
+
+
+def test_reference_fixture_runs_through_production_service_assembly() -> None:
+    builders_and_capabilities = (
+        (build_sender_scenario_registry, INPUT_ADAPTER),
+        (build_edge_scenario_registry, EDGE_INFERENCE),
+        (build_cloud_scenario_registry, CLOUD_DIAGNOSIS),
+    )
+
+    for builder, capability in builders_and_capabilities:
+        registry = builder(plugins=(ReferenceInspectionPlugin(),))
+
+        assert registry.scenario_ids() == ("bearing", "reference_inspection")
+        assert (
+            registry.require_provider("reference_inspection", capability) is not None
+        )
 
 
 def test_reference_fixture_contains_no_bearing_domain_vocabulary() -> None:
