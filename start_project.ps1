@@ -9,8 +9,8 @@
 #   Stage 1  网络模拟器（toxiproxy + mqtt-broker + network-controller，project name
 #            固定为 network_simulator）全部 healthy 且所需代理已创建。
 #   Stage 2  宿主机 Scheduler 8003 + Cloud 8004（HTTP ready，Cloud 模型已加载）。
-#   Stage 3  LLM 服务：边缘建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
-#            （3B @ 6006）；-SkipLLM 时跳过并显式禁用 Edge LLM 调用。
+#   Stage 3  LLM 服务：边缘建议 LLM（0.5B @ 8005）；-SkipLLM 时跳过并
+#            显式禁用 Edge LLM 调用。
 #   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，--no-build），
 #            轮询 /health/ready（Docker HEALTHCHECK 仅代表 liveness）。
 #   全部通过后才允许 Sender 开始发送。
@@ -205,12 +205,11 @@ Write-Host "  Ports free"
 if (-not $SkipLLM) {
     $lb = Join-Path $LLM_DIR "llama-server.exe"
     $lm = Join-Path $LLM_DIR "models\qwen2.5-0.5b-instruct-q3_k_m.gguf"
-    $cm = Join-Path $LLM_DIR "models\qwen2.5-3b-instruct-q4_k_m.gguf"
-    if (-not (Test-Path $lb) -or -not (Test-Path $lm) -or -not (Test-Path $cm)) {
-        Write-Host "  LLM not fully deployed (need llama-server.exe + 0.5B + 3B models), use -SkipLLM to skip"
+    if (-not (Test-Path $lb) -or -not (Test-Path $lm)) {
+        Write-Host "  LLM not fully deployed (need llama-server.exe + 0.5B model), use -SkipLLM to skip"
         exit 1
     }
-    Write-Host "[Check] LLM OK (0.5B suggestion + 3B cloud model-update)"
+    Write-Host "[Check] LLM OK (0.5B edge suggestion)"
 }
 
 # ---------- Stage 1: network simulator ----------
@@ -287,20 +286,13 @@ if (-not $stage2) {
 
 # ---------- Stage 3: LLM services ----------
 if (-not $SkipLLM) {
-    Write-Host "`n========== Stage 3/4: LLM services (edge 8005 + cloud 6006) =========="
+    Write-Host "`n========== Stage 3/4: Edge suggestion LLM (8005) =========="
     # 边缘建议 LLM（0.5B）：Edge 容器经 host.docker.internal:8005 调用。
     $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8005 --ctx-size 2048 --n-gpu-layers 99"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$llmCmd
-    # 云端模型更新 LLM（3B）：Cloud 模型更新建议书使用（VLLM_URL 默认 6006）。
-    $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-3b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 6006 --ctx-size 4096 --n-gpu-layers 99"
-    Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudLlmCmd
     $stage3 = $true
     if (-not (Wait-Gate "Edge suggestion LLM /v1/models (8005)" {
         $models = Get-Json "http://127.0.0.1:8005/v1/models"
-        $null -ne $models -and $models.data.Count -gt 0
-    })) { $stage3 = $false }
-    if ($stage3 -and -not (Wait-Gate "Cloud model-update LLM /v1/models (6006)" {
-        $models = Get-Json "http://127.0.0.1:6006/v1/models"
         $null -ne $models -and $models.data.Count -gt 0
     })) { $stage3 = $false }
     if (-not $stage3) {
@@ -311,7 +303,6 @@ if (-not $SkipLLM) {
 } else {
     Write-Host "`n========== Stage 3/4: LLM skipped =========="
     Write-Host "  EDGE_SUGGESTION_LLM_ENABLED=false - Edge suggestion LLM calls are disabled in both containers."
-    Write-Host "  Cloud model-update LLM (6006) not started; suggestions fall back to templates."
     $env:EDGE_SUGGESTION_LLM_ENABLED = "false"
 }
 
@@ -352,7 +343,7 @@ if ($edge01Health.node_id -ne "edge_01" -or $edge02Health.node_id -ne "edge_02" 
 }
 
 Write-Host "`n========== All health gates passed =========="
-if ($SkipLLM) { Write-Host "(LLM skipped - EDGE_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
+if ($SkipLLM) { Write-Host "(LLM skipped - EDGE_SUGGESTION_LLM_ENABLED=false)" }
 Write-Host "Sender may start replaying MAT data now."
 Write-Host "Stop: close host windows (Scheduler/Cloud/LLM), then:"
 Write-Host "  cd $EdgeService ; docker compose -f compose.multi-edge.yml down"
