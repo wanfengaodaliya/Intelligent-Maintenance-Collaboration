@@ -11,7 +11,6 @@
 | 边缘节点 | edge-health.html | Edge 节点全量健康指标（模型/队列/线程/Outbox/链路） | GET /health 每 5 秒 |
 | 诊断演示 | diagnosis-demo.html | 构造正常/故障数据包，同步调用边缘推理，看完整结果 | POST /edge/infer |
 | 调度拓扑 | topology.html | 系统拓扑图（在线状态着色）、路由策略、网络链路质量 | /health + /scheduler/routing-policy + 网络模拟器 |
-| 模型更新 | model-update.html | 更新任务查询、工作流进度条（创建→训练→审批→下发）、创建任务 | /cloud/model-update/* |
 | 设备仲裁 | arbitration.html | 按冲突 ID 查询边缘 vs 云端对比与最终裁定 | /cloud/device-arbitration/* |
 | 全局分析 | analysis.html | 触发/读取设备健康全局分析报告 | /cloud/global-analysis* |
 
@@ -74,9 +73,6 @@
 - **实时流没有消息**：实时数据由 Sender 产生，需要 Sender 正在发数据；
   或到「诊断演示」页手动触发一次单包推理。
 
-- **模型更新页"待下发任务列表"为空**：正常现象，说明当前没有处于下发阶段的更新任务。
-  可在下方创建新任务后按任务 ID 查询工作流进度。
-
 ## 目录结构
 
 ```
@@ -86,7 +82,6 @@ frontend/
 ├── edge-health.html     # 边缘节点健康
 ├── diagnosis-demo.html  # 单包诊断演示
 ├── topology.html        # 调度拓扑
-├── model-update.html    # 模型更新工作流
 ├── arbitration.html     # 设备仲裁
 ├── analysis.html        # 全局分析
 ├── css/main.css         # 共享样式（深色监控主题）
