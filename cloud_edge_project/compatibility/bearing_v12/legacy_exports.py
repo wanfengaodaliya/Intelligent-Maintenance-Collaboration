@@ -6,7 +6,7 @@ generic validation primitives in :mod:`common.schemas`.
 
 from importlib import import_module
 
-from core.diagnosis_contracts import (
+from compatibility.bearing_v12.diagnosis_contracts import (
     ActionGrade,
     BearingDecisionResult,
     BearingLifecycleStatus,

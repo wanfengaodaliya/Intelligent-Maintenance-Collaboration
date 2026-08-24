@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from typing import TypeVar
 
-from core.diagnosis_contracts import (
+from compatibility.bearing_v12.diagnosis_contracts import (
     BearingDecisionResult,
     CloudBearingResult,
     DeviceDecisionResult,

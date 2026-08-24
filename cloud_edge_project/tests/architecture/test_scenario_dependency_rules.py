@@ -76,6 +76,10 @@ GLOBAL_ANALYSIS_SCENARIO_MODULES = {
     "v12_data_source.py": {"V12GlobalAnalysisDataSource"},
     "problem_detector.py": {"detect_bearing_problem_candidates"},
 }
+LEGACY_DIAGNOSIS_MODULES = (
+    "diagnosis_contracts.py",
+    "diagnosis_identity.py",
+)
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
@@ -740,3 +744,28 @@ def test_generic_device_routing_runtime_is_scenario_neutral() -> None:
 
         assert all(word not in source for word in forbidden)
         assert not _imports_bearing_plugin(path)
+
+
+@pytest.mark.parametrize("filename", LEGACY_DIAGNOSIS_MODULES)
+def test_legacy_diagnosis_modules_are_thin_compatibility_exports(
+    filename: str,
+) -> None:
+    path = PROJECT_ROOT / "core" / filename
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    assert _defined_names(path) == set()
+    assert f"compatibility.bearing_v12.{path.stem}" in _imported_modules(path)
+    assert tree.body and _is_module_docstring(tree.body[0])
+    assert all(
+        isinstance(node, (ast.ImportFrom, ast.Assign)) for node in tree.body[1:]
+    )
+
+
+@pytest.mark.parametrize("filename", LEGACY_DIAGNOSIS_MODULES)
+def test_legacy_diagnosis_contracts_have_one_physical_owner(filename: str) -> None:
+    core_path = PROJECT_ROOT / "core" / filename
+    compatibility_path = PROJECT_ROOT / "compatibility" / "bearing_v12" / filename
+
+    assert compatibility_path.is_file()
+    assert _defined_names(compatibility_path)
+    assert _defined_names(core_path) == set()

@@ -8,7 +8,7 @@ from core.consistency_engine import (
     ConsistencyRequest,
     ConsistencyUnit,
 )
-from core.diagnosis_contracts import (
+from compatibility.bearing_v12.diagnosis_contracts import (
     BearingDecisionResult,
     DeviceDecisionResult,
     DeviceDecisionStatus,
