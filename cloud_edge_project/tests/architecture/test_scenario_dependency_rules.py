@@ -450,6 +450,14 @@ def test_edge_image_copies_compatibility_boundary() -> None:
     assert "COPY compatibility ./compatibility" in dockerfile.splitlines()
 
 
+def test_edge_image_copies_scenario_registry_bootstrap() -> None:
+    dockerfile = (PROJECT_ROOT / "edge_service" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY bootstrap ./bootstrap" in dockerfile.splitlines()
+
+
 @pytest.mark.parametrize("filename", EDGE_H5_RUNTIME_MODULES)
 def test_legacy_h5_runtime_modules_use_compatibility_boundary(filename: str) -> None:
     legacy_path = PROJECT_ROOT / "edge_service" / "src" / "edge_model" / filename

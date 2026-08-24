@@ -37,3 +37,14 @@ def test_check_config_is_a_read_only_full_preflight():
     assert "docker network inspect $NetworkSimNetwork" in script
     assert "conda run -n $CondaEnvName python --version" in script
     assert "docker compose -f compose.multi-edge.yml config --quiet" in script
+
+
+def test_start_script_accepts_an_explicit_python_without_removing_conda_default():
+    script = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert '$PythonExecutable = Get-EnvValue "PROJECT_PYTHON_EXECUTABLE" ""' in script
+    assert "Test-Path -LiteralPath $PythonExecutable -PathType Leaf" in script
+    assert "$pythonVersion = & $PythonExecutable --version" in script
+    assert "$PythonLaunchPrefix -m uvicorn scheduler.api:app" in script
+    assert "$PythonLaunchPrefix -m uvicorn cloud_service.app:app" in script
+    assert "conda run -n $CondaEnvName python --version" in script

@@ -38,6 +38,7 @@ RUN sed -n '/^momentfm[[:space:]]*@/p' requirements-moment.txt > /tmp/requiremen
 
 COPY common ./common
 COPY core ./core
+COPY bootstrap ./bootstrap
 COPY configs ./configs
 COPY scenarios ./scenarios
 COPY compatibility ./compatibility

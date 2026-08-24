@@ -70,6 +70,10 @@ $NetworkSimNetwork = Get-EnvValue "NETWORK_SIM_NETWORK" "network_simulator_defau
 $LLM_DIR = Get-EnvValue "LLAMA_CPP_DIR" (Join-Path $ProjectRoot "tools\llama.cpp")
 if (-not [System.IO.Path]::IsPathRooted($LLM_DIR)) { $LLM_DIR = Join-Path $ProjectRoot $LLM_DIR }
 $CondaEnvName = Get-EnvValue "PROJECT_CONDA_ENV" "moment"
+$PythonExecutable = Get-EnvValue "PROJECT_PYTHON_EXECUTABLE" ""
+if (-not [string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    $PythonExecutable = Resolve-DeploymentPath $PythonExecutable $ProjectRoot
+}
 $HealthHost = Get-EnvValue "PROJECT_HEALTH_HOST" "127.0.0.1"
 $SchedulerHost = Get-EnvValue "SCHEDULER_SERVICE_HOST" "127.0.0.1"
 $SchedulerPort = [int](Get-EnvValue "SCHEDULER_SERVICE_PORT" "8003")
@@ -104,11 +108,21 @@ Assert-UrlPort "VLLM_URL" $VllmUrl $CloudLlmPort
 # 只要 conda 在 PATH 中即可（前置检查已保证），队友机器同样适用。
 # 用法：在子进程命令前拼接本前缀，即可用标准 "conda activate moment"。
 $CondaActivatePrefix = "conda shell.powershell hook | Out-String | Invoke-Expression; conda activate '$CondaEnvName'; "
+if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    $PythonLaunchPrefix = "$CondaActivatePrefix python"
+} else {
+    $escapedPythonExecutable = $PythonExecutable.Replace("'", "''")
+    $PythonLaunchPrefix = "& '$escapedPythonExecutable'"
+}
 
 if ($CheckConfig) {
     Write-Host "=== Read-only deployment preflight ==="
     Write-Host "ProjectRoot=$ProjectRoot"
-    Write-Host "CondaEnv=$CondaEnvName"
+    if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+        Write-Host "CondaEnv=$CondaEnvName"
+    } else {
+        Write-Host "PythonExecutable=$PythonExecutable"
+    }
     Write-Host "Scheduler=http://$SchedulerHost`:$SchedulerPort"
     Write-Host "Cloud=http://$CloudHost`:$CloudPort"
     Write-Host "Edges=$Edge01NodeId`:$Edge01Port,$Edge02NodeId`:$Edge02Port"
@@ -218,16 +232,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  External network OK"
 
-Write-Host "[Check] Conda $CondaEnvName env ..."
-$condaEnvs = conda env list 2>&1
-if ($LASTEXITCODE -ne 0) { Write-Host "  Could not query Conda environments"; exit 1 }
-$escapedCondaEnv = [regex]::Escape($CondaEnvName)
-if (-not ($condaEnvs -match "^\s*$escapedCondaEnv\s")) { Write-Host "  $CondaEnvName env missing, create it first"; exit 1 }
-Write-Host "  $CondaEnvName OK"
+if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    Write-Host "[Check] Conda $CondaEnvName env ..."
+    $condaEnvs = conda env list 2>&1
+    if ($LASTEXITCODE -ne 0) { Write-Host "  Could not query Conda environments"; exit 1 }
+    $escapedCondaEnv = [regex]::Escape($CondaEnvName)
+    if (-not ($condaEnvs -match "^\s*$escapedCondaEnv\s")) { Write-Host "  $CondaEnvName env missing, create it first"; exit 1 }
+    Write-Host "  $CondaEnvName OK"
 
-Write-Host "[Check] Python in Conda environment ..."
-$pythonVersion = conda run -n $CondaEnvName python --version 2>&1
-if ($LASTEXITCODE -ne 0) { Write-Host "  Python is unavailable in Conda env $CondaEnvName"; exit 1 }
+    Write-Host "[Check] Python in Conda environment ..."
+    $pythonVersion = conda run -n $CondaEnvName python --version 2>&1
+    if ($LASTEXITCODE -ne 0) { Write-Host "  Python is unavailable in Conda env $CondaEnvName"; exit 1 }
+} else {
+    Write-Host "[Check] Configured Python executable ..."
+    if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
+        Write-Host "  Python executable missing: $PythonExecutable"
+        exit 1
+    }
+    $pythonVersion = & $PythonExecutable --version 2>&1
+    if ($LASTEXITCODE -ne 0) { Write-Host "  Configured Python is unavailable: $PythonExecutable"; exit 1 }
+}
 Write-Host "  $pythonVersion"
 
 Write-Host "[Check] MOMENT model ..."
@@ -403,10 +427,10 @@ if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
 # ---------- Stage 2: host Scheduler + Cloud ----------
 Write-Host "`n========== Stage 2/4: Host Scheduler ($SchedulerPort) + Cloud ($CloudPort) =========="
-$schCmd = "Set-Location '$CloudEdge'; $CondaActivatePrefix python -m uvicorn scheduler.api:app --host $SchedulerHost --port $SchedulerPort"
+$schCmd = "Set-Location '$CloudEdge'; $PythonLaunchPrefix -m uvicorn scheduler.api:app --host $SchedulerHost --port $SchedulerPort"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
-$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='$(Get-EnvValue "CLOUD_BACKEND" "moment_light_adapt")'; `$env:SCHEDULER_SERVICE_BASE_URL='$CloudSchedulerUrl'; $CondaActivatePrefix python -m uvicorn cloud_service.app:app --host $CloudHost --port $CloudPort"
+$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='$(Get-EnvValue "CLOUD_BACKEND" "moment_light_adapt")'; `$env:SCHEDULER_SERVICE_BASE_URL='$CloudSchedulerUrl'; $PythonLaunchPrefix -m uvicorn cloud_service.app:app --host $CloudHost --port $CloudPort"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $stage2 = $true
