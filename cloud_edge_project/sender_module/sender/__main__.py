@@ -27,6 +27,13 @@ def parse_source_files(entries: list[str]) -> dict[str, Path]:
     return source_files
 
 
+def positive_int(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Replay three independent bearing senders")
     parser.add_argument("--config", type=Path, default=_default_config_path())
@@ -42,17 +49,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="publish without the normal 50 ms pacing; use only for tests",
     )
+    parser.add_argument(
+        "--rounds",
+        type=positive_int,
+        default=1,
+        help="run this many 3-Sender rounds (15 rounds = 3,600 windows)",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        summaries = run_all_senders(
-            load_config(args.config),
-            parse_source_files(args.source),
-            realtime=not args.accelerated,
-        )
+        config = load_config(args.config)
+        source_files = parse_source_files(args.source)
+        summaries = []
+        for _round_number in range(1, args.rounds + 1):
+            # run_all_senders starts the three configured Senders concurrently;
+            # rounds stay sequential so one formal run has a deterministic size.
+            summaries.extend(
+                run_all_senders(
+                    config,
+                    source_files,
+                    realtime=not args.accelerated,
+                )
+            )
     except Exception as exc:
         print(f"sender failed: {exc}", file=sys.stderr)
         return 1

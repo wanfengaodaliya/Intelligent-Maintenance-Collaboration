@@ -106,11 +106,30 @@ class PacketRouter:
                 now_ns=now_ns,
             )
 
-        trigger_reasons = (
-            ["LOW_CONFIDENCE", "HIGH_COMPLEXITY"]
-            if output is not None
-            else ["EDGE_TIMEOUT" if result["status"] == "TIMEOUT" else "EDGE_FAILED"]
-        )
+        # Cloud review can only verify an actual edge diagnosis. A timeout or
+        # failed local inference has no decision round to reconcile when the
+        # cloud result returns, so it must finish here instead of entering the
+        # cloud-review workflow.
+        if output is None:
+            reason = (
+                "EDGE_TIMEOUT"
+                if result["status"] == "TIMEOUT"
+                else "EDGE_FAILED"
+            )
+            return self._response(
+                result,
+                decision_id=decision_id,
+                route=DIRECT_FINAL_TO_SUMMARY,
+                reasons=[reason],
+                defer_reason=None,
+                confidence=None,
+                complexity=None,
+                cloud=None,
+                link=None,
+                now_ns=now_ns,
+            )
+
+        trigger_reasons = ["LOW_CONFIDENCE", "HIGH_COMPLEXITY"]
         cloud = self.cloud_registry.snapshot(
             self.config.default_cloud_node_id, now_ns=now_ns
         )

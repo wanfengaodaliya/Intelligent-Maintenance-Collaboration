@@ -129,6 +129,17 @@ python -m sender --config config/local.json `
 
 正常运行约 4 秒。三个发送器各发送 80 包，总计 240 包。快速测试可增加 `--accelerated`，但加速模式不能用于计算真实端到端时延。
 
+正式 3,600 窗口实验使用 15 轮；每轮仍并发启动三个 Sender，
+每个 Sender 发送 80 个 50 ms 窗口：
+
+```powershell
+python -m sender --config config/local.json `
+  --rounds 15 `
+  --source "sender_01=D:\data\bearing_01.mat" `
+  --source "sender_02=D:\data\bearing_02.mat" `
+  --source "sender_03=D:\data\bearing_03.mat"
+```
+
 ## 5. 调度接口
 
 每个发送器独立调用一次：

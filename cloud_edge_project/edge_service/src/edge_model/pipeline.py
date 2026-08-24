@@ -155,6 +155,9 @@ class EdgeModelPipeline:
             "full_policy": self.queue.full_policy,
             "max_observed_queued": self.queue.max_observed_queued,
             "queue_full_total": self.queue.queue_full_total,
+            "consumer_count": self.worker.consumer_count,
+            "consumers": self.worker.consumer_snapshot,
+            "inference_latency_ms": self.worker.inference_latency_snapshot,
         }
 
     def ingest(self, sender_id: str, model_input: dict) -> str:

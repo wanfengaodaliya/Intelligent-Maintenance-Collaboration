@@ -109,6 +109,26 @@ def test_suggestion_llm_targets_host_llama_service() -> None:
         assert env["EDGE_SUGGESTION_LLM_BASE_URL"] == EXPECTED_LLM_BASE_URL, name
 
 
+def test_both_edges_accept_deployment_timeout_overrides() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_QUEUE_WAIT_MS"] == "${EDGE_MODEL_QUEUE_WAIT_MS:-250}", name
+        assert env["EDGE_MODEL_TOTAL_TIMEOUT_MS"] == "${EDGE_MODEL_TOTAL_TIMEOUT_MS:-2000}", name
+
+
+def test_both_edges_accept_inference_worker_override() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_INFERENCE_WORKERS"] == "${EDGE_MODEL_INFERENCE_WORKERS:-1}", name
+
+
+def test_both_edges_limit_local_h5_torch_threads_by_default() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_TORCH_INTRAOP_THREADS"] == "${EDGE_TORCH_INTRAOP_THREADS:-1}", name
+        assert env["EDGE_TORCH_INTEROP_THREADS"] == "${EDGE_TORCH_INTEROP_THREADS:-1}", name
+
+
 def test_topology_addresses_are_fixed_and_not_env_overridable() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
