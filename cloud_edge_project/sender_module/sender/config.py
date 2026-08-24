@@ -114,8 +114,8 @@ def load_config(path: Path | str) -> SenderConfig:
     if missing:
         raise ConfigError(f"missing config fields: {', '.join(missing)}")
     raw_senders = raw["senders"]
-    if not isinstance(raw_senders, list) or len(raw_senders) != 3:
-        raise ConfigError("senders must contain exactly three sender configurations")
+    if not isinstance(raw_senders, list) or not raw_senders:
+        raise ConfigError("senders must contain at least one sender configuration")
     senders = tuple(_load_sender(item, index) for index, item in enumerate(raw_senders))
     sender_ids = [item.sender_id for item in senders]
     bearing_ids = [item.bearing_id for item in senders]
