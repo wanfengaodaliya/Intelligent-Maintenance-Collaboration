@@ -10,22 +10,33 @@ from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
 
 
 def analyze_device_arbitration(
-    device_rows: list[dict[str, Any]], arbitration_rows: list[dict[str, Any]], config: GlobalAnalysisConfig
+    summary_rows: list[dict[str, Any]], arbitration_rows: list[dict[str, Any]], config: GlobalAnalysisConfig
 ) -> dict[str, Any]:
-    task_count = len(device_rows)
-    conflict_count = sum(bool(row.get("has_conflict")) for row in device_rows)
+    eligible_rows = [
+        row for row in summary_rows if not row.get("excluded_from_formal_metrics", False)
+    ]
+    complete_count = len(eligible_rows)
+    incomplete_count = len(summary_rows) - complete_count
+    conflict_count = sum(bool(row.get("has_conflict")) for row in eligible_rows)
+    gaps = [int(row.get("max_cross_edge_grade_gap", 0)) for row in eligible_rows]
     arbitration_count = len(arbitration_rows)
     resolved_count = sum(row.get("status") == "resolved" for row in arbitration_rows)
     success = rate(resolved_count, arbitration_count)
     result: dict[str, Any] = {
-        "status": "succeeded" if task_count else "insufficient_data",
-        "device_task_count": task_count,
+        "status": "succeeded" if complete_count else "insufficient_data",
+        "device_task_count": complete_count,
+        "complete_window_count": complete_count,
+        "incomplete_window_count": incomplete_count,
         "conflict_count": conflict_count,
-        "conflict_rate": rate(conflict_count, task_count),
+        "conflict_rate": rate(conflict_count, complete_count),
+        "consistency_rate": rate(complete_count - conflict_count, complete_count),
+        "average_decision_gap": (sum(gaps) / len(gaps)) if gaps else None,
+        "max_decision_gap": max(gaps) if gaps else None,
         "arbitration_count": arbitration_count,
         "resolved_count": resolved_count,
         "arbitration_success_rate": success,
-        "conflict_target_met": rate(conflict_count, task_count) <= config.conflict_rate_target if task_count else None,
+        "arbitration_upload_success_rate": rate(arbitration_count, conflict_count),
+        "conflict_target_met": rate(conflict_count, complete_count) <= config.conflict_rate_target if complete_count else None,
         "arbitration_target_met": success >= config.arbitration_success_target if success is not None else None,
     }
     distribution_names = {

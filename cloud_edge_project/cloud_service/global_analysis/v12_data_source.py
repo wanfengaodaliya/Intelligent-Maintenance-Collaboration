@@ -28,6 +28,7 @@ class V12GlobalAnalysisDataSource:
                 and _table_exists(connection, "raw_analysis_sample"),
                 "edge_summaries": _table_exists(connection, "edge_packet_summary"),
                 "packet_review_pairs": _table_exists(connection, "cloud_moment_review_record"),
+                "summary_windows": _table_exists(connection, "summary_window_record"),
             }
             bearing_records = _load_records(connection, "cloud_bearing_diagnosis_result", device_id) if availability["v12_bearing_results"] else []
             device_records = _load_records(connection, "cloud_device_decision_result", device_id) if availability["v12_device_results"] else []
@@ -48,16 +49,24 @@ class V12GlobalAnalysisDataSource:
             packet_review_pairs = _load_packet_review_pairs(
                 connection, device_id, selected_rounds
             ) if availability["packet_review_pairs"] else []
+            summary_windows = (
+                _load_summary_windows(connection, device_id, task_limit)
+                if availability["summary_windows"]
+                else []
+            )
+            summary_arbitrations = _load_summary_arbitrations(
+                connection,
+                device_id,
+                {row["summary_result_id"] for row in summary_windows},
+            )
 
         return {
             "device_tasks": current_devices,
             "bearing_tasks": current_bearings,
             "bearing_review_pairs": _bearing_review_pairs(scoped_bearing_records),
             "packet_review_pairs": packet_review_pairs,
-            "arbitrations": [
-                {**row, **arbitration_states.get(str(row["arbitration_id"]), {"status": "unknown"})}
-                for row in current_devices if row.get("arbitration_id")
-            ],
+            "summary_windows": summary_windows,
+            "arbitrations": summary_arbitrations,
             "physical_evidence": evidence,
             "edge_summaries": edge_summaries,
             "revision_deduplication": {
@@ -219,6 +228,38 @@ def _load_arbitration_states(
         arbitration_ids,
     ).fetchall()
     return {str(row["arbitration_id"]): dict(row) for row in rows}
+
+
+def _load_summary_windows(
+    connection: Any, device_id: str, limit: int
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT payload_json FROM summary_window_record
+        WHERE device_id=? ORDER BY created_at_ns DESC, summary_result_id DESC LIMIT ?
+        """,
+        (device_id, int(limit)),
+    ).fetchall()
+    values = [_json_object(row["payload_json"]) for row in rows]
+    return [value for value in values if value]
+
+
+def _load_summary_arbitrations(
+    connection: Any, device_id: str, summary_result_ids: set[str]
+) -> list[dict[str, Any]]:
+    if not summary_result_ids:
+        return []
+    placeholders = ",".join("?" for _ in summary_result_ids)
+    rows = connection.execute(
+        f"""
+        SELECT result_json FROM device_arbitration_record
+        WHERE subject_id=? AND summary_result_id IN ({placeholders})
+        AND result_json IS NOT NULL ORDER BY created_at_ns, arbitration_id
+        """,
+        (device_id, *sorted(summary_result_ids)),
+    ).fetchall()
+    values = [_json_object(row["result_json"]) for row in rows]
+    return [value for value in values if value]
 
 
 def _table_exists(connection: Any, name: str) -> bool:

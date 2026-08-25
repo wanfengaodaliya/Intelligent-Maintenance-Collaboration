@@ -21,6 +21,7 @@ class MqttConfig:
     keepalive_seconds: int = 30
     qos: int = 1
     input_topic: str = "edge/edge_01/input"
+    bearing_result_topic: str = "summary/bearing-results"
     device_result_topic: str = "summary/device-results"
     suggestion_topic: str = "summary/suggestions"
     client_id: str = "edge_01-runtime"
@@ -147,6 +148,10 @@ class EdgeRuntimeConfig:
                     "EDGE_MQTT_INPUT_TOPIC",
                     f"edge/{edge_node_id}/input",
                 ).strip(),
+                bearing_result_topic=env.get(
+                    "EDGE_MQTT_BEARING_RESULT_TOPIC",
+                    "summary/bearing-results",
+                ).strip(),
                 device_result_topic=env.get(
                     "EDGE_MQTT_DEVICE_RESULT_TOPIC",
                     "summary/device-results",
@@ -189,7 +194,12 @@ class EdgeRuntimeConfig:
             ),
             v12=V12RuntimeConfig(
                 enabled=env.get("EDGE_V12_ENABLED", "true").strip().lower() == "true",
-                database_path=Path(env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db")),
+                database_path=Path(
+                    env.get(
+                        "EDGE_EXPERIMENT_DATABASE_PATH",
+                        env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db"),
+                    )
+                ),
                 cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
                 round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
                 round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
@@ -286,6 +296,8 @@ class EdgeRuntimeConfig:
             errors.append("MQTT host and client_id must be non-empty")
         if not self.mqtt.device_result_topic.strip():
             errors.append("mqtt.device_result_topic must be non-empty")
+        if not self.mqtt.bearing_result_topic.strip():
+            errors.append("mqtt.bearing_result_topic must be non-empty")
         if not self.scheduler.base_url.startswith(("http://", "https://")):
             errors.append("scheduler.base_url must use HTTP or HTTPS")
         if self.scheduler.heartbeat_interval_seconds != 1.0:

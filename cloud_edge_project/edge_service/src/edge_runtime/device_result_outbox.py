@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Durable publish outbox for device-level decision results."""
-# 该模块以先落库后发送的方式维护设备级结果的发布生命周期。
+"""Durable publish outbox for local bearing and device decision results."""
+# 该模块以先落库后发送的方式维护本地结果的发布生命周期。
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
+from dataclasses import asdict
 from typing import Any, Callable, Mapping
 
-from core.diagnosis_contracts import DeviceDecisionResult
+from core.diagnosis_contracts import DeviceDecisionResult, EdgeBearingResult
 
 
 PUBLISH_PENDING = "PUBLISH_PENDING"
@@ -26,7 +27,7 @@ _MAX_BACKOFF_NS = 5_000_000_000
 
 
 class DeviceResultOutbox:
-    """Persist device results before publishing; the same version publishes once."""
+    """Persist a result before publishing; the same identity publishes once."""
 
     def __init__(
         self,
@@ -35,13 +36,18 @@ class DeviceResultOutbox:
         *,
         max_attempts: int = 5,
         clock_ns: Callable[[], int] = time.time_ns,
+        namespace: str = "device_result",
     ) -> None:
         if max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
+        if namespace not in {"device_result", "bearing_result"}:
+            raise ValueError("unsupported outbox namespace")
         self.database_path = str(database_path)
         self.publisher = publisher
         self.max_attempts = max_attempts
         self.clock_ns = clock_ns
+        self.outbox_table = f"{namespace}_outbox"
+        self.history_table = f"{namespace}_delivery_history"
         self._initialize()
 
     def enqueue(
@@ -51,35 +57,73 @@ class DeviceResultOutbox:
         connection: sqlite3.Connection | None = None,
     ) -> bool:
         """Idempotent insert keyed by device_result_id + revision."""
+        return self._enqueue_payload(
+            result.as_dict(),
+            result_id=result.result_id,
+            device_id=result.device_id,
+            task_id=result.task_id,
+            decision_round_id=result.decision_round_id,
+            revision=result.revision,
+            connection=connection,
+        )
+
+    def enqueue_bearing(
+        self,
+        result: EdgeBearingResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        """Idempotently enqueue one immutable local bearing decision."""
+        return self._enqueue_payload(
+            asdict(result),
+            result_id=result.result_id,
+            device_id=result.device_id,
+            task_id=result.task_id,
+            decision_round_id=result.decision_round_id,
+            revision=1,
+            connection=connection,
+        )
+
+    def _enqueue_payload(
+        self,
+        value: Mapping[str, Any],
+        *,
+        result_id: str,
+        device_id: str,
+        task_id: str,
+        decision_round_id: str,
+        revision: int,
+        connection: sqlite3.Connection | None,
+    ) -> bool:
         payload = json.dumps(
-            result.as_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
         with (self._connect() if connection is None else nullcontext(connection)) as selected:
             existing = selected.execute(
-                "SELECT payload_json FROM device_result_outbox WHERE result_id=?",
-                (result.result_id,),
+                f"SELECT payload_json FROM {self.outbox_table} WHERE result_id=?",
+                (result_id,),
             ).fetchone()
             if existing is not None:
                 return existing["payload_json"] == payload
             delivered = selected.execute(
-                """SELECT payload_json FROM device_result_delivery_history
+                f"""SELECT payload_json FROM {self.history_table}
                 WHERE result_id=?""",
-                (result.result_id,),
+                (result_id,),
             ).fetchone()
             if delivered is not None:
                 return delivered["payload_json"] == payload
             selected.execute(
-                """INSERT INTO device_result_outbox(
+                f"""INSERT INTO {self.outbox_table}(
                 result_id, device_id, task_id, decision_round_id, revision,
                 payload_json, status, attempt_count, next_attempt_at_ns,
                 last_error, created_at_ns, published_at_ns
                 ) VALUES (?,?,?,?,?,?,?,0,NULL,NULL,?,NULL)""",
                 (
-                    result.result_id,
-                    result.device_id,
-                    result.task_id,
-                    result.decision_round_id,
-                    result.revision,
+                    result_id,
+                    device_id,
+                    task_id,
+                    decision_round_id,
+                    revision,
                     payload,
                     PUBLISH_PENDING,
                     self.clock_ns(),
@@ -93,7 +137,7 @@ class DeviceResultOutbox:
         published = 0
         with self._connect() as connection:
             due = connection.execute(
-                """SELECT result_id, payload_json, attempt_count FROM device_result_outbox
+                f"""SELECT result_id, payload_json, attempt_count FROM {self.outbox_table}
                 WHERE status IN (?, ?) AND (next_attempt_at_ns IS NULL OR next_attempt_at_ns<=?)
                 ORDER BY created_at_ns, result_id LIMIT ?""",
                 (PUBLISH_PENDING, RETRY_WAIT, now, limit),
@@ -107,10 +151,10 @@ class DeviceResultOutbox:
         now = self.clock_ns()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT status, COUNT(*) AS total FROM device_result_outbox GROUP BY status"
+                f"SELECT status, COUNT(*) AS total FROM {self.outbox_table} GROUP BY status"
             ).fetchall()
             oldest = connection.execute(
-                """SELECT MIN(created_at_ns) AS oldest_ns FROM device_result_outbox
+                f"""SELECT MIN(created_at_ns) AS oldest_ns FROM {self.outbox_table}
                 WHERE status IN (?, ?, ?)""",
                 (PUBLISH_PENDING, RETRY_WAIT, PUBLISHING),
             ).fetchone()
@@ -138,15 +182,15 @@ class DeviceResultOutbox:
         cutoff = now - retention_ns
         with self._connect() as connection:
             connection.execute(
-                """INSERT OR IGNORE INTO device_result_delivery_history(
+                f"""INSERT OR IGNORE INTO {self.history_table}(
                 result_id, payload_json, published_at_ns
                 ) SELECT result_id, payload_json, published_at_ns
-                FROM device_result_outbox
+                FROM {self.outbox_table}
                 WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?""",
                 (PUBLISHED, cutoff),
             )
             cursor = connection.execute(
-                "DELETE FROM device_result_outbox WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?",
+                f"DELETE FROM {self.outbox_table} WHERE status=? AND published_at_ns IS NOT NULL AND published_at_ns<?",
                 (PUBLISHED, cutoff),
             )
             return cursor.rowcount
@@ -154,7 +198,7 @@ class DeviceResultOutbox:
     def _publish_one(self, result_id: str, payload_json: str, attempt_count: int, now: int) -> bool:
         with self._connect() as connection:
             changed = connection.execute(
-                """UPDATE device_result_outbox SET status=?
+                f"""UPDATE {self.outbox_table} SET status=?
                 WHERE result_id=? AND status IN (?, ?)""",
                 (PUBLISHING, result_id, PUBLISH_PENDING, RETRY_WAIT),
             ).rowcount
@@ -172,7 +216,7 @@ class DeviceResultOutbox:
                 next_at = now + backoff
             with self._connect() as connection:
                 connection.execute(
-                    """UPDATE device_result_outbox
+                    f"""UPDATE {self.outbox_table}
                     SET status=?, attempt_count=?, next_attempt_at_ns=?, last_error=?
                     WHERE result_id=?""",
                     (status, attempts, next_at, f"{type(error).__name__}: {error}", result_id),
@@ -180,7 +224,7 @@ class DeviceResultOutbox:
             return False
         with self._connect() as connection:
             connection.execute(
-                """UPDATE device_result_outbox
+                f"""UPDATE {self.outbox_table}
                 SET status=?, attempt_count=?, next_attempt_at_ns=NULL,
                     last_error=NULL, published_at_ns=?
                 WHERE result_id=?""",
@@ -191,7 +235,7 @@ class DeviceResultOutbox:
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS device_result_outbox(
+                f"""CREATE TABLE IF NOT EXISTS {self.outbox_table}(
                 result_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, task_id TEXT NOT NULL,
                 decision_round_id TEXT NOT NULL, revision INTEGER NOT NULL,
                 payload_json TEXT NOT NULL, status TEXT NOT NULL,
@@ -200,17 +244,17 @@ class DeviceResultOutbox:
             )
             # 启动恢复：进程在发送中途退出时，重新进入可重试状态，由后台再次发送。
             connection.execute(
-                "UPDATE device_result_outbox SET status=? WHERE status=?",
+                f"UPDATE {self.outbox_table} SET status=? WHERE status=?",
                 (RETRY_WAIT, PUBLISHING),
             )
             connection.execute(
-                """CREATE INDEX IF NOT EXISTS idx_device_result_outbox_due
-                ON device_result_outbox(status, next_attempt_at_ns)"""
+                f"""CREATE INDEX IF NOT EXISTS idx_{self.outbox_table}_due
+                ON {self.outbox_table}(status, next_attempt_at_ns)"""
             )
             # 清理已发布 Outbox 时保留轻量交付墓碑，避免周期对账把历史结果
             # 重新入队；payload_json 仍用于检测同 result_id 的载荷冲突。
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS device_result_delivery_history(
+                f"""CREATE TABLE IF NOT EXISTS {self.history_table}(
                 result_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL,
                 published_at_ns INTEGER NOT NULL)"""
             )

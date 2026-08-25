@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -221,10 +221,32 @@ CREATE TABLE IF NOT EXISTS device_arbitration_record (
     request_json TEXT NOT NULL,
     result_json TEXT,
     error_code TEXT,
+    summary_result_id TEXT,
+    window_start_sequence INTEGER,
+    window_end_sequence INTEGER,
+    request_payload_hash TEXT,
     created_at_ns INTEGER NOT NULL,
     CHECK (json_valid(request_json)),
     CHECK (result_json IS NULL OR json_valid(result_json))
 );
+CREATE TABLE IF NOT EXISTS summary_window_record (
+    summary_result_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    window_start_sequence INTEGER NOT NULL,
+    window_end_sequence INTEGER NOT NULL,
+    result_status TEXT NOT NULL,
+    has_conflict INTEGER NOT NULL,
+    excluded_from_formal_metrics INTEGER NOT NULL,
+    max_cross_edge_grade_gap INTEGER NOT NULL,
+    conflicting_pair_count INTEGER NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    UNIQUE(device_id, window_start_sequence, window_end_sequence),
+    CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS idx_summary_window_record_device
+ON summary_window_record(device_id, created_at_ns DESC);
 CREATE TABLE IF NOT EXISTS global_analysis_result (
     analysis_id TEXT PRIMARY KEY,
     scenario_type TEXT NOT NULL,

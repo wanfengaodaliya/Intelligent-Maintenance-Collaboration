@@ -38,6 +38,7 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v10_to_v11_identity_fields(connection)
         _migrate_v15_model_update_table(connection)
         connection.executescript(DDL)
+        _migrate_v21_to_v22_device_arbitration_identity(connection)
         _migrate_v5_to_v6(connection)
         _migrate_v10_to_v11_identity_fields(connection)
         if legacy_summary_table:
@@ -88,11 +89,39 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
-                SCHEMA_VERSION,
+                21,
                 time.time_ns(),
                 "unify abnormal labels to fault",
             ),
         )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "summary-window consistency and arbitration identity",
+            ),
+        )
+
+
+def _migrate_v21_to_v22_device_arbitration_identity(
+    connection: sqlite3.Connection,
+) -> None:
+    if not _table_exists(connection, "device_arbitration_record"):
+        return
+    columns = _columns(connection, "device_arbitration_record")
+    additions = {
+        "summary_result_id": "TEXT",
+        "window_start_sequence": "INTEGER",
+        "window_end_sequence": "INTEGER",
+        "request_payload_hash": "TEXT",
+    }
+    for name, sql_type in additions.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE device_arbitration_record ADD COLUMN {name} {sql_type}"
+            )
 
 
 def _migrate_v15_model_update_table(connection: sqlite3.Connection) -> None:

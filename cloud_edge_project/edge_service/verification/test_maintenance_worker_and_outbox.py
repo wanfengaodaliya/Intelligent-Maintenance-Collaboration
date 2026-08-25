@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from core.diagnosis_contracts import BearingDecisionResult, BearingLifecycleStatus, RoundClosureReason
+from core.diagnosis_contracts import (
+    BearingDecisionResult,
+    BearingLifecycleStatus,
+    EdgeBearingResult,
+    RoundClosureReason,
+)
 from device_decision import DeviceDecisionRoundRepository, aggregate_device_round
 from edge_runtime.coordinator import EdgeRuntimeCoordinator
 from edge_runtime.device_result_outbox import (
@@ -41,6 +46,31 @@ def _device_result(tmp_path):
         closed_at_ns=10,
     )
     return replace(aggregate, result_id="device_result_001")
+
+
+def _edge_bearing_result() -> EdgeBearingResult:
+    return EdgeBearingResult(
+        result_id="edge_dw_001_model_v1",
+        device_id="machine_01",
+        task_id="sd_01_tk_0001",
+        bearing_id="bearing_01",
+        sender_id="sender_01",
+        decision_round_id="round_001",
+        diagnosis_window_id="dw_001",
+        window_start_sequence=1,
+        window_end_sequence=1,
+        window_start_ns=1,
+        window_end_ns=2,
+        contributing_packet_ids=("packet_001",),
+        bearing_state="warning",
+        confidence=0.9,
+        data_quality_score=0.8,
+        risk_level="medium",
+        action_grade=2,
+        recommended_action="scheduled_inspection",
+        model_version="model_v1",
+        created_at_ns=3,
+    )
 
 
 def test_maintenance_worker_recovers_after_round_error() -> None:
@@ -109,6 +139,33 @@ def test_outbox_publishes_each_version_exactly_once(tmp_path) -> None:
     health = outbox.health()
     assert health[PUBLISHED] == 1
     assert health["backlog"] == 0
+
+
+def test_bearing_outbox_uses_an_independent_table_and_publishes_window_identity(
+    tmp_path,
+) -> None:
+    published: list[dict] = []
+    database = tmp_path / "edge.db"
+    device_outbox = DeviceResultOutbox(database, lambda _payload: None)
+    bearing_outbox = DeviceResultOutbox(
+        database,
+        published.append,
+        namespace="bearing_result",
+    )
+
+    assert device_outbox.enqueue(_device_result(tmp_path)) is True
+    assert bearing_outbox.enqueue_bearing(_edge_bearing_result()) is True
+    assert bearing_outbox.enqueue_bearing(_edge_bearing_result()) is True
+    assert bearing_outbox.run_once(0) == 1
+
+    assert len(published) == 1
+    assert published[0]["result_id"] == "edge_dw_001_model_v1"
+    assert published[0]["device_id"] == "machine_01"
+    assert published[0]["bearing_id"] == "bearing_01"
+    assert published[0]["window_start_sequence"] == 1
+    assert published[0]["window_end_sequence"] == 1
+    assert device_outbox.health()["backlog"] == 1
+    assert bearing_outbox.health()["backlog"] == 0
 
 
 def test_outbox_retries_with_backoff_then_dead_letters(tmp_path) -> None:

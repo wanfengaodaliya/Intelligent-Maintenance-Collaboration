@@ -565,6 +565,7 @@ def health() -> dict[str, object]:
             "mqtt_host": runtime_assembly.service.config.mqtt.host,
             "mqtt_port": runtime_assembly.service.config.mqtt.port,
             "device_result_topic": runtime_assembly.service.config.mqtt.device_result_topic,
+            "bearing_result_topic": runtime_assembly.service.config.mqtt.bearing_result_topic,
             "network_link_id": os.getenv(
                 "EDGE_NETWORK_LINK_ID", f"{EDGE_NODE_ID}__to__scheduler__http"
             ),

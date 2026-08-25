@@ -8,7 +8,8 @@
 # 正式启动编排（唯一模式：容器 Edge）：
 #   Stage 1  网络模拟器（toxiproxy + mqtt-broker + network-controller，project name
 #            固定为 network_simulator）全部 healthy 且所需代理已创建。
-#   Stage 2  宿主机 Scheduler 8003 + Cloud 8004（HTTP ready，Cloud 模型已加载）。
+#   Stage 2  宿主机 Scheduler 8003 + Cloud 8004 + Summary 8006
+#            （HTTP ready，Cloud 模型已加载，Summary 已连接 MQTT）。
 #   Stage 3  LLM 服务：边缘建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
 #            （3B @ 6006）；-SkipLLM 时跳过并显式禁用 Edge LLM 调用。
 #   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，--no-build），
@@ -26,6 +27,9 @@ $EdgeService = Join-Path $CloudEdge "edge_service"
 $NetSimProject = "network_simulator"
 $LLM_DIR = "D:\develop\llama.cpp"
 $PollIntervalSeconds = 2
+$ExperimentId = (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
+$ExperimentData = Join-Path $CloudEdge "data\experiments\$ExperimentId"
+$env:EXPERIMENT_ID = $ExperimentId
 
 # 通用 conda 激活引导：不依赖用户是否执行过 conda init powershell，
 # 只要 conda 在 PATH 中即可（前置检查已保证），队友机器同样适用。
@@ -58,6 +62,7 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
 
 Write-Host "=== Project Root: $ProjectRoot ==="
 Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --no-build) ==="
+Write-Host "=== Experiment: $ExperimentId ==="
 
 function Get-Json {
     param([string]$Url, [string]$UserAgent)
@@ -262,13 +267,18 @@ if ($stage1 -and -not (Wait-Gate "Network controller (8090) reachable" {
 })) { $stage1 = $false }
 if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
-# ---------- Stage 2: host Scheduler + Cloud ----------
-Write-Host "`n========== Stage 2/4: Host Scheduler (8003) + Cloud (8004) =========="
+# ---------- Stage 2: host Scheduler + Cloud + Summary ----------
+Write-Host "`n========== Stage 2/4: Scheduler (8003) + Cloud (8004) + Summary (8006) =========="
 $schCmd = "Set-Location '$CloudEdge'; $CondaActivatePrefix python -m uvicorn scheduler.api:app --host 127.0.0.1 --port 8003"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
-$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; $CondaActivatePrefix python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
+$cloudDb = Join-Path $ExperimentData "cloud_review.db"
+$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'; `$env:CLOUD_MOMENT_DEVICE='auto'; `$env:CLOUD_REVIEW_DB_PATH='$cloudDb'; `$env:SCHEDULER_SERVICE_BASE_URL='http://127.0.0.1:18045'; $CondaActivatePrefix python -m uvicorn cloud_service.app:app --host 127.0.0.1 --port 8004"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
+
+$summaryDb = Join-Path $ExperimentData "summary_service.db"
+$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
+Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
 
 $stage2 = $true
 if (-not (Wait-Gate "Scheduler /health (8003)" {
@@ -280,8 +290,12 @@ if ($stage2 -and -not (Wait-Gate "Cloud /health (8004, moment_light_adapt loaded
     $cloud = Get-Json "http://127.0.0.1:8004/health"
     $null -ne $cloud -and $cloud.status -eq "ok" -and $cloud.model_backend -eq "moment_light_adapt"
 })) { $stage2 = $false }
+if ($stage2 -and -not (Wait-Gate "Summary /health (8006, MQTT connected)" {
+    $summary = Get-Json "http://127.0.0.1:8006/health"
+    $null -ne $summary -and $summary.status -eq "ok" -and $summary.mqtt_connected -eq $true
+})) { $stage2 = $false }
 if (-not $stage2) {
-    Write-Host "  Check the Scheduler / Cloud PowerShell windows above."
+    Write-Host "  Check the Scheduler / Cloud / Summary PowerShell windows above."
     exit 1
 }
 
@@ -354,6 +368,7 @@ if ($edge01Health.node_id -ne "edge_01" -or $edge02Health.node_id -ne "edge_02" 
 Write-Host "`n========== All health gates passed =========="
 if ($SkipLLM) { Write-Host "(LLM skipped - EDGE_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
 Write-Host "Sender may start replaying MAT data now."
-Write-Host "Stop: close host windows (Scheduler/Cloud/LLM), then:"
+Write-Host "Experiment data: $ExperimentData"
+Write-Host "Stop: close host windows (Scheduler/Cloud/Summary/LLM), then:"
 Write-Host "  cd $EdgeService ; docker compose -f compose.multi-edge.yml down"
 Write-Host "  cd $NetSim ; docker compose -p $NetSimProject down"

@@ -61,7 +61,9 @@ class GlobalAnalysisService:
             available=availability.get("packet_review_pairs", True),
         )
         cloud_bearing_review = self._run_analyzer("analyze_cloud_bearing_review", data, self.config)
-        device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
+        device_arbitration = analyze_device_arbitration(
+            data.get("summary_windows", []), data["arbitrations"], self.config
+        )
         physical_evidence = analyze_physical_evidence(
             data.get("physical_evidence", []),
             edge_summary_count=len(data.get("edge_summaries", [])),

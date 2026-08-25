@@ -61,7 +61,10 @@ services:
       EDGE_MQTT_PORT: "1883"
       EDGE_MQTT_CLIENT_ID: edge_01-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_01/input
+      EDGE_MQTT_BEARING_RESULT_TOPIC: summary/bearing-results
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_EXPERIMENT_DATABASE_PATH: /app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db
+      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: "300"
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       # 出站 HTTP 全部经过 Toxiproxy 链路，指向 links.yaml 中对应代理端口。
@@ -124,7 +127,10 @@ services:
       EDGE_MQTT_PORT: "1883"
       EDGE_MQTT_CLIENT_ID: edge_02-runtime
       EDGE_MQTT_INPUT_TOPIC: edge/edge_02/input
+      EDGE_MQTT_BEARING_RESULT_TOPIC: summary/bearing-results
       EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
+      EDGE_EXPERIMENT_DATABASE_PATH: /app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db
+      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: "300"
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051

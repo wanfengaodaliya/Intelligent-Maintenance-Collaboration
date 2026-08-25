@@ -25,7 +25,7 @@ from .http import (
 )
 from .mqtt import MqttIngress, MqttJsonPublisher
 from .service import EdgeRuntimeService
-from .packet_route_reporter import DeviceArbitrationReporter, PacketRouteReporter
+from .packet_route_reporter import PacketRouteReporter
 from .trace_identity import with_trace_identity
 from packet_routing_bridge import PacketRoutingBridge
 from device_decision import DeviceDecisionRoundRepository
@@ -49,6 +49,7 @@ class EdgeRuntimeAssembly:
     service: EdgeRuntimeService
     coordinator: EdgeRuntimeCoordinator
     v12_flow: V12DecisionFlow | None
+    bearing_result_outbox: DeviceResultOutbox | None = None
     device_result_outbox: DeviceResultOutbox | None = None
     suggestion_outbox: SuggestionOutbox | None = None
     maintenance: EdgeMaintenanceWorker | None = None
@@ -93,11 +94,10 @@ def build_edge_runtime(
     )
     scheduler_client = scheduler.client
     packet_route_reporter = PacketRouteReporter(scheduler_client.post)
-    device_arbitration_reporter = DeviceArbitrationReporter(scheduler_client.post)
     mqtt_ingress = MqttIngress(config.mqtt, lambda _: None)
-    device_result_publisher = MqttJsonPublisher(
+    bearing_result_publisher = MqttJsonPublisher(
         mqtt_ingress.client,
-        topic=config.mqtt.device_result_topic,
+        topic=config.mqtt.bearing_result_topic,
         qos=config.mqtt.qos,
     )
     suggestion_client = (
@@ -114,14 +114,12 @@ def build_edge_runtime(
         topic=config.mqtt.suggestion_topic,
         qos=config.mqtt.qos,
     )
-    def _publish_device_result_with_identity(payload):
-        # 阶段 4：设备级结果发布统一携带 trace 身份字段，
-        # route_id 使用设备结果主题，便于跨模块按链路追踪。
-        return device_result_publisher.publish(
+    def _publish_bearing_result_with_identity(payload):
+        return bearing_result_publisher.publish(
             with_trace_identity(
                 payload,
                 edge_node_id=config.edge_node_id,
-                route_id=config.mqtt.device_result_topic,
+                route_id=config.mqtt.bearing_result_topic,
             )
         )
 
@@ -142,7 +140,7 @@ def build_edge_runtime(
         max_attempts=config.v12.suggestion_publish_max_attempts,
     )
     v12_flow = None
-    device_result_outbox = None
+    bearing_result_outbox = None
     raw_sample_capture = None
     raw_sample_uploader = None
     result_uploader = None
@@ -183,27 +181,19 @@ def build_edge_runtime(
             ).post,
             max_attempts=config.v12.result_upload_max_attempts,
         )
-        device_result_outbox = DeviceResultOutbox(
+        bearing_result_outbox = DeviceResultOutbox(
             config.v12.database_path,
-            _publish_device_result_with_identity,
+            _publish_bearing_result_with_identity,
             max_attempts=config.v12.device_result_publish_max_attempts,
+            namespace="bearing_result",
         )
         # coordinator 在 v12_flow 之后才构造，用 holder 承接引用供 on_device_result 使用。
         coordinator_holder: list[EdgeRuntimeCoordinator] = []
 
         def on_device_result_persist(result, connection):
-            # 设备级结果双通道发布（职责不同，缺一不可）：
-            #   通道 A（MQTT device_result_topic）：实时广播给在线订阅方
-            #     （大屏/前端/其他节点），先落 DeviceResultOutbox，由维护
-            #     轮次后台发送，至少一次送达。
-            #   通道 B（HTTP /cloud/device-decision-results）：权威持久化
-            #     上报 cloud_service，先落 ResultUploader 队列，重试耗尽
-            #     进死信；云端以 {"status": "accepted"/"duplicate"} 回应。
-            # 两通道均以 result_id 为主键幂等入队：重复入队同载荷跳过；
-            # 同 result_id 不同载荷会中止整笔事务，不能留下半套交付记录。
-            # 云端 duplicate 响应表明服务端亦幂等，断线重试不会产生重复记录。
-            if not device_result_outbox.enqueue(result, connection=connection):
-                raise ValueError("device result MQTT outbox payload conflict")
+            # Retain the Cloud history used by device-health analysis. This is
+            # independent from formal cross-Edge conflict calculation and is no
+            # longer published to summary/device-results.
             if not result_uploader.enqueue_device(result, connection=connection):
                 raise ValueError("device result Cloud outbox payload conflict")
 
@@ -211,26 +201,6 @@ def build_edge_runtime(
             # H3：设备级最终结果触发一次建议（覆盖四种闭合路径），非阻塞入队。
             if coordinator_holder:
                 coordinator_holder[0].submit_device_suggestion(result)
-            if raw_sample_capture is not None and result.has_conflict:
-                for bearing in bearing_results.list_current_round(
-                    result.device_id, result.task_id, result.decision_round_id
-                ):
-                    try:
-                        raw_sample_capture.capture(
-                            {
-                                "device_id": bearing.device_id,
-                                "task_id": bearing.task_id,
-                                "bearing_id": bearing.bearing_id,
-                                "sender_id": bearing.sender_id,
-                                "decision_round_id": bearing.decision_round_id,
-                                "device_conflict": True,
-                                "edge_model_version": bearing.model_version,
-                                "cloud_corrected": bearing.lifecycle_state.value == "LATE_CLOUD_CORRECTED",
-                                "created_at_ns": bearing.created_at_ns,
-                            }
-                        )
-                    except Exception:
-                        continue
 
         v12_flow = V12DecisionFlow(
             BearingResultLifecycleManager(bearing_results),
@@ -240,9 +210,6 @@ def build_edge_runtime(
             on_bearing_result=result_uploader.enqueue_bearing,
             on_device_result=on_device_result,
             on_device_result_persist=on_device_result_persist,
-            on_device_conflict=lambda payload: device_arbitration_reporter.report(
-                {**payload, "edge_node_id": config.edge_node_id}
-            ),
             on_manual_review=on_packet_route_error,
         )
     coordinator = EdgeRuntimeCoordinator(
@@ -274,7 +241,14 @@ def build_edge_runtime(
         ),
         cloud_now_timeout_ns=config.v12.cloud_now_timeout_ms * 1_000_000,
         round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
-        device_result_outbox=device_result_outbox,
+        bearing_result_outbox=bearing_result_outbox,
+        on_local_bearing_result=(
+            None
+            if bearing_result_outbox is None
+            else lambda result: _enqueue_local_bearing_result(
+                bearing_result_outbox, result
+            )
+        ),
         on_packet_route_error=on_packet_route_error,
         suggestion_llm_client=suggestion_client,
         suggestion_publisher=suggestion_publisher,
@@ -349,7 +323,17 @@ def build_edge_runtime(
         service=service,
         coordinator=coordinator,
         v12_flow=v12_flow,
-        device_result_outbox=device_result_outbox,
+        bearing_result_outbox=bearing_result_outbox,
+        device_result_outbox=None,
         suggestion_outbox=suggestion_outbox,
         maintenance=maintenance,
     )
+
+
+def _enqueue_local_bearing_result(
+    outbox: DeviceResultOutbox, result: Any
+) -> None:
+    if not outbox.enqueue_bearing(result):
+        raise ValueError(
+            f"bearing result identity has conflicting payload: {result.result_id}"
+        )

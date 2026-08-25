@@ -14,17 +14,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 def list_subject_ids(database_path: Path) -> list[str]:
-    """Discover known device subjects from device decision records (empty when table is absent)."""
+    """Discover devices from formal Summary windows and retained decision records."""
     with connect(database_path) as connection:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_device_decision_result'"
-        ).fetchone()
-        if not exists:
-            return []
-        rows = connection.execute(
-            "SELECT DISTINCT device_id FROM cloud_device_decision_result ORDER BY device_id"
-        ).fetchall()
-        return [str(row["device_id"]) for row in rows]
+        device_ids: set[str] = set()
+        for table in ("summary_window_record", "cloud_device_decision_result"):
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if exists:
+                rows = connection.execute(
+                    f"SELECT DISTINCT device_id FROM {table}"
+                ).fetchall()
+                device_ids.update(str(row["device_id"]) for row in rows)
+        return sorted(device_ids)
 
 
 def run_all(

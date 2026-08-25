@@ -328,6 +328,7 @@ async function refreshServices() {
     { key: "edge02", name: "Edge 节点 02", path: "edge02/health" },
     { key: "scheduler", name: "Scheduler 调度", path: "scheduler/health" },
     { key: "cloud", name: "Cloud 云端", path: "cloud/health" },
+    { key: "summary", name: "Summary 汇总", path: "summary/health" },
   ];
   const items = await Promise.all(
     targets.map(async (t) => {
@@ -360,6 +361,9 @@ function svcItem(t, h) {
     const nodes = h.edge_nodes || {};
     const total = Object.values(nodes).reduce((a, b) => a + b, 0);
     sub = "边缘节点 " + total + " 个";
+  } else if (t.key === "summary") {
+    sub = h.mqtt_connected ? "三轴承窗口汇总已连接" : "等待 MQTT 连接";
+    tags.push(h.mqtt_connected ? badge("MQTT 已连接", "ok") : badge("MQTT 断开", "danger"));
   } else {
     sub = "模型 " + (h.model_backend || "-");
   }
@@ -397,7 +401,8 @@ function renderResult(ev) {
   const p = ev.payload || {};
   stats.results++;
   windowCount.results++;
-  const state = p.final_state || p.status || "-";
+  const grade = Number(p.final_action_grade);
+  const state = Number.isFinite(grade) ? (grade >= 4 ? "fault" : grade >= 2 ? "warning" : "normal") : (p.result_status || "-");
   const isFault = String(state).toLowerCase() === "fault";
   if (isFault) { stats.faults++; windowCount.faults++; }
 
@@ -419,7 +424,9 @@ function renderResult(ev) {
     risk_level: p.risk_level,
     has_conflict: p.has_conflict,
     final_action_grade: p.final_action_grade,
-    decision_round_id: p.decision_round_id,
+    window_sequence: p.window_start_sequence,
+    max_grade_gap: p.max_grade_gap,
+    result_status: p.result_status,
   };
 
   const html = renderResultItem(record);
@@ -443,7 +450,8 @@ function renderResultItem(r) {
     '<div class="row2">' +
     (r.has_conflict ? '<span style="color:var(--danger)">⚠ 存在冲突</span> · ' : "") +
     "动作 " + (r.final_action_grade !== undefined ? r.final_action_grade : "-") +
-    " · 轮次 " + fmt.escape(r.decision_round_id || "-") +
+    " · 窗口 " + fmt.escape(r.window_sequence || "-") +
+    " · 跨 Edge 偏差 " + fmt.escape(r.max_grade_gap ?? "-") +
     "</div>" +
     "</div></div>"
   );

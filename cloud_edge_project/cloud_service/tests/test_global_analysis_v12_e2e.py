@@ -13,6 +13,7 @@ from cloud_service.global_analysis.result_repository import GlobalAnalysisResult
 from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.storage.database import initialize_database
 from cloud_service.task_results import TaskResultService
+from cloud_service.summary_windows import SummaryWindowRepository
 
 MOMENT_ROUND_MARKER = "DEVEL_E2E"
 
@@ -126,6 +127,20 @@ def test_phase_one_global_analysis_closes_the_loop(tmp_path: Path, monkeypatch) 
     assert results.ingest_device_decision(
         _device_decision(device_id="machine_01", decision_round_id=decision_round_id)
     )["duplicate"] is False
+    SummaryWindowRepository(database_path).accept(
+        {
+            "summary_result_id": "summary_machine_01_1",
+            "device_id": "machine_01",
+            "window_start_sequence": 1,
+            "window_end_sequence": 1,
+            "result_status": "PENDING_ARBITRATION",
+            "has_conflict": True,
+            "excluded_from_formal_metrics": False,
+            "max_cross_edge_grade_gap": 3,
+            "conflicting_pair_count": 1,
+            "closed_at_ns": 1,
+        }
+    )
 
     # 3) 凑足 packet 级样本量，让全局分析能输出 packet 模型更新的候选。
     _persist_moment_rows(database_path, decision_round_id, count=19)

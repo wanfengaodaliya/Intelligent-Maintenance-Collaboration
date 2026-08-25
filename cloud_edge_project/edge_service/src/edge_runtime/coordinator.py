@@ -55,6 +55,8 @@ class EdgeRuntimeCoordinator:
         cloud_now_timeout_ns: int = 3_000_000_000,
         round_timeout_ns: int = 3_500_000_000,
         device_result_outbox: Any = None,
+        bearing_result_outbox: Any = None,
+        on_local_bearing_result: Optional[Callable[[EdgeBearingResult], None]] = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
         suggestion_llm_client: Any = None,
         suggestion_publisher: Optional[JsonPublisher] = None,
@@ -78,6 +80,8 @@ class EdgeRuntimeCoordinator:
         self.cloud_now_timeout_ns = cloud_now_timeout_ns
         self.round_timeout_ns = round_timeout_ns
         self.device_result_outbox = device_result_outbox
+        self.bearing_result_outbox = bearing_result_outbox
+        self.on_local_bearing_result = on_local_bearing_result or (lambda _: None)
         self.cloud_review_service: Any = None
         # 阶段 5：已发布 Outbox 记录保留期（纳秒）；None/<=0 表示禁用自动清理。
         # 由装配层按配置注入，维护轮次据此执行数据保留策略。
@@ -232,20 +236,24 @@ class EdgeRuntimeCoordinator:
             self.cache.read(raw_ref) if raw_ref is not None else None
         )
         route_decision = self._route_packet(completion, raw_packet, diagnosis_window)
-        if self.v12_flow is not None and completion.edge is not None and route_decision is not None:
+        if self.v12_flow is not None and completion.edge is not None:
             try:
                 if raw_packet is None:
                     raise ValueError("completed packet raw data is unavailable")
                 edge_result = _edge_bearing_result(
                     completion, raw_packet, diagnosis_window=diagnosis_window
                 )
-                _, device = self.v12_flow.apply_edge_result(
-                    edge_result,
-                    route_decision,
-                    expected_bearing_ids=task.expected_bearing_ids,
-                    accepted_at_ns=self._clock_ns(),
-                )
-                self._capture_bearing_result(edge_result, route_decision, device)
+                # Summary consumes the immutable local result. Publishing must not
+                # depend on whether Scheduler can provide a later lifecycle route.
+                self.on_local_bearing_result(edge_result)
+                if route_decision is not None:
+                    _, device = self.v12_flow.apply_edge_result(
+                        edge_result,
+                        route_decision,
+                        expected_bearing_ids=task.expected_bearing_ids,
+                        accepted_at_ns=self._clock_ns(),
+                    )
+                    self._capture_bearing_result(edge_result, route_decision, device)
             except Exception as error:
                 self._report_v12_error(completion, error)
                 # 聚合暂不可用：登记完成包等待维护轮回补重放（原 action 承诺的
@@ -601,6 +609,7 @@ class EdgeRuntimeCoordinator:
             "provisional_promotions": 0,
             "rounds_finalized": 0,
             "device_results_published": 0,
+            "bearing_results_published": 0,
             "result_uploads": 0,
             "raw_sample_uploads": 0,
             "cloud_review_retries": 0,
@@ -631,6 +640,15 @@ class EdgeRuntimeCoordinator:
                 # 阶段 5：数据保留策略在维护轮次内推进，只清理超期 PUBLISHED 记录。
                 summary["outbox_published_cleaned"] = (
                     self.device_result_outbox.cleanup_published(
+                        retention_ns=retention_ns, now_ns=now
+                    )
+                )
+        if self.bearing_result_outbox is not None:
+            summary["bearing_results_published"] = self.bearing_result_outbox.run_once(now)
+            retention_ns = self.outbox_published_retention_ns
+            if retention_ns is not None and retention_ns > 0:
+                summary["outbox_published_cleaned"] += (
+                    self.bearing_result_outbox.cleanup_published(
                         retention_ns=retention_ns, now_ns=now
                     )
                 )
