@@ -29,10 +29,7 @@ FIXED_TOPOLOGY_ENV_VARS = (
     "EDGE_MQTT_PORT",
     "SCHEDULER_SERVICE_BASE_URL",
     "CLOUD_SERVICE_BASE_URL",
-    "EDGE_SUGGESTION_LLM_BASE_URL",
 )
-
-EXPECTED_LLM_BASE_URL = "http://host.docker.internal:8005"
 
 
 def _services_section(text: str) -> str:
@@ -102,11 +99,11 @@ def test_outbound_http_goes_through_matching_toxiproxy_links() -> None:
         assert env["EDGE_MQTT_HOST"] == "mqtt-broker", name
 
 
-def test_suggestion_llm_targets_host_llama_service() -> None:
+def test_edge_nodes_do_not_receive_suggestion_llm_configuration() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
         env = _environment(block)
-        assert env["EDGE_SUGGESTION_LLM_BASE_URL"] == EXPECTED_LLM_BASE_URL, name
+        assert not any("SUGGESTION_LLM" in key for key in env), name
 
 
 def test_both_edges_accept_deployment_timeout_overrides() -> None:

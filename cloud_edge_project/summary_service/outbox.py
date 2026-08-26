@@ -32,6 +32,7 @@ class ArbitrationOutbox:
             "summary_arbitration_outbox",
             "summary_window_publish_outbox",
             "summary_window_sync_outbox",
+            "summary_suggestion_outbox",
         }:
             raise ValueError("unsupported delivery outbox table")
         self.repository = repository

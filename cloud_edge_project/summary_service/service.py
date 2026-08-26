@@ -7,6 +7,7 @@ from typing import Any
 from .aggregation import build_incomplete_window_result, build_window_result
 from .contracts import EXPECTED_BEARING_IDS, group_key, normalize_bearing_result
 from .repository import SummaryRepository
+from .suggestions import build_final_suggestion
 
 
 class SummaryService:
@@ -15,10 +16,12 @@ class SummaryService:
         repository: SummaryRepository,
         *,
         publish_window_result: Callable[[Mapping[str, Any]], None] | None = None,
+        build_suggestion: Callable[[Mapping[str, Any]], Mapping[str, Any]] = build_final_suggestion,
         now_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self.repository = repository
         self.publish_window_result = publish_window_result
+        self.build_suggestion = build_suggestion
         self.now_ns = now_ns
 
     def ingest(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -45,7 +48,14 @@ class SummaryService:
         window_result = build_window_result(
             source_results, closed_at_ns=self.now_ns()
         )
-        created = self.repository.save_window_result(window_result)
+        suggestion = (
+            self.build_suggestion(window_result)
+            if window_result["result_status"] == "FINAL"
+            else None
+        )
+        created = self.repository.save_window_result(
+            window_result, suggestion=suggestion
+        )
         if created and self.publish_window_result is not None:
             self.publish_window_result(window_result)
         return window_result
@@ -65,7 +75,14 @@ class SummaryService:
                 window_result = build_incomplete_window_result(
                     source_results, closed_at_ns=int(now_ns)
                 )
-            if self.repository.save_window_result(window_result):
+            suggestion = (
+                self.build_suggestion(window_result)
+                if window_result["result_status"] == "FINAL"
+                else None
+            )
+            if self.repository.save_window_result(
+                window_result, suggestion=suggestion
+            ):
                 closed += 1
                 if self.publish_window_result is not None:
                     self.publish_window_result(window_result)

@@ -16,7 +16,6 @@ from .coordinator import EdgeRuntimeCoordinator
 from .device_result_outbox import DeviceResultOutbox
 from .maintenance import EdgeMaintenanceWorker
 from .model_update_poller import ModelUpdatePoller
-from .suggestion_outbox import SuggestionOutbox
 from .http import (
     EdgeControlApplication,
     HeartbeatLoop,
@@ -41,7 +40,6 @@ from raw_sample_capture import (
 )
 from diagnosis_window import DiagnosisWindowAssembler
 from .v12_flow import V12DecisionFlow
-from suggestion_llm import SuggestionClient
 
 
 @dataclass(frozen=True)
@@ -51,7 +49,6 @@ class EdgeRuntimeAssembly:
     v12_flow: V12DecisionFlow | None
     bearing_result_outbox: DeviceResultOutbox | None = None
     device_result_outbox: DeviceResultOutbox | None = None
-    suggestion_outbox: SuggestionOutbox | None = None
     maintenance: EdgeMaintenanceWorker | None = None
 
 
@@ -100,20 +97,6 @@ def build_edge_runtime(
         topic=config.mqtt.bearing_result_topic,
         qos=config.mqtt.qos,
     )
-    suggestion_client = (
-        SuggestionClient(
-            base_url=config.suggestion_llm.base_url,
-            timeout_seconds=config.suggestion_llm.timeout_seconds,
-            fallback_text=config.suggestion_llm.fallback_text,
-        )
-        if config.suggestion_llm.enabled
-        else None
-    )
-    suggestion_publisher = MqttJsonPublisher(
-        mqtt_ingress.client,
-        topic=config.mqtt.suggestion_topic,
-        qos=config.mqtt.qos,
-    )
     def _publish_bearing_result_with_identity(payload):
         return bearing_result_publisher.publish(
             with_trace_identity(
@@ -123,22 +106,6 @@ def build_edge_runtime(
             )
         )
 
-    def _publish_suggestion_with_identity(payload):
-        # 建议发布统一携带 trace 身份字段，route_id 使用建议主题，
-        # 便于跨模块按链路追踪。
-        return suggestion_publisher.publish(
-            with_trace_identity(
-                payload,
-                edge_node_id=config.edge_node_id,
-                route_id=config.mqtt.suggestion_topic,
-            )
-        )
-
-    suggestion_outbox = SuggestionOutbox(
-        config.v12.database_path,
-        _publish_suggestion_with_identity,
-        max_attempts=config.v12.suggestion_publish_max_attempts,
-    )
     v12_flow = None
     bearing_result_outbox = None
     raw_sample_capture = None
@@ -187,9 +154,6 @@ def build_edge_runtime(
             max_attempts=config.v12.device_result_publish_max_attempts,
             namespace="bearing_result",
         )
-        # coordinator 在 v12_flow 之后才构造，用 holder 承接引用供 on_device_result 使用。
-        coordinator_holder: list[EdgeRuntimeCoordinator] = []
-
         def on_device_result_persist(result, connection):
             # Retain the Cloud history used by device-health analysis. This is
             # independent from formal cross-Edge conflict calculation and is no
@@ -197,18 +161,12 @@ def build_edge_runtime(
             if not result_uploader.enqueue_device(result, connection=connection):
                 raise ValueError("device result Cloud outbox payload conflict")
 
-        def on_device_result(result):
-            # H3：设备级最终结果触发一次建议（覆盖四种闭合路径），非阻塞入队。
-            if coordinator_holder:
-                coordinator_holder[0].submit_device_suggestion(result)
-
         v12_flow = V12DecisionFlow(
             BearingResultLifecycleManager(bearing_results),
             DeviceDecisionRoundRepository(config.v12.database_path),
             round_timeout_ns=config.v12.round_timeout_ms * 1_000_000,
             late_correction_retention_ns=config.v12.late_correction_retention_ms * 1_000_000,
             on_bearing_result=result_uploader.enqueue_bearing,
-            on_device_result=on_device_result,
             on_device_result_persist=on_device_result_persist,
             on_manual_review=on_packet_route_error,
         )
@@ -250,14 +208,9 @@ def build_edge_runtime(
             )
         ),
         on_packet_route_error=on_packet_route_error,
-        suggestion_llm_client=suggestion_client,
-        suggestion_publisher=suggestion_publisher,
-        suggestion_outbox=suggestion_outbox,
-        suggestion_history_window=config.suggestion_llm.history_window,
         completion_dispatch_enabled=config.completion_dispatch.enabled,
         completion_dispatch_queue_size=config.completion_dispatch.queue_size,
     )
-    coordinator_holder.append(coordinator)
     mqtt_ingress.on_packet = coordinator.receive_raw_packet
     if config.v12.enabled and config.v12.outbox_published_retention_hours > 0:
         # 阶段 5：注入已发布记录保留期，维护轮次自动执行数据保留策略。
@@ -325,7 +278,6 @@ def build_edge_runtime(
         v12_flow=v12_flow,
         bearing_result_outbox=bearing_result_outbox,
         device_result_outbox=None,
-        suggestion_outbox=suggestion_outbox,
         maintenance=maintenance,
     )
 

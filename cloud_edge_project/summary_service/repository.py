@@ -95,6 +95,19 @@ class SummaryRepository:
                     cloud_result_json TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS summary_suggestion_outbox (
+                    request_id TEXT PRIMARY KEY,
+                    summary_result_id TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at_ns INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at_ns INTEGER NOT NULL,
+                    acknowledged_at_ns INTEGER,
+                    cloud_result_json TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_summary_bearing_group
                     ON summary_bearing_result(device_id, window_start_sequence, window_end_sequence);
                 CREATE INDEX IF NOT EXISTS idx_summary_window_device
@@ -105,6 +118,8 @@ class SummaryRepository:
                     ON summary_window_publish_outbox(state, next_attempt_at_ns);
                 CREATE INDEX IF NOT EXISTS idx_summary_sync_due
                     ON summary_window_sync_outbox(state, next_attempt_at_ns);
+                CREATE INDEX IF NOT EXISTS idx_summary_suggestion_due
+                    ON summary_suggestion_outbox(state, next_attempt_at_ns);
                 """
             )
 
@@ -177,6 +192,14 @@ class SummaryRepository:
             ).fetchone()
         return json.loads(row["payload_json"]) if row is not None else None
 
+    def get_window_result_by_id(self, summary_result_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM summary_window_result WHERE summary_result_id = ?",
+                (str(summary_result_id),),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row is not None else None
+
     def load_expired_open_windows(self, *, cutoff_ns: int) -> list[list[dict[str, Any]]]:
         with self._lock, self._connect() as connection:
             groups = connection.execute(
@@ -204,7 +227,12 @@ class SummaryRepository:
             for row in groups
         ]
 
-    def save_window_result(self, result: Mapping[str, Any]) -> bool:
+    def save_window_result(
+        self,
+        result: Mapping[str, Any],
+        *,
+        suggestion: Mapping[str, Any] | None = None,
+    ) -> bool:
         arbitration_request = (
             build_arbitration_request(result) if result.get("has_conflict") else None
         )
@@ -281,6 +309,8 @@ class SummaryRepository:
                     },
                     created_at_ns=int(result["closed_at_ns"]),
                 )
+                if suggestion is not None:
+                    self._insert_suggestion_delivery(connection, suggestion)
                 return cursor.rowcount == 1
             except sqlite3.IntegrityError:
                 existing = connection.execute(
@@ -300,6 +330,33 @@ class SummaryRepository:
                 if existing is not None and existing["payload_json"] == canonical_json(result):
                     return False
                 raise ValueError("window result conflicts with an existing result") from None
+
+    def get_suggestion(self, summary_result_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM summary_suggestion_outbox WHERE summary_result_id = ?",
+                (str(summary_result_id),),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row is not None else None
+
+    def enqueue_suggestion(self, suggestion: Mapping[str, Any]) -> bool:
+        with self._lock, self._connect() as connection:
+            try:
+                self._insert_suggestion_delivery(connection, suggestion)
+                return True
+            except sqlite3.IntegrityError:
+                existing = connection.execute(
+                    "SELECT payload_json FROM summary_suggestion_outbox WHERE summary_result_id = ?",
+                    (str(suggestion["summary_result_id"]),),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["payload_json"] == canonical_json(suggestion)
+                ):
+                    return False
+                raise ValueError(
+                    "summary suggestion conflicts with an existing result"
+                ) from None
 
     @staticmethod
     def _insert_delivery(
@@ -330,6 +387,25 @@ class SummaryRepository:
                 summary_result_id,
                 canonical_json(payload),
                 created_at_ns,
+            ),
+        )
+
+    @staticmethod
+    def _insert_suggestion_delivery(
+        connection: sqlite3.Connection, suggestion: Mapping[str, Any]
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO summary_suggestion_outbox (
+                request_id, summary_result_id, payload_json,
+                state, attempts, next_attempt_at_ns, created_at_ns
+            ) VALUES (?, ?, ?, 'PENDING', 0, 0, ?)
+            """,
+            (
+                stable_id("publish-suggestion", suggestion["summary_result_id"]),
+                suggestion["summary_result_id"],
+                canonical_json(suggestion),
+                int(suggestion["created_at_ns"]),
             ),
         )
 

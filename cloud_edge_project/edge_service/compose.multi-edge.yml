@@ -22,14 +22,13 @@
 #   edge_02 → Scheduler : toxiproxy:18051（宿主机 127.0.0.1:18051）
 #   edge_02 → Cloud     : toxiproxy:18053（宿主机 127.0.0.1:18053）
 #   Scheduler → edge    : 宿主机 127.0.0.1:18042/18052 → 本文件端口 8001/8002
-#   Edge → 建议 LLM     : host.docker.internal:8005（宿主机 llama.cpp）
 #   Sender → Edge (MQTT): 宿主机 18831/18832/18931/18932/19031/19032 → mqtt-broker
 #
-# 正式拓扑地址（MQTT / Scheduler / Cloud / 建议 LLM）在本文件中固定取值，
+# 正式拓扑地址（MQTT / Scheduler / Cloud）在本文件中固定取值，
 # 不接受 .env 或环境变量覆盖；其他部署拓扑只能通过独立的 Compose override
 # 文件实现。仍允许 .env 注入的非拓扑配置：EDGE_CONTROL_SHARED_SECRET、
 # EDGE_CONTROL_KEY_ID、EDGE_MODEL_SIGNING_KEY_ID、EDGE_DIAGNOSTIC_BACKEND、
-# EDGE_MODEL_VERSION、EDGE_MODEL_UPDATE_POLLER_ENABLED、EDGE_SUGGESTION_LLM_ENABLED、
+# EDGE_MODEL_VERSION、EDGE_MODEL_UPDATE_POLLER_ENABLED、
 # NETWORK_SIM_NETWORK、EDGE_STATUS_RESOURCE_MODE。
 #
 # 自动模型更新（Poller）默认关闭；开启前必须叠加 compose.model-update.yml
@@ -52,8 +51,7 @@ services:
     image: cloud-edge/edge-service:latest
     container_name: edge_01
     extra_hosts:
-      # 建议 LLM（host.docker.internal:8005）与 official 对照模型服务（8012）
-      # 运行在宿主机，容器经 host-gateway 访问。
+      # official 对照模型服务（8012）运行在宿主机，容器经 host-gateway 访问。
       - "host.docker.internal:host-gateway"
     environment:
       EDGE_NODE_ID: edge_01
@@ -70,12 +68,6 @@ services:
       # 出站 HTTP 全部经过 Toxiproxy 链路，指向 links.yaml 中对应代理端口。
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18011
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18021
-      # 设备级维护建议 LLM 运行在宿主机 llama.cpp（8005），
-      # 与 Cloud 模型更新建议书的 vLLM（6006）是两套互不相干的服务。
-      EDGE_SUGGESTION_LLM_BASE_URL: http://host.docker.internal:8005
-      # 启动脚本 -SkipLLM 时注入 false，显式禁用建议生成的 LLM 调用；
-      # 默认 true，LLM 不可达时 Edge 自行回退到模板文案。
-      EDGE_SUGGESTION_LLM_ENABLED: ${EDGE_SUGGESTION_LLM_ENABLED:-true}
       # 正式诊断路线：蒸馏模型 H5 三通道并行（容器内本地推理，镜像自带 torch）。
       # 切回模型服务 HTTP 路线（故障演练矩阵）：EDGE_DIAGNOSTIC_BACKEND=official
       # 并保留 EDGE_MODEL_BASE_URL。
@@ -135,8 +127,6 @@ services:
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051
       CLOUD_SERVICE_BASE_URL: http://toxiproxy:18053
-      EDGE_SUGGESTION_LLM_BASE_URL: http://host.docker.internal:8005
-      EDGE_SUGGESTION_LLM_ENABLED: ${EDGE_SUGGESTION_LLM_ENABLED:-true}
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
       EDGE_MODEL_ROOT: /app/data/models
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}

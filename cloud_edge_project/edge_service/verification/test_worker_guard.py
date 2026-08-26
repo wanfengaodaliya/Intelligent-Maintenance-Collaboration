@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import threading
 import time
-from types import SimpleNamespace
 
 from edge_model.config import EdgeModelConfig
 from edge_model.contracts import EdgeResult, PacketInferenceTask
@@ -228,25 +227,7 @@ def test_http_infer_pre_cancelled_skips_request() -> None:
     assert requested == []
 
 
-def test_suggestion_worker_stop_drains_pending_results() -> None:
-    """遗留修复3：stop 前排空队列，在途设备级结果不丢建议。"""
-    from edge_runtime.suggestion_worker import SuggestionWorker
+def test_edge_runtime_does_not_expose_suggestion_generation() -> None:
+    from edge_runtime.coordinator import EdgeRuntimeCoordinator
 
-    outbox: list[dict] = []
-    worker = SuggestionWorker(
-        llm_client=None,
-        outbox=type("Outbox", (), {"enqueue": staticmethod(lambda p: outbox.append(p))})(),
-        publisher=None,
-    )
-    # 不 start：submit 入队后直接 stop，全部建议必须在排空阶段处理完。
-    for revision in (1, 2):
-        worker.submit(
-            SimpleNamespace(
-                device_id="device_01", task_id="task_01",
-                decision_round_id="round-01", revision=revision,
-                status=SimpleNamespace(value="FINAL"), final_state="normal",
-                final_action_grade=0, confidence=0.9,
-            )
-        )
-    worker.stop()
-    assert sorted(p["device_result_revision"] for p in outbox) == [1, 2]
+    assert not hasattr(EdgeRuntimeCoordinator, "submit_device_suggestion")

@@ -78,9 +78,7 @@ function render(h) {
   const mq = h.mqtt_queue_depth;
   const modelQ = h.model_queue || {};
   const dispatch = h.completion_dispatch || {};
-  const suggWorker = h.suggestion_worker || {};
   const devOutbox = h.device_result_outbox || {};
-  const suggOutbox = h.suggestion_outbox || {};
   const upload = h.result_upload || {};
   const statusRep = h.status_reporter || {};
   const modelUp = h.model_update || {};
@@ -92,7 +90,7 @@ function render(h) {
   // 1. 基础状态
   const live = h.liveness || {};
   const aliveCount = ["maintenance_worker_alive", "mqtt_worker_alive", "model_worker_alive",
-    "completion_dispatcher_alive", "suggestion_worker_alive", "model_update_poller_alive"]
+    "completion_dispatcher_alive", "model_update_poller_alive"]
     .filter((k) => live[k]).length;
   const aliveTotal = Object.keys(live).length || 6;
   html.push(section("基础状态", null,
@@ -123,12 +121,11 @@ function render(h) {
   const mqCap = h.mqtt_capacity || {};
   const rawQ = h.raw_sample_queue || {};
   html.push(section("队列与线程健康",
-    '<div class="grid grid-4">' +
+    '<div class="grid grid-3">' +
     metric("MQTT 队列深度", mq ?? "-",
       "容量 " + (mqCap.queue_capacity ?? "-") + " · 拒绝 " + (mqCap.rejected_total ?? 0) +
       (mqCap.oldest_task_age_ms !== null && mqCap.oldest_task_age_ms !== undefined ? " · 最老 " + fmt.ms(mqCap.oldest_task_age_ms) : "")) +
     metric("分发线程队列", dispatch.queue_size ?? "-", (dispatch.alive !== undefined ? (dispatch.alive ? "线程存活" : "线程停止") : "") + (dispatch.overflow_total !== undefined ? " · 溢出 " + dispatch.overflow_total : ""), dispatch.alive === false ? "danger" : "") +
-    metric("建议线程队列", suggWorker.queue_size ?? "-", suggWorker.alive !== undefined ? (suggWorker.alive ? "线程存活" : "线程停止") : "", suggWorker.alive === false ? "danger" : "") +
     metric("原始样本队列", rawQ.backlog ?? (typeof h.raw_sample_queue === "number" ? h.raw_sample_queue : "-"),
       rawQ.DEAD_LETTER ? "死信 " + rawQ.DEAD_LETTER : "") +
     "</div>"
@@ -140,7 +137,6 @@ function render(h) {
     "<th>Outbox</th><th class=num>积压</th><th class=num>死信</th><th class=num>最老积压年龄</th><th>状态</th></tr>" +
     "</thead><tbody>" +
     outboxRow("设备结果发布", devOutbox) +
-    outboxRow("建议发布", suggOutbox) +
     outboxRow("结果上传 Cloud", upload) +
     "</tbody></table></div>"
   ));

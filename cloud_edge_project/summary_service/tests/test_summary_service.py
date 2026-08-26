@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
+from summary_service.aggregation import build_arbitration_request
 from summary_service.outbox import ArbitrationOutbox
 from summary_service.repository import SummaryRepository
+from summary_service.runtime import SummaryRuntime, load_summary_settings
 from summary_service.service import SummaryService
+from summary_service.suggestion_llm import (
+    MAX_SUGGESTION_CHARACTERS,
+    SuggestionLlmResult,
+    normalize_suggestion,
+)
 
 
 ACTIONS = {
@@ -170,3 +178,141 @@ def test_missing_bearing_closes_as_incomplete_after_timeout(tmp_path):
     assert result["missing_bearing_ids"] == ["bearing_03"]
     assert result["excluded_from_formal_metrics"] is True
     assert repository.metrics()["incomplete_windows"] == 1
+
+
+class RecordingLlm:
+    def __init__(
+        self,
+        text: str = "建议尽快安排专业人员检查设备运行状态并制定维护计划。",
+    ) -> None:
+        self.text = text
+        self.calls = 0
+
+    def translate(self, **kwargs) -> SuggestionLlmResult:
+        self.calls += 1
+        return SuggestionLlmResult(
+            text=normalize_suggestion(self.text, kwargs["fallback_text"]),
+            success=True,
+        )
+
+
+def test_normalize_suggestion_enforces_thirty_character_limit() -> None:
+    suggestion = normalize_suggestion("维" * 80, "设备异常，请及时维护。")
+    assert len(suggestion) == MAX_SUGGESTION_CHARACTERS
+    assert suggestion.endswith("。")
+    assert normalize_suggestion("STOP NOW", "设备异常，请及时维护。") == (
+        "设备异常，请及时维护。"
+    )
+
+
+def test_final_summary_calls_llm_once_and_persists_suggestion(tmp_path) -> None:
+    runtime = SummaryRuntime(
+        replace(load_summary_settings(), database_path=tmp_path / "summary.db")
+    )
+    llm = RecordingLlm()
+    runtime.suggestion_client = llm
+    payloads = [
+        bearing_result("bearing_01", "edge_01", 2),
+        bearing_result("bearing_02", "edge_02", 2),
+        bearing_result("bearing_03", "edge_01", 2),
+    ]
+    for payload in payloads:
+        result = runtime.service.ingest(payload)
+
+    assert result is not None
+    assert result["result_status"] == "FINAL"
+    assert llm.calls == 1
+    suggestion = runtime.repository.get_suggestion(result["summary_result_id"])
+    assert suggestion is not None
+    assert suggestion["generated_by"] == "llm"
+    assert len(suggestion["suggestion"]) <= MAX_SUGGESTION_CHARACTERS
+
+    runtime.service.ingest(payloads[-1])
+    assert llm.calls == 1
+
+
+def test_suggestion_publish_retry_does_not_call_llm_again(tmp_path) -> None:
+    runtime = SummaryRuntime(
+        replace(load_summary_settings(), database_path=tmp_path / "summary.db")
+    )
+    llm = RecordingLlm("设备存在异常，请安排检查。")
+    runtime.suggestion_client = llm
+    for payload in (
+        bearing_result("bearing_01", "edge_01", 2),
+        bearing_result("bearing_02", "edge_02", 2),
+        bearing_result("bearing_03", "edge_01", 2),
+    ):
+        runtime.service.ingest(payload)
+
+    attempts = {"count": 0}
+
+    def flaky_publish(payload):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("temporary MQTT failure")
+        return {"published": True, "result_id": payload["result_id"]}
+
+    outbox = ArbitrationOutbox(
+        runtime.repository,
+        flaky_publish,
+        retry_delay_ns=0,
+        table_name="summary_suggestion_outbox",
+    )
+    assert outbox.run_due() == 0
+    assert outbox.run_due() == 1
+    assert attempts["count"] == 2
+    assert llm.calls == 1
+
+
+def test_conflict_waits_for_resolved_cloud_action(tmp_path) -> None:
+    runtime = SummaryRuntime(
+        replace(load_summary_settings(), database_path=tmp_path / "summary.db")
+    )
+    llm = RecordingLlm("设备风险较高，请尽快干预。")
+    runtime.suggestion_client = llm
+    for payload in (
+        bearing_result("bearing_01", "edge_01", 0),
+        bearing_result("bearing_02", "edge_01", 3),
+        bearing_result("bearing_03", "edge_02", 1),
+    ):
+        result = runtime.service.ingest(payload)
+
+    assert result is not None
+    assert result["result_status"] == "PENDING_ARBITRATION"
+    assert llm.calls == 0
+    request = build_arbitration_request(result)
+    runtime._post_json = lambda _url, _payload: {
+        "status": "resolved",
+        "final_action": "urgent_intervention",
+        "confidence": 0.91,
+    }
+
+    runtime._post_arbitration(request)
+    assert llm.calls == 1
+    suggestion = runtime.repository.get_suggestion(result["summary_result_id"])
+    assert suggestion is not None
+    assert suggestion["recommended_action"] == "urgent_intervention"
+
+    runtime._post_arbitration(request)
+    assert llm.calls == 1
+
+
+def test_disabled_llm_uses_summary_fallback(tmp_path) -> None:
+    runtime = SummaryRuntime(
+        replace(
+            load_summary_settings(),
+            database_path=tmp_path / "summary.db",
+            suggestion_llm_enabled=False,
+        )
+    )
+    runtime.suggestion_client = None
+    for payload in (
+        bearing_result("bearing_01", "edge_01", 4),
+        bearing_result("bearing_02", "edge_02", 4),
+        bearing_result("bearing_03", "edge_01", 4),
+    ):
+        result = runtime.service.ingest(payload)
+
+    suggestion = runtime.repository.get_suggestion(result["summary_result_id"])
+    assert suggestion["generated_by"] == "rule"
+    assert suggestion["suggestion"] == "设备故障风险高，请立即停机。"

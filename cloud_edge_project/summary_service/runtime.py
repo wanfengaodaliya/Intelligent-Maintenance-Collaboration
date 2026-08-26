@@ -15,6 +15,8 @@ import paho.mqtt.client as mqtt
 from .outbox import ArbitrationOutbox, PermanentDeliveryError
 from .repository import SummaryRepository
 from .service import SummaryService
+from .suggestion_llm import SuggestionClient
+from .suggestions import action_grade_for, build_final_suggestion
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,11 @@ class SummarySettings:
     cloud_timeout_seconds: float
     maintenance_interval_seconds: float
     window_timeout_seconds: float
+    mqtt_suggestion_topic: str
+    suggestion_llm_enabled: bool
+    suggestion_llm_base_url: str
+    suggestion_llm_timeout_seconds: float
+    suggestion_fallback_text: str
 
 
 def load_summary_settings() -> SummarySettings:
@@ -58,6 +65,22 @@ def load_summary_settings() -> SummarySettings:
             os.getenv("SUMMARY_MAINTENANCE_INTERVAL_SECONDS", "0.2")
         ),
         window_timeout_seconds=float(os.getenv("SUMMARY_WINDOW_TIMEOUT_SECONDS", "5")),
+        mqtt_suggestion_topic=os.getenv(
+            "SUMMARY_MQTT_SUGGESTION_TOPIC", "summary/suggestions"
+        ),
+        suggestion_llm_enabled=(
+            os.getenv("SUMMARY_SUGGESTION_LLM_ENABLED", "true").strip().lower()
+            == "true"
+        ),
+        suggestion_llm_base_url=os.getenv(
+            "SUMMARY_SUGGESTION_LLM_BASE_URL", "http://127.0.0.1:8005"
+        ).rstrip("/"),
+        suggestion_llm_timeout_seconds=float(
+            os.getenv("SUMMARY_SUGGESTION_LLM_TIMEOUT_SECONDS", "3.0")
+        ),
+        suggestion_fallback_text=os.getenv(
+            "SUMMARY_SUGGESTION_FALLBACK_TEXT", ""
+        ).strip(),
     )
 
 
@@ -74,7 +97,17 @@ class SummaryRuntime:
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
-        self.service = SummaryService(self.repository)
+        self.suggestion_client = (
+            SuggestionClient(
+                base_url=settings.suggestion_llm_base_url,
+                timeout_seconds=settings.suggestion_llm_timeout_seconds,
+            )
+            if settings.suggestion_llm_enabled
+            else None
+        )
+        self.service = SummaryService(
+            self.repository, build_suggestion=self._build_suggestion
+        )
         self.arbitration_outbox = ArbitrationOutbox(
             self.repository, self._post_arbitration
         )
@@ -87,6 +120,11 @@ class SummaryRuntime:
             self.repository,
             self._post_window_sync,
             table_name="summary_window_sync_outbox",
+        )
+        self.suggestion_outbox = ArbitrationOutbox(
+            self.repository,
+            self._publish_suggestion,
+            table_name="summary_suggestion_outbox",
         )
         self._connected = threading.Event()
         self._stop = threading.Event()
@@ -147,21 +185,60 @@ class SummaryRuntime:
             client.ack(message.mid, message.qos)
 
     def _publish_window_result(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._publish_mqtt(
+            self.settings.mqtt_output_topic, payload, label="window result"
+        )
+
+    def _publish_suggestion(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._publish_mqtt(
+            self.settings.mqtt_suggestion_topic, payload, label="suggestion"
+        )
+
+    def _publish_mqtt(
+        self, topic: str, payload: Mapping[str, Any], *, label: str
+    ) -> Mapping[str, Any]:
         info = self.client.publish(
-            self.settings.mqtt_output_topic,
+            topic,
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             qos=self.settings.mqtt_qos,
         )
         info.wait_for_publish(timeout=10.0)
         if info.rc != mqtt.MQTT_ERR_SUCCESS or not info.is_published():
-            raise RuntimeError(f"Summary MQTT publish failed: rc={info.rc}")
+            raise RuntimeError(f"Summary MQTT {label} publish failed: rc={info.rc}")
         return {"published": True}
 
     def _post_arbitration(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self._post_json(self.settings.cloud_arbitration_url, payload)
+        response = self._post_json(self.settings.cloud_arbitration_url, payload)
+        if str(response.get("status", "")).lower() != "resolved":
+            return response
+        final_action = response.get("final_action")
+        if not final_action:
+            return response
+        summary_result_id = str(payload["summary_result_id"])
+        if self.repository.get_suggestion(summary_result_id) is not None:
+            return response
+        window_result = self.repository.get_window_result_by_id(summary_result_id)
+        if window_result is None:
+            raise RuntimeError("arbitrated summary window is missing locally")
+        final_source = {
+            **window_result,
+            "result_status": "FINAL",
+            "final_action_grade": action_grade_for(str(final_action)),
+            "recommended_action": str(final_action),
+            "confidence": float(response["confidence"]),
+        }
+        self.repository.enqueue_suggestion(self._build_suggestion(final_source))
+        return response
 
     def _post_window_sync(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._post_json(self.settings.cloud_window_sync_url, payload)
+
+    def _build_suggestion(self, source: Mapping[str, Any]) -> Mapping[str, Any]:
+        return build_final_suggestion(
+            source,
+            client=self.suggestion_client,
+            fallback_override=self.settings.suggestion_fallback_text,
+        )
 
     def _post_json(
         self, url: str, payload: Mapping[str, Any]
@@ -197,5 +274,6 @@ class SummaryRuntime:
                 self.publish_outbox.run_due()
                 self.window_sync_outbox.run_due()
                 self.arbitration_outbox.run_due()
+                self.suggestion_outbox.run_due()
             except Exception as exc:
                 self.last_error = str(exc)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, Mapping, Optional, Protocol
+from typing import Any, Callable, Mapping, Optional
 
 from core.bearing_actions import action_for_grade
 from core.diagnosis_contracts import EdgeBearingResult
@@ -21,7 +21,6 @@ from result_uploader import ResultUploader
 from .contracts import action_level_for
 from .dispatcher import CompletionDispatcher
 from .http import SchedulerReporter
-from .suggestion_worker import SuggestionWorker
 from .v12_flow import V12DecisionFlow
 
 
@@ -29,10 +28,6 @@ _DEVICE_DELIVERY_RECONCILIATION_INTERVAL_NS = 300_000_000_000
 # AUD-11：聚合回补的最长等待时长。超龄的完成包在回补时直接出队放弃，
 # 避免 v12 工作流长期不可用时无限重放（重放含 Scheduler 路由 HTTP 调用）。
 _AGGREGATION_BACKFILL_MAX_AGE_NS = 60_000_000_000
-
-
-class JsonPublisher(Protocol):
-    def publish(self, payload: Mapping[str, Any], *, timeout_seconds: float = 2.0) -> None: ...
 
 
 class EdgeRuntimeCoordinator:
@@ -58,10 +53,6 @@ class EdgeRuntimeCoordinator:
         bearing_result_outbox: Any = None,
         on_local_bearing_result: Optional[Callable[[EdgeBearingResult], None]] = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
-        suggestion_llm_client: Any = None,
-        suggestion_publisher: Optional[JsonPublisher] = None,
-        suggestion_outbox: Any = None,
-        suggestion_history_window: int = 10,
         completion_dispatch_enabled: bool = True,
         completion_dispatch_queue_size: int = 256,
         clock_ns=time.time_ns,
@@ -87,12 +78,6 @@ class EdgeRuntimeCoordinator:
         # 由装配层按配置注入，维护轮次据此执行数据保留策略。
         self.outbox_published_retention_ns: int | None = None
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
-        self.suggestion_llm_client = suggestion_llm_client
-        self.suggestion_publisher = suggestion_publisher
-        # 建议发布优先走持久化 Outbox（先落库后发送，避免断网/重启丢建议）；
-        # 未装配 Outbox 时退回直接 MQTT 发布（向后兼容）。
-        self.suggestion_outbox = suggestion_outbox
-        self.suggestion_history_window = suggestion_history_window
         self._clock_ns = clock_ns
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
@@ -112,14 +97,6 @@ class EdgeRuntimeCoordinator:
             enabled=completion_dispatch_enabled,
             queue_size=completion_dispatch_queue_size,
             on_error=self._report_dispatch_error,
-        )
-        # H3：设备级建议线程——设备级最终诊断结果触发一次 LLM，而非逐包。
-        self.suggestion_worker = SuggestionWorker(
-            llm_client=suggestion_llm_client,
-            outbox=suggestion_outbox,
-            publisher=suggestion_publisher,
-            history_window=suggestion_history_window,
-            clock_ns=clock_ns,
         )
         self.pipeline.on_packet_completed = self.on_packet_completed
 
@@ -428,16 +405,6 @@ class EdgeRuntimeCoordinator:
         except Exception:
             pass
 
-    def submit_device_suggestion(self, result: Any) -> None:
-        """H3：设备级最终诊断结果非阻塞入队，由建议线程消费生成一条建议。
-
-        由 v12_flow 的设备级回调(_emit_device_result)统一触发，覆盖四种闭合路径：
-        边缘自主闭合 / 轮次超时 / 云端复核回填 / 云仲裁修正。v12 关闭时无回调，
-        自然满足"无设备级最终结果不触发 LLM"的硬约束。
-        """
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.submit(result)
-
     def _report_dispatch_error(self, completion: Any, error: Exception) -> None:
         """H1/H2：dispatcher 捕获到完成事件处理异常时上报，保留原异常语义。"""
         record = {
@@ -458,26 +425,18 @@ class EdgeRuntimeCoordinator:
             pass
 
     def start_background(self) -> None:
-        """启动完成分发线程与建议线程（由 service 在数据面启动后调用）。"""
+        """启动完成事件分发线程（由 service 在数据面启动后调用）。"""
         if self.dispatcher is not None:
             self.dispatcher.start()
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.start()
 
     def stop_background(self) -> None:
-        """停止完成分发线程与建议线程（dispatcher 先排空在途完成事件）。"""
+        """停止完成事件分发线程并排空在途事件。"""
         if self.dispatcher is not None:
             self.dispatcher.stop()
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.stop()
 
     @property
     def completion_dispatcher_alive(self) -> bool:
         return self.dispatcher is None or self.dispatcher.alive
-
-    @property
-    def suggestion_worker_alive(self) -> bool:
-        return self.suggestion_worker is None or self.suggestion_worker.alive
 
     @property
     def dispatch_overflow_total(self) -> int:
@@ -486,10 +445,6 @@ class EdgeRuntimeCoordinator:
     @property
     def dispatch_queue_size(self) -> int:
         return self.dispatcher.queue_size if self.dispatcher is not None else 0
-
-    @property
-    def suggestion_queue_size(self) -> int:
-        return self.suggestion_worker.queue_size if self.suggestion_worker is not None else 0
 
     def node_status(self) -> dict[str, Any]:
         now = self._clock_ns()
@@ -614,7 +569,6 @@ class EdgeRuntimeCoordinator:
             "raw_sample_uploads": 0,
             "cloud_review_retries": 0,
             "outbox_published_cleaned": 0,
-            "suggestions_published": 0,
             "device_delivery_results_checked": 0,
             "aggregation_backfilled": 0,
         }
@@ -654,8 +608,6 @@ class EdgeRuntimeCoordinator:
                 )
         if self.result_uploader is not None:
             summary["result_uploads"] = self.result_uploader.run_once(now)
-        if self.suggestion_outbox is not None:
-            summary["suggestions_published"] = self.suggestion_outbox.run_once(now)
         if self.raw_sample_uploader is not None:
             summary["raw_sample_uploads"] = self.raw_sample_uploader.run_once(now)
         if self.cloud_review_service is not None:

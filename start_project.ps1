@@ -10,8 +10,8 @@
 #            固定为 network_simulator）全部 healthy 且所需代理已创建。
 #   Stage 2  宿主机 Scheduler 8003 + Cloud 8004 + Summary 8006
 #            （HTTP ready，Cloud 模型已加载，Summary 已连接 MQTT）。
-#   Stage 3  LLM 服务：边缘建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
-#            （3B @ 6006）；-SkipLLM 时跳过并显式禁用 Edge LLM 调用。
+#   Stage 3  LLM 服务：Summary 建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
+#            （3B @ 6006）；-SkipLLM 时跳过并禁用 Summary LLM 调用。
 #   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，--no-build），
 #            轮询 /health/ready（Docker HEALTHCHECK 仅代表 liveness）。
 #   全部通过后才允许 Sender 开始发送。
@@ -277,7 +277,8 @@ $cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='moment_light_adapt'
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $summaryDb = Join-Path $ExperimentData "summary_service.db"
-$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
+$summaryLlmEnabled = if ($SkipLLM) { "false" } else { "true" }
+$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
 
 $stage2 = $true
@@ -301,15 +302,15 @@ if (-not $stage2) {
 
 # ---------- Stage 3: LLM services ----------
 if (-not $SkipLLM) {
-    Write-Host "`n========== Stage 3/4: LLM services (edge 8005 + cloud 6006) =========="
-    # 边缘建议 LLM（0.5B）：Edge 容器经 host.docker.internal:8005 调用。
+    Write-Host "`n========== Stage 3/4: LLM services (Summary 8005 + Cloud 6006) =========="
+    # Summary 建议 LLM（0.5B）：Summary 宿主机进程通过 127.0.0.1:8005 调用。
     $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-0.5b-instruct-q3_k_m.gguf --host 127.0.0.1 --port 8005 --ctx-size 2048 --n-gpu-layers 99"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$llmCmd
     # 云端模型更新 LLM（3B）：Cloud 模型更新建议书使用（VLLM_URL 默认 6006）。
     $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model .\models\qwen2.5-3b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 6006 --ctx-size 4096 --n-gpu-layers 99"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudLlmCmd
     $stage3 = $true
-    if (-not (Wait-Gate "Edge suggestion LLM /v1/models (8005)" {
+    if (-not (Wait-Gate "Summary suggestion LLM /v1/models (8005)" {
         $models = Get-Json "http://127.0.0.1:8005/v1/models"
         $null -ne $models -and $models.data.Count -gt 0
     })) { $stage3 = $false }
@@ -321,12 +322,10 @@ if (-not $SkipLLM) {
         Write-Host "  Check the LLM PowerShell windows above."
         exit 1
     }
-    $env:EDGE_SUGGESTION_LLM_ENABLED = "true"
 } else {
     Write-Host "`n========== Stage 3/4: LLM skipped =========="
-    Write-Host "  EDGE_SUGGESTION_LLM_ENABLED=false - Edge suggestion LLM calls are disabled in both containers."
-    Write-Host "  Cloud model-update LLM (6006) not started; suggestions fall back to templates."
-    $env:EDGE_SUGGESTION_LLM_ENABLED = "false"
+    Write-Host "  SUMMARY_SUGGESTION_LLM_ENABLED=false - Summary suggestions fall back to templates."
+    Write-Host "  Cloud model-update LLM (6006) is not started."
 }
 
 # ---------- Stage 4: Edge containers ----------
@@ -366,7 +365,7 @@ if ($edge01Health.node_id -ne "edge_01" -or $edge02Health.node_id -ne "edge_02" 
 }
 
 Write-Host "`n========== All health gates passed =========="
-if ($SkipLLM) { Write-Host "(LLM skipped - EDGE_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
+if ($SkipLLM) { Write-Host "(LLM skipped - SUMMARY_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
 Write-Host "Sender may start replaying MAT data now."
 Write-Host "Experiment data: $ExperimentData"
 Write-Host "Stop: close host windows (Scheduler/Cloud/Summary/LLM), then:"

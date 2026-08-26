@@ -57,8 +57,8 @@ class EdgeRuntimeService:
         self.cache.start()
         try:
             self.pipeline.start()
-            # H1/H3：完成分发线程与建议线程在数据面(推理)之后、接入(MQTT)之前启动，
-            # 保证所有完成事件与设备级结果都经后台线程异步处理。
+            # 完成分发线程在数据面(推理)之后、接入(MQTT)之前启动，
+            # 保证所有完成事件都经后台线程异步处理。
             if self.coordinator is not None:
                 self.coordinator.start_background()
             self._server = make_control_server(
