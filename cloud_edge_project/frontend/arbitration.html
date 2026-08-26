@@ -37,18 +37,18 @@
       </div>
     </div>
 
-    <div class="grid grid-2">
+    <div class="grid grid-2" id="recordsGrid">
       <div class="card">
         <div class="card-title">最近设备决策 <span class="hint">真实轮次结果</span></div>
         <div id="decisionList" style="max-height:560px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
-      <div class="card">
+      <div class="card" id="arbitrationCard">
         <div class="card-title">冲突仲裁记录 <span class="hint">仅真实冲突</span></div>
         <div id="arbitrationList" style="max-height:560px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="conflictQueryCard">
       <div class="card-title">按冲突 ID 精确查询 <span class="hint">可选</span></div>
       <div class="form-row">
         <label class="field">conflict_id
@@ -167,6 +167,11 @@ async function refreshRecords() {
     ]);
     decisionItems = decisions.items || [];
     arbitrationItems = arbitrations.items || [];
+    const arbitrationCard = el("arbitrationCard");
+    const conflictQueryCard = el("conflictQueryCard");
+    arbitrationCard.hidden = arbitrationItems.length === 0;
+    conflictQueryCard.hidden = arbitrationItems.length === 0;
+    el("recordsGrid").className = arbitrationItems.length ? "grid grid-2" : "grid";
     renderDecisionList(decisionItems);
     renderArbitrationList(arbitrationItems);
     el("refreshMeta").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });

@@ -111,6 +111,7 @@ def run_sender_task(
     log_sink: LocalLogSink | None = None,
     task_ids: TaskIdStore | None = None,
     source_mapping_store: PacketSourceMappingStore | None = None,
+    batch_created_timestamp_ns: int | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -128,6 +129,7 @@ def run_sender_task(
         config.state_dir / "packet_source_mapping.db"
     )
     started_ns = time.time_ns()
+    created_ns = batch_created_timestamp_ns or started_ns
     record = load_mat_record(source_path)
     windows = record.windows(
         duration_ms=config.packet_interval_ms,
@@ -156,7 +158,7 @@ def run_sender_task(
         "packet_size_bytes": len(serialize_packet(preview_packet)),
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
-        "created_timestamp_ns": started_ns,
+        "created_timestamp_ns": created_ns,
     }
 
     try:
@@ -302,6 +304,7 @@ def run_all_senders(
         raise ValueError("source files must provide exactly one MAT path for every configured sender")
 
     sink = LocalLogSink(config.log_dir)
+    batch_created_timestamp_ns = time.time_ns()
     with ThreadPoolExecutor(max_workers=len(config.senders), thread_name_prefix="sender") as executor:
         jobs = [
             (
@@ -313,6 +316,7 @@ def run_all_senders(
                     source_files[node.sender_id],
                     realtime=realtime,
                     log_sink=sink,
+                    batch_created_timestamp_ns=batch_created_timestamp_ns,
                 ),
             )
             for node in config.senders

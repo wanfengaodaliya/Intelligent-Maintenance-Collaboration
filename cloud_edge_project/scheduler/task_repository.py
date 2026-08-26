@@ -50,6 +50,34 @@ class TaskRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def recent_batch_assignments(self) -> dict[str, Any]:
+        """Return assignments sharing the newest sender batch timestamp."""
+        with self._connect() as connection:
+            latest = connection.execute(
+                "SELECT MAX(created_timestamp_ns) FROM task_assignment"
+            ).fetchone()[0]
+            if latest is None:
+                return {
+                    "batch_created_timestamp_ns": None,
+                    "device_id": None,
+                    "items": [],
+                }
+            rows = connection.execute(
+                """SELECT task_id,device_id,sender_id,bearing_id,
+                          assignment_status,edge_node_id,assigned_at_ns,failure_code
+                   FROM task_assignment
+                   WHERE created_timestamp_ns=?
+                   ORDER BY sender_id,task_id""",
+                (latest,),
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        device_ids = {item["device_id"] for item in items}
+        return {
+            "batch_created_timestamp_ns": int(latest),
+            "device_id": device_ids.pop() if len(device_ids) == 1 else None,
+            "items": items,
+        }
+
     def retry_constraints(self, task_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             rows = connection.execute(

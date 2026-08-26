@@ -499,6 +499,10 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
 
         return policy_status()
 
+    @router.get("/assignments/recent-batch", response_model=None)
+    def recent_batch_assignments_endpoint() -> dict[str, Any]:
+        return selected.recent_batch_assignments()
+
     application = FastAPI(
         title="Edge Node Assignment Scheduler",
         lifespan=lifespan,
@@ -529,6 +533,13 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, policy_status())
             except Exception as error:
                 self._send_json(500, {"error_code": "ROUTING_POLICY_ERROR", "message": str(error)})
+            return
+        if self.path == "/scheduler/assignments/recent-batch":
+            try:
+                self._send_json(200, default_runtime.recent_batch_assignments())
+            except Exception as error:
+                status_code, payload = _error_payload(error)
+                self._send_json(status_code, payload)
             return
         self._send_json(404, {"detail": "not found"})
 

@@ -327,13 +327,17 @@ html, body {
 .hero .kpi.c-teal   { --kpi-color: #0d9488; --kpi-border: rgba(13, 148, 136, 0.2); --kpi-shadow: rgba(13, 148, 136, 0.12); --kpi-grad: linear-gradient(160deg, #f0fdfa, #ffffff 70%); }
 .hero .kpi.c-violet { --kpi-color: #7c3aed; --kpi-border: rgba(124, 58, 237, 0.2); --kpi-shadow: rgba(124, 58, 237, 0.12); --kpi-grad: linear-gradient(160deg, #f5f3ff, #ffffff 70%); }
 
-/* 6 列网格适配 */
+/* 5/6 列网格适配 */
+.hero.hero-5 { grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.hero.hero-5 .kpi { padding: 14px 14px 10px; }
+.hero.hero-5 .kpi .value { font-size: 28px; }
+.hero.hero-5 .kpi .label { font-size: 11px; }
 .hero.hero-6 { grid-template-columns: repeat(6, 1fr); gap: 10px; }
 .hero.hero-6 .kpi { padding: 14px 14px 10px; }
 .hero.hero-6 .kpi .value { font-size: 28px; }
 .hero.hero-6 .kpi .label { font-size: 11px; }
-@media (max-width: 1400px) { .hero.hero-6 { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 760px)  { .hero.hero-6 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1400px) { .hero.hero-5, .hero.hero-6 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 760px)  { .hero.hero-5, .hero.hero-6 { grid-template-columns: repeat(2, 1fr); } }
 
 /* 流卡片说明文字 */
 .stream-hint {
@@ -348,6 +352,52 @@ html, body {
 
 @media (max-width: 1200px) { .hero { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
+
+/* ---------- Sender 九链路折叠视图 ---------- */
+
+.sender-link-list {
+  display: grid;
+  gap: 9px;
+}
+
+.sender-link {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.sender-link[open] {
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 4px 14px rgba(30, 42, 59, 0.06);
+}
+
+.sender-link.unused {
+  background: rgba(245, 247, 251, 0.72);
+}
+
+.sender-link summary {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 15px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sender-link summary::-webkit-details-marker { display: none; }
+.sender-link summary::after { content: "展开 ▾"; color: var(--text-dim); font-size: 11px; }
+.sender-link[open] summary::after { content: "收起 ▴"; }
+.sender-link-name { font-weight: 700; }
+.sender-link-detail { padding: 0 15px 14px; }
+.sender-link-note { color: var(--text-dim); font-size: 12px; padding-top: 4px; }
+
+@media (max-width: 760px) {
+  .sender-link summary { grid-template-columns: 1fr auto; }
+  .sender-link summary::after { display: none; }
+}
 
 /* ---------- 指标（次级卡片） ---------- */
 

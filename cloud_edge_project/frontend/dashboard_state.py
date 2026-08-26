@@ -28,17 +28,39 @@ class DashboardSession:
         self.session_id = uuid.uuid4().hex
         self.started_at_ns = time.time_ns()
         self.max_buckets = max_buckets
-        self.stats = {"results": 0, "faults": 0, "suggestions": 0, "packets": 0}
+        self.stats = {
+            "results": 0,
+            "faults": 0,
+            "suggestions": 0,
+            "packets": 0,
+            "packet_receipts": 0,
+            "packet_duplicates": 0,
+        }
+        # Full-session membership is required for an exact unique-packet KPI.
+        # The set resets whenever the frontend gateway process restarts.
+        self._seen_packet_ids: set[str] = set()
         self.recent = {
             event_type: deque(maxlen=max_recent) for event_type in EVENT_TO_COUNTER
         }
         self.buckets: OrderedDict[int, dict[str, int]] = OrderedDict()
 
-    def record(self, event: dict[str, Any]) -> None:
+    def record(self, event: dict[str, Any]) -> str | None:
+        """Record an event and return a duplicate/invalid packet disposition."""
         event_type = str(event.get("type", ""))
         counter = EVENT_TO_COUNTER.get(event_type)
         if counter is None:
-            return
+            return None
+        if event_type == "input-packet":
+            self.stats["packet_receipts"] += 1
+            payload = event.get("payload")
+            raw_packet_id = payload.get("packet_id") if isinstance(payload, dict) else None
+            if not isinstance(raw_packet_id, str) or not raw_packet_id.strip():
+                return "invalid"
+            packet_id = raw_packet_id.strip()
+            if packet_id in self._seen_packet_ids:
+                self.stats["packet_duplicates"] += 1
+                return "duplicate"
+            self._seen_packet_ids.add(packet_id)
         self.stats[counter] += 1
         is_fault = event_type == "device-result" and _is_fault(event.get("payload"))
         if is_fault:
@@ -60,6 +82,7 @@ class DashboardSession:
             bucket["faults"] += 1
         while len(self.buckets) > self.max_buckets:
             self.buckets.popitem(last=False)
+        return None
 
     def snapshot(self) -> dict[str, Any]:
         return {

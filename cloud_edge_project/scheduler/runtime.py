@@ -191,6 +191,9 @@ class SchedulerRuntime:
     def save_task_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.assignment_scheduler.save_result(request)
 
+    def recent_batch_assignments(self) -> dict[str, Any]:
+        return self.task_repository.recent_batch_assignments()
+
     def route_packet(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.packet_service.route(request)
 

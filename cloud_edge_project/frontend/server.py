@@ -95,10 +95,15 @@ class MqttBridge:
 
     def _broadcast(self, event: dict) -> None:
         with self._lock:
-            self._dashboard.record(event)
+            packet_disposition = self._dashboard.record(event)
+            outbound_event = (
+                {**event, "packet_disposition": packet_disposition}
+                if packet_disposition
+                else event
+            )
             for q in self._subscribers:
                 try:
-                    q.put_nowait(event)
+                    q.put_nowait(outbound_event)
                 except queue.Full:
                     # 慢客户端直接恢复到当前权威快照，避免累计 KPI 永久少算。
                     while True:
