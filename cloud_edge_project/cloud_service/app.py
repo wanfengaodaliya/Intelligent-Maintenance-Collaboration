@@ -785,6 +785,17 @@ def list_pending_model_distribution(
         return _model_update_error_response(error)
 
 
+@app.get("/cloud/model-update/recent", response_model=None)
+def list_recent_model_updates(limit: int = 20) -> list:
+    """Frontend overview: latest model updates with the LLM suggestion text."""
+
+    if not isinstance(limit, int) or limit <= 0:
+        limit = 20
+    if limit > 100:
+        limit = 100
+    return _model_update_service().list_recent(limit)
+
+
 @app.get("/cloud/model-update/{update_id}", response_model=None)
 def get_model_update(update_id: str) -> dict | JSONResponse:
     try:

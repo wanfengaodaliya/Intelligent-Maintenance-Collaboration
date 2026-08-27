@@ -98,10 +98,17 @@ class DashboardSession:
 
 
 class BinaryAccuracyEvaluator:
-    """Compare Edge binary decisions with sender-only Paderborn source proofs."""
+    """Compare Edge binary decisions with sender-only Paderborn source proofs.
+
+    Accuracy is reported at the ``(task_id, bearing_id)`` grain. When a bearing
+    goes through multiple decision rounds, only the **final** received result
+    (largest ``rowid``) is counted. This avoids inflating the denominator with
+    repeated judgments of the same physical bearing.
+    """
 
     HEALTHY_CODE = re.compile(r"^K0\d{2}$", re.IGNORECASE)
     FAULT_CODE = re.compile(r"^K(?:A|I|B)\d{2}$", re.IGNORECASE)
+    MIN_SAMPLES_FOR_REPORTING = 4
 
     def __init__(
         self,
@@ -118,7 +125,9 @@ class BinaryAccuracyEvaluator:
         self._truth_connection: sqlite3.Connection | None = None
         self._truth_data_version: int | None = None
         self._truths: dict[tuple[str, str], str] = {}
-        self._predictions: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        # key: (device_id, task_id, decision_round_id, bearing_id)
+        # value: (rowid, bearing_state_payload)  rowid 用来区分最终轮次
+        self._predictions: dict[tuple[str, str, str, str], tuple[int, dict[str, Any]]] = {}
         self._correct = 0
         self._total = 0
         self._unmatched = 0
@@ -149,14 +158,26 @@ class BinaryAccuracyEvaluator:
         self._truth_data_version = None
 
     def _result(self, available: bool, error: str | None) -> dict[str, Any]:
+        insufficient = self._total > 0 and self._total < self.MIN_SAMPLES_FOR_REPORTING
+        reported_accuracy: float | None
+        if self._total == 0:
+            reported_accuracy = None
+        elif insufficient:
+            # 样本量不够时不展示百分比，但仍返回真实数值供调试/接口使用
+            reported_accuracy = None
+        else:
+            reported_accuracy = self._correct / self._total
         return {
             "available": available,
             "error": error,
-            "accuracy": None if self._total == 0 else self._correct / self._total,
+            "accuracy": reported_accuracy,
+            "accuracy_unfiltered": None if self._total == 0 else self._correct / self._total,
             "correct": self._correct,
             "total": self._total,
             "unmatched": self._unmatched,
             "unknown_labels": self._unknown_labels,
+            "insufficient_samples": insufficient,
+            "min_samples_required": self.MIN_SAMPLES_FOR_REPORTING,
             "session_started_ns": self.started_at_ns,
         }
 
@@ -189,7 +210,8 @@ class BinaryAccuracyEvaluator:
                 (self._prediction_cursor,),
             ).fetchall()
         for rowid, revision, received_at_ns, raw_payload in rows:
-            self._prediction_cursor = max(self._prediction_cursor, int(rowid))
+            rowid_int = int(rowid)
+            self._prediction_cursor = max(self._prediction_cursor, rowid_int)
             if int(revision) != 1 or int(received_at_ns) < self.started_at_ns:
                 continue
             try:
@@ -204,7 +226,10 @@ class BinaryAccuracyEvaluator:
                 str(payload.get("decision_round_id", "")),
                 str(payload.get("bearing_id", "")),
             )
-            self._predictions.setdefault(key, payload)
+            # 同一个决策轮只保留 rowid 最大的条目（防止重复）
+            existing = self._predictions.get(key)
+            if existing is None or existing[0] < rowid_int:
+                self._predictions[key] = (rowid_int, payload)
         return bool(rows)
 
     def _recompute(self) -> None:
@@ -212,8 +237,18 @@ class BinaryAccuracyEvaluator:
         self._total = 0
         self._unmatched = 0
         self._unknown_labels = 0
-        for key, payload in self._predictions.items():
-            truth_key = (key[1], key[3])
+        # 按 (task_id, bearing_id) 分组，保留每个轴承 rowid 最大（最晚）的结论
+        latest_per_bearing: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+        for _key, (rowid_int, payload) in self._predictions.items():
+            bearing_key = (
+                str(payload.get("task_id", "")),
+                str(payload.get("bearing_id", "")),
+            )
+            existing = latest_per_bearing.get(bearing_key)
+            if existing is None or existing[0] < rowid_int:
+                latest_per_bearing[bearing_key] = (rowid_int, payload)
+        for (task_id, bearing_id), (_rowid, payload) in latest_per_bearing.items():
+            truth_key = (task_id, bearing_id)
             if truth_key not in self._truths:
                 self._unmatched += 1
                 continue

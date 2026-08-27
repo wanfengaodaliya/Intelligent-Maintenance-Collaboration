@@ -834,6 +834,177 @@ details.json pre {
 .grid-main { grid-template-columns: 1.9fr 1fr; }
 @media (max-width: 1100px) { .grid-main { grid-template-columns: 1fr; } }
 
+/* ---------- 设备最终处置 & 云端模型更新建议书（评委汇总输出） ---------- */
+
+.verdict-list,
+.mu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.verdict-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, rgba(37,99,235,.06), rgba(13,148,136,.05));
+  border: 1px solid rgba(37,99,235,.15);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.verdict-summary-bar b { color: var(--accent-deep); font-size: 15px; }
+.verdict-summary-bar .dot-summary { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; background:rgba(22,163,74,.1); color:var(--ok); border:1px solid rgba(22,163,74,.25); }
+.verdict-summary-bar .dot-summary.warn { background:rgba(217,119,6,.1); color:#b45309; border-color:rgba(217,119,6,.28); }
+.verdict-summary-bar .dot-summary.danger { background:rgba(220,38,38,.1); color:var(--danger); border-color:rgba(220,38,38,.28); }
+
+.verdict-item {
+  display: grid;
+  grid-template-columns: 152px 1fr auto;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+.verdict-item.fault { border-color: rgba(220,38,38,.35); background: rgba(220,38,38,.04); }
+.verdict-item.warning { border-color: rgba(217,119,6,.32); background: rgba(217,119,6,.04); }
+
+.verdict-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.verdict-status.ok { background: rgba(22,163,74,.12); color: var(--ok); }
+.verdict-status.warn { background: rgba(217,119,6,.14); color: #b45309; }
+.verdict-status.danger { background: rgba(220,38,38,.14); color: var(--danger); }
+
+.verdict-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.verdict-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.verdict-device .device-id { font-family: var(--font-mono); }
+.verdict-device .badge-muted { font-weight: 500; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: rgba(31,41,55,.05); color: var(--text-muted); border: 1px solid var(--border-card); }
+.verdict-detail { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; }
+.verdict-detail .k { color: var(--text-muted); margin-right: 4px; }
+.verdict-suggest {
+  margin-top: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(124,58,237,.07);
+  border: 1px dashed rgba(124,58,237,.28);
+  color: #5b21b6;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.verdict-suggest b { color: #4c1d95; }
+
+.verdict-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.verdict-meta .ts { color: var(--text-secondary); }
+
+/* 云端模型更新建议列表 */
+.mu-item {
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mu-item.running { border-color: rgba(37,99,235,.32); background: rgba(37,99,235,.04); }
+.mu-item.good { border-color: rgba(22,163,74,.32); background: rgba(22,163,74,.04); }
+.mu-item.bad { border-color: rgba(220,38,38,.32); background: rgba(220,38,38,.04); }
+
+.mu-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.mu-head .mu-id { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.mu-head .mu-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-card);
+  background: rgba(31,41,55,.05);
+  color: var(--text-primary);
+}
+.mu-head .mu-status.llm { background: rgba(124,58,237,.1); color: #5b21b6; border-color: rgba(124,58,237,.28); }
+.mu-head .mu-status.template { background: rgba(31,41,55,.05); color: var(--text-secondary); border-color: var(--border-card); }
+
+.mu-problem { font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+.mu-problem b { color: var(--accent-deep); }
+
+.mu-suggestion {
+  background: rgba(124,58,237,.06);
+  border: 1px solid rgba(124,58,237,.2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #4c1d95;
+  white-space: pre-wrap;
+}
+.mu-suggestion .src-tag {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  background: rgba(124,58,237,.2);
+  color: #4c1d95;
+  font-weight: 700;
+}
+.mu-suggestion .src-tag.template { background: rgba(31,41,55,.15); color: var(--text-secondary); }
+
+.mu-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.mu-foot .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.mu-foot .tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(31,41,55,.05);
+  border: 1px solid var(--border-card);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 /* ---------- 滚动条 ---------- */
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }

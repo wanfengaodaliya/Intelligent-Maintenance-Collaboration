@@ -29,12 +29,17 @@ EXPECTED_PROXY_PORTS = {
     "sender_03": {"edge_01": 19031, "edge_02": 19032},
 }
 
-SENDERS = ("sender_01", "sender_02", "sender_03")
-EDGE_TOPICS = (("edge_01", "edge/edge_01/input"), ("edge_02", "edge/edge_02/input"))
-
-
 def _local_config():
     return load_config(CONFIG_PATH)
+
+
+def _available_senders():
+    """从配置文件动态获取可用的 sender 列表。"""
+    config = _local_config()
+    return tuple(node.sender_id for node in config.senders)
+
+
+EDGE_TOPICS = (("edge_01", "edge/edge_01/input"), ("edge_02", "edge/edge_02/input"))
 
 
 def _signals():
@@ -141,7 +146,7 @@ def test_resolve_target_edge_node_id_parses_edge_topics():
     assert resolve_target_edge_node_id("edge/edge_01/other") is None
 
 
-@pytest.mark.parametrize("sender_id", SENDERS)
+@pytest.mark.parametrize("sender_id", _available_senders())
 @pytest.mark.parametrize("edge_id,topic", EDGE_TOPICS)
 def test_proxy_port_resolution_uses_local_config(sender_id, edge_id, topic):
     config = _local_config()
@@ -159,7 +164,7 @@ def test_unknown_edge_target_falls_back_to_default_port():
     assert target_edge == "edge_99"
 
 
-@pytest.mark.parametrize("sender_id", SENDERS)
+@pytest.mark.parametrize("sender_id", _available_senders())
 @pytest.mark.parametrize("edge_id,topic", EDGE_TOPICS)
 def test_scheduler_assignment_routes_task_to_matching_proxy_port(
     sender_id, edge_id, topic, tmp_path, monkeypatch
