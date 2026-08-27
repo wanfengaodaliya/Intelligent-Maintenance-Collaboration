@@ -1,7 +1,7 @@
 """Idempotent cloud persistence for upstream bearing and device task results."""
 from __future__ import annotations
 import json, time
-from dataclasses import fields
+from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any
 from cloud_service.storage.database import connect, initialize_database
@@ -65,8 +65,15 @@ class TaskResultService:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def _ingest_v12(self, table: str, payload: dict[str, Any], contract: Any) -> dict[str, Any]:
-        required = {field.name for field in fields(contract)}
-        if not isinstance(payload, dict) or set(payload) != required:
+        contract_fields = fields(contract)
+        allowed = {field.name for field in contract_fields}
+        required = {
+            field.name
+            for field in contract_fields
+            if field.default is MISSING and field.default_factory is MISSING
+        }
+        actual = set(payload) if isinstance(payload, dict) else set()
+        if not isinstance(payload, dict) or not required <= actual <= allowed:
             raise ValueError("INVALID_V12_RESULT")
         result_id = payload.get("result_id")
         if not isinstance(result_id, str) or not result_id:

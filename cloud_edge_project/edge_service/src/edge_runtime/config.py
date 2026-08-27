@@ -21,8 +21,8 @@ class MqttConfig:
     keepalive_seconds: int = 30
     qos: int = 1
     input_topic: str = "edge/edge_01/input"
+    bearing_result_topic: str = "summary/bearing-results"
     device_result_topic: str = "summary/device-results"
-    suggestion_topic: str = "summary/suggestions"
     client_id: str = "edge_01-runtime"
     ingress_queue_capacity: int = 160
 
@@ -55,8 +55,6 @@ class V12RuntimeConfig:
     http_read_timeout_ms: int = 2_000
     late_correction_retention_ms: int = 3_600_000
     device_result_publish_max_attempts: int = 5
-    # 建议发布重试上限，超过后进入死信等待人工恢复。
-    suggestion_publish_max_attempts: int = 5
     # 阶段 5：结果上报重试上限，超过后进入死信等待人工恢复。
     result_upload_max_attempts: int = 8
     # 阶段 5：已发布 Outbox 记录的保留期（小时），0 表示禁用自动清理。
@@ -103,15 +101,6 @@ class RawSampleCaptureConfig:
 
 
 @dataclass(frozen=True)
-class SuggestionLlmConfig:
-    enabled: bool = True
-    base_url: str = "http://127.0.0.1:8005"
-    timeout_seconds: float = 3.0
-    history_window: int = 10
-    fallback_text: str = "设备异常，建议关注。"
-
-
-@dataclass(frozen=True)
 class EdgeRuntimeConfig:
     edge_node_id: str = "edge_01"
     mqtt: MqttConfig = field(default_factory=MqttConfig)
@@ -121,7 +110,6 @@ class EdgeRuntimeConfig:
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     completion_dispatch: CompletionDispatchConfig = field(default_factory=CompletionDispatchConfig)
     model_update: ModelUpdatePollerConfig = field(default_factory=ModelUpdatePollerConfig)
-    suggestion_llm: SuggestionLlmConfig = field(default_factory=SuggestionLlmConfig)
     raw_sample_capture: RawSampleCaptureConfig = field(default_factory=RawSampleCaptureConfig)
     cloud_node_urls: Mapping[str, str] = field(default_factory=dict)
 
@@ -147,34 +135,17 @@ class EdgeRuntimeConfig:
                     "EDGE_MQTT_INPUT_TOPIC",
                     f"edge/{edge_node_id}/input",
                 ).strip(),
+                bearing_result_topic=env.get(
+                    "EDGE_MQTT_BEARING_RESULT_TOPIC",
+                    "summary/bearing-results",
+                ).strip(),
                 device_result_topic=env.get(
                     "EDGE_MQTT_DEVICE_RESULT_TOPIC",
                     "summary/device-results",
                 ).strip(),
-                suggestion_topic=env.get(
-                    "EDGE_MQTT_SUGGESTION_TOPIC",
-                    "summary/suggestions",
-                ).strip(),
                 client_id=env.get(
                     "EDGE_MQTT_CLIENT_ID",
                     f"{edge_node_id}-runtime",
-                ).strip(),
-            ),
-            suggestion_llm=SuggestionLlmConfig(
-                enabled=env.get("EDGE_SUGGESTION_LLM_ENABLED", "true").strip().lower() == "true",
-                base_url=env.get(
-                    "EDGE_SUGGESTION_LLM_BASE_URL",
-                    "http://127.0.0.1:8005",
-                ).rstrip("/"),
-                timeout_seconds=float(
-                    env.get("EDGE_SUGGESTION_LLM_TIMEOUT_SECONDS", "3.0")
-                ),
-                history_window=int(
-                    env.get("EDGE_SUGGESTION_HISTORY_WINDOW", "10")
-                ),
-                fallback_text=env.get(
-                    "EDGE_SUGGESTION_FALLBACK_TEXT",
-                    "设备异常，建议关注。",
                 ).strip(),
             ),
             scheduler=SchedulerConfig(
@@ -189,7 +160,12 @@ class EdgeRuntimeConfig:
             ),
             v12=V12RuntimeConfig(
                 enabled=env.get("EDGE_V12_ENABLED", "true").strip().lower() == "true",
-                database_path=Path(env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db")),
+                database_path=Path(
+                    env.get(
+                        "EDGE_EXPERIMENT_DATABASE_PATH",
+                        env.get("EDGE_V12_DATABASE_PATH", "data/edge_v12.db"),
+                    )
+                ),
                 cloud_now_timeout_ms=int(env.get("EDGE_CLOUD_NOW_TIMEOUT_MS", "3000")),
                 round_finalize_grace_ms=int(env.get("EDGE_ROUND_FINALIZE_GRACE_MS", "500")),
                 round_timeout_ms=int(env.get("EDGE_ROUND_TIMEOUT_MS", "3500")),
@@ -203,9 +179,6 @@ class EdgeRuntimeConfig:
                 ),
                 device_result_publish_max_attempts=int(
                     env.get("EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS", "5")
-                ),
-                suggestion_publish_max_attempts=int(
-                    env.get("EDGE_SUGGESTION_PUBLISH_MAX_ATTEMPTS", "5")
                 ),
                 result_upload_max_attempts=int(
                     env.get("EDGE_RESULT_UPLOAD_MAX_ATTEMPTS", "8")
@@ -286,6 +259,8 @@ class EdgeRuntimeConfig:
             errors.append("MQTT host and client_id must be non-empty")
         if not self.mqtt.device_result_topic.strip():
             errors.append("mqtt.device_result_topic must be non-empty")
+        if not self.mqtt.bearing_result_topic.strip():
+            errors.append("mqtt.bearing_result_topic must be non-empty")
         if not self.scheduler.base_url.startswith(("http://", "https://")):
             errors.append("scheduler.base_url must use HTTP or HTTPS")
         if self.scheduler.heartbeat_interval_seconds != 1.0:
@@ -324,8 +299,6 @@ class EdgeRuntimeConfig:
             errors.append("v12.late_correction_retention_ms must be positive")
         if self.v12.device_result_publish_max_attempts <= 0:
             errors.append("v12.device_result_publish_max_attempts must be positive")
-        if self.v12.suggestion_publish_max_attempts <= 0:
-            errors.append("v12.suggestion_publish_max_attempts must be positive")
         if self.v12.result_upload_max_attempts <= 0:
             errors.append("v12.result_upload_max_attempts must be positive")
         if self.v12.outbox_published_retention_hours < 0:
@@ -386,12 +359,4 @@ class EdgeRuntimeConfig:
             errors.append("raw_sample_capture.upload_batch_size must be positive")
         if raw_capture.max_upload_attempts <= 0:
             errors.append("raw_sample_capture.max_upload_attempts must be positive")
-        suggestion = self.suggestion_llm
-        if suggestion.enabled:
-            if not suggestion.base_url.startswith(("http://", "https://")):
-                errors.append("suggestion_llm.base_url must use HTTP or HTTPS")
-            if suggestion.timeout_seconds <= 0:
-                errors.append("suggestion_llm.timeout_seconds must be positive")
-            if suggestion.history_window < 1:
-                errors.append("suggestion_llm.history_window must be at least 1")
         return errors

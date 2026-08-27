@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, Mapping, Optional, Protocol
+from typing import Any, Callable, Mapping, Optional
 
 from core.bearing_actions import action_for_grade
 from core.diagnosis_contracts import EdgeBearingResult
@@ -18,10 +18,11 @@ from raw_sample_capture import RawSampleCaptureService
 from raw_sample_capture.uploader import RawAnalysisSampleUploader
 from result_uploader import ResultUploader
 
+from .bearing_publisher import BearingPublisher
 from .contracts import action_level_for
 from .dispatcher import CompletionDispatcher
 from .http import SchedulerReporter
-from .suggestion_worker import SuggestionWorker
+from .routing_worker import RouteReplay, RoutingWorkerPool
 from .v12_flow import V12DecisionFlow
 
 
@@ -29,10 +30,6 @@ _DEVICE_DELIVERY_RECONCILIATION_INTERVAL_NS = 300_000_000_000
 # AUD-11：聚合回补的最长等待时长。超龄的完成包在回补时直接出队放弃，
 # 避免 v12 工作流长期不可用时无限重放（重放含 Scheduler 路由 HTTP 调用）。
 _AGGREGATION_BACKFILL_MAX_AGE_NS = 60_000_000_000
-
-
-class JsonPublisher(Protocol):
-    def publish(self, payload: Mapping[str, Any], *, timeout_seconds: float = 2.0) -> None: ...
 
 
 class EdgeRuntimeCoordinator:
@@ -55,13 +52,15 @@ class EdgeRuntimeCoordinator:
         cloud_now_timeout_ns: int = 3_000_000_000,
         round_timeout_ns: int = 3_500_000_000,
         device_result_outbox: Any = None,
+        bearing_result_outbox: Any = None,
+        on_local_bearing_result: Optional[Callable[[EdgeBearingResult], None]] = None,
         on_packet_route_error: Optional[Callable[[dict[str, Any]], None]] = None,
-        suggestion_llm_client: Any = None,
-        suggestion_publisher: Optional[JsonPublisher] = None,
-        suggestion_outbox: Any = None,
-        suggestion_history_window: int = 10,
         completion_dispatch_enabled: bool = True,
         completion_dispatch_queue_size: int = 256,
+        routing_worker_count: int = 4,
+        routing_queue_size: int = 256,
+        bearing_publish_enabled: bool = True,
+        bearing_publish_queue_size: int = 256,
         clock_ns=time.time_ns,
     ):
         self.edge_node_id = edge_node_id
@@ -78,17 +77,13 @@ class EdgeRuntimeCoordinator:
         self.cloud_now_timeout_ns = cloud_now_timeout_ns
         self.round_timeout_ns = round_timeout_ns
         self.device_result_outbox = device_result_outbox
+        self.bearing_result_outbox = bearing_result_outbox
+        self.on_local_bearing_result = on_local_bearing_result or (lambda _: None)
         self.cloud_review_service: Any = None
         # 阶段 5：已发布 Outbox 记录保留期（纳秒）；None/<=0 表示禁用自动清理。
         # 由装配层按配置注入，维护轮次据此执行数据保留策略。
         self.outbox_published_retention_ns: int | None = None
         self.on_packet_route_error = on_packet_route_error or (lambda _: None)
-        self.suggestion_llm_client = suggestion_llm_client
-        self.suggestion_publisher = suggestion_publisher
-        # 建议发布优先走持久化 Outbox（先落库后发送，避免断网/重启丢建议）；
-        # 未装配 Outbox 时退回直接 MQTT 发布（向后兼容）。
-        self.suggestion_outbox = suggestion_outbox
-        self.suggestion_history_window = suggestion_history_window
         self._clock_ns = clock_ns
         self._mutex = threading.Lock()
         self._last_task_activity_ns = 0
@@ -104,19 +99,32 @@ class EdgeRuntimeCoordinator:
         ] = {}
         # H1：完成事件分发线程——把路由/落盘/上报等控制面 I/O 移出数据面(推理 worker)。
         self.dispatcher = CompletionDispatcher(
-            self._process_completion,
+            self._dispatch_item,
             enabled=completion_dispatch_enabled,
             queue_size=completion_dispatch_queue_size,
             on_error=self._report_dispatch_error,
         )
-        # H3：设备级建议线程——设备级最终诊断结果触发一次 LLM，而非逐包。
-        self.suggestion_worker = SuggestionWorker(
-            llm_client=suggestion_llm_client,
-            outbox=suggestion_outbox,
-            publisher=suggestion_publisher,
-            history_window=suggestion_history_window,
+        # H2：有界异步路由 worker 池——快照落盘 + Scheduler HTTP POST 移出
+        # dispatcher 主循环；结果按提交序号重排后由 dispatcher 线程串行回放
+        # V1.2 状态推进。route_fn 在线程池内并发执行（CloudReviewStore.save
+        # 自带锁、HTTP client 无共享状态）；V1.2 推进由 _v12_mutex 串行化。
+        self._v12_mutex = threading.Lock()
+        self.routing_pool = RoutingWorkerPool(
+            self._route_packet,
+            self._on_route_replay,
+            worker_count=routing_worker_count,
+            queue_size=routing_queue_size,
             clock_ns=clock_ns,
         )
+        # H3-ASYNC：本地 bearing 结果异步发布器——把 outbox SQLite 写入
+        # 移出推理 worker（H3-FIX 在推理 worker 内同步写 outbox 阻塞消费
+        # 导致 QUEUE_TIMEOUT 降级雪崩），submit 仅 O(1) 入队；队列满时
+        # 丢弃，由 dispatcher 内 H1-FIX 幂等 enqueue 兑底。
+        self.bearing_publisher = BearingPublisher(
+            self._publish_bearing_result_fast_path,
+            queue_size=bearing_publish_queue_size,
+            on_error=self._report_publish_error,
+        ) if bearing_publish_enabled else None
         self.pipeline.on_packet_completed = self.on_packet_completed
 
     def receive_raw_packet(self, raw_packet: dict[str, Any]) -> bool:
@@ -185,8 +193,55 @@ class EdgeRuntimeCoordinator:
             pass
 
     def on_packet_completed(self, completion: PacketExecutionCompleted) -> None:
+        # H3-ASYNC：本地 bearing 结果发布交由独立 publisher 线程异步执行
+        # （O(1) 入队，不阻塞推理 worker）；publisher 队列满/停止时静默
+        # 丢弃，dispatcher 内 H1-FIX 段落的幂等 enqueue 兑底。
+        if self.bearing_publisher is not None:
+            self.bearing_publisher.submit(completion)
+        else:
+            try:
+                self._publish_bearing_result_fast_path(completion)
+            except Exception as error:
+                self._report_publish_error(completion, error)
         # H1：完成事件入队(O(1))；控制面逻辑由 CompletionDispatcher 线程异步执行。
         self.dispatcher.submit(completion)
+
+    def _publish_bearing_result_fast_path(
+        self, completion: PacketExecutionCompleted
+    ) -> None:
+        """模型完成回调内直接构造并发布本地 bearing 结果（H3，幂等）。
+
+        与 _process_completion 的 H1-FIX 段落构造相同不可变 EdgeBearingResult
+        并调用 on_local_bearing_result；outbox 按 result_id 幂等，dispatcher
+        后续重复调用无副作用。读取 _active_diagnosis_windows 不 pop（pop 仍由
+        dispatcher 线程完成），时序上注册先于完成回调，故无竞态。
+        """
+        if self.v12_flow is None or completion.edge is None:
+            return
+        with self._mutex:
+            runtime_window = self._active_diagnosis_windows.get(
+                _completion_identity(completion)
+            )
+        diagnosis_window = (
+            runtime_window[0] if runtime_window is not None else None
+        )
+        raw_packet = runtime_window[1] if runtime_window is not None else None
+        if raw_packet is None:
+            packet = self.ingress.packet_snapshot(
+                completion.task_id,
+                completion.bearing_id,
+                completion.sequence_number,
+                device_id=completion.device_id,
+                sender_id=completion.sender_id,
+            )
+            raw_ref = packet.raw_packet_ref if packet is not None else None
+            raw_packet = self.cache.read(raw_ref) if raw_ref is not None else None
+        if raw_packet is None:
+            return
+        edge_result = _edge_bearing_result(
+            completion, raw_packet, diagnosis_window=diagnosis_window
+        )
+        self.on_local_bearing_result(edge_result)
 
     def _process_completion(self, completion: PacketExecutionCompleted) -> None:
         with self._mutex:
@@ -231,25 +286,87 @@ class EdgeRuntimeCoordinator:
         raw_packet = runtime_raw_packet or (
             self.cache.read(raw_ref) if raw_ref is not None else None
         )
-        route_decision = self._route_packet(completion, raw_packet, diagnosis_window)
-        if self.v12_flow is not None and completion.edge is not None and route_decision is not None:
+        # H1-FIX：先构造并持久化不可变的本地 bearing 结果（Summary 消费，
+        # 与 Scheduler 路由无关），再执行路由快照/Scheduler HTTP 等阻塞
+        # 控制面操作。原顺序让 Summary 本地发布等待 Scheduler 路由往返，
+        # 与下方注释的承诺相悖（实测每包多约 0.1s，bearing outbox 生产
+        # 速率被拖至约 5 包/秒）。
+        edge_result = None
+        if self.v12_flow is not None and completion.edge is not None:
             try:
                 if raw_packet is None:
                     raise ValueError("completed packet raw data is unavailable")
                 edge_result = _edge_bearing_result(
                     completion, raw_packet, diagnosis_window=diagnosis_window
                 )
-                _, device = self.v12_flow.apply_edge_result(
-                    edge_result,
-                    route_decision,
-                    expected_bearing_ids=task.expected_bearing_ids,
-                    accepted_at_ns=self._clock_ns(),
-                )
-                self._capture_bearing_result(edge_result, route_decision, device)
+                # Summary consumes the immutable local result. Publishing must not
+                # depend on whether Scheduler can provide a later lifecycle route.
+                self.on_local_bearing_result(edge_result)
             except Exception as error:
                 self._report_v12_error(completion, error)
                 # 聚合暂不可用：登记完成包等待维护轮回补重放（原 action 承诺的
                 # raw_packet_retained_for_replay 由此闭环）。
+                self._park_for_aggregation(completion)
+        # H2-FIX：路由（快照落盘 + Scheduler HTTP POST）移出本线程，交给
+        # 有界异步 routing worker 池；结果按提交序号重排后回放到本
+        # dispatcher 线程，V1.2 状态推进仍串行（见 _apply_route_decision
+        # 的 _v12_mutex）。submit 返回 False（停止中/队列满）时降级为同步
+        # 路由 + 立即回放，语义退回 H1-FIX 前，宁可偶发退化不可丢。
+        if self.packet_router is not None:
+            if not self.routing_pool.submit(
+                completion, raw_packet, diagnosis_window, edge_result, task
+            ):
+                route_decision = self._route_packet(
+                    completion, raw_packet, diagnosis_window
+                )
+                self._apply_route_decision(
+                    completion, task, edge_result, route_decision
+                )
+        else:
+            self._apply_route_decision(completion, task, edge_result, None)
+
+    def _dispatch_item(self, item: Any) -> None:
+        """dispatcher 单线程分发：完成事件或路由回放事件（H2）。"""
+        if isinstance(item, RouteReplay):
+            self._apply_route_replay(item)
+            return
+        self._process_completion(item)
+
+    def _on_route_replay(self, replay: RouteReplay) -> None:
+        """routing worker 按提交序号回放；交还 dispatcher 线程串行执行。"""
+        self.dispatcher.submit(replay)
+
+    def _apply_route_replay(self, replay: RouteReplay) -> None:
+        self._apply_route_decision(
+            replay.completion, replay.task, replay.edge_result, replay.route_decision
+        )
+
+    def _apply_route_decision(
+        self,
+        completion: PacketExecutionCompleted,
+        task: Any,
+        edge_result: EdgeBearingResult | None,
+        route_decision: Mapping[str, Any] | None,
+    ) -> None:
+        """串行推进 V1.2 状态：路由结果回放与同步降级路径共用。
+
+        _v12_mutex 保证 apply_edge_result 不会并发（回放、dispatcher 内联、
+        停机降级路径均持锁），SQLite 写与设备轮次 CAS 竞态被收窄。
+        """
+        if self.v12_flow is None or edge_result is None:
+            return
+        with self._v12_mutex:
+            try:
+                if route_decision is not None:
+                    _, device = self.v12_flow.apply_edge_result(
+                        edge_result,
+                        route_decision,
+                        expected_bearing_ids=task.expected_bearing_ids,
+                        accepted_at_ns=self._clock_ns(),
+                    )
+                    self._capture_bearing_result(edge_result, route_decision, device)
+            except Exception as error:
+                self._report_v12_error(completion, error)
                 self._park_for_aggregation(completion)
 
     def _route_packet(
@@ -420,16 +537,6 @@ class EdgeRuntimeCoordinator:
         except Exception:
             pass
 
-    def submit_device_suggestion(self, result: Any) -> None:
-        """H3：设备级最终诊断结果非阻塞入队，由建议线程消费生成一条建议。
-
-        由 v12_flow 的设备级回调(_emit_device_result)统一触发，覆盖四种闭合路径：
-        边缘自主闭合 / 轮次超时 / 云端复核回填 / 云仲裁修正。v12 关闭时无回调，
-        自然满足"无设备级最终结果不触发 LLM"的硬约束。
-        """
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.submit(result)
-
     def _report_dispatch_error(self, completion: Any, error: Exception) -> None:
         """H1/H2：dispatcher 捕获到完成事件处理异常时上报，保留原异常语义。"""
         record = {
@@ -449,27 +556,65 @@ class EdgeRuntimeCoordinator:
         except Exception:
             pass
 
+    def _report_publish_error(self, completion: Any, error: Exception) -> None:
+        """H3-ASYNC：publisher 捕获到发布异常时上报；H1-FIX 幂等兑底保语义。"""
+        record = {
+            "stage": "bearing_publish",
+            "device_id": getattr(completion, "device_id", None),
+            "task_id": getattr(completion, "task_id", None),
+            "bearing_id": getattr(completion, "bearing_id", None),
+            "sender_id": getattr(completion, "sender_id", None),
+            "packet_id": getattr(completion, "packet_id", None),
+            "sequence_number": getattr(completion, "sequence_number", None),
+            "error_code": getattr(error, "code", type(error).__name__),
+            "message": str(error),
+            "action": "dispatcher_idempotent_enqueue_fallback",
+        }
+        try:
+            self.on_packet_route_error(record)
+        except Exception:
+            pass
+
     def start_background(self) -> None:
-        """启动完成分发线程与建议线程（由 service 在数据面启动后调用）。"""
+        """H2：先启动 routing worker 池，再启动完成事件分发线程。
+
+        顺序必须保持：dispatcher 处理完成事件时会向 routing pool 提交
+        job；若 routing pool 未启动，submit 会退化为同步路由，异步能力
+        名存实亡。bearing publisher 独立于两者，先于 dispatcher 启动，
+        保证完成回调进入时 publisher 已就绪（未启动会同步发布阻塞推理
+        worker）。
+        """
+        if self.bearing_publisher is not None:
+            self.bearing_publisher.start()
+        if self.routing_pool is not None:
+            self.routing_pool.start()
         if self.dispatcher is not None:
             self.dispatcher.start()
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.start()
 
     def stop_background(self) -> None:
-        """停止完成分发线程与建议线程（dispatcher 先排空在途完成事件）。"""
+        """H2 停机顺序：dispatcher 首次 drain → routing pool 排空停止 →
+        dispatcher 二次 drain/stop → publisher 排空停止。
+
+        前置条件：service.stop() 已先停数据面（不再产生新完成事件）。
+        首次 drain 让在途完成事件全部处理完（其间会向 routing pool 提交
+        job）；routing pool stop 等待 worker 排空并完成全部按序回放，回放
+        会再次向 dispatcher 提交 RouteReplay；二次 drain 等回放处理完后
+        停止 dispatcher 线程；最后停 publisher（其 job 只由完成回调提交，
+        数据面已停且 dispatcher 已排空，在途发布完成后退出）。
+        """
         if self.dispatcher is not None:
-            self.dispatcher.stop()
-        if self.suggestion_worker is not None:
-            self.suggestion_worker.stop()
+            self.dispatcher.drain(timeout_seconds=10.0)
+        if self.routing_pool is not None:
+            self.routing_pool.stop(timeout_seconds=15.0)
+        if self.dispatcher is not None:
+            self.dispatcher.drain(timeout_seconds=10.0)
+            self.dispatcher.stop(timeout_seconds=5.0)
+        if self.bearing_publisher is not None:
+            self.bearing_publisher.stop(timeout_seconds=10.0)
 
     @property
     def completion_dispatcher_alive(self) -> bool:
         return self.dispatcher is None or self.dispatcher.alive
-
-    @property
-    def suggestion_worker_alive(self) -> bool:
-        return self.suggestion_worker is None or self.suggestion_worker.alive
 
     @property
     def dispatch_overflow_total(self) -> int:
@@ -480,8 +625,57 @@ class EdgeRuntimeCoordinator:
         return self.dispatcher.queue_size if self.dispatcher is not None else 0
 
     @property
-    def suggestion_queue_size(self) -> int:
-        return self.suggestion_worker.queue_size if self.suggestion_worker is not None else 0
+    def routing_pool_alive(self) -> bool:
+        """routing worker 池是否存活（未装配或全部 worker 存活均视为 true）。"""
+        if self.routing_pool is None:
+            return True
+        return self.routing_pool.alive
+
+    @property
+    def routing_pool_snapshot(self) -> dict[str, Any]:
+        """H2：routing worker 池运行指标（深度/在途/接受/回放/失败/溢出）。"""
+        pool = self.routing_pool
+        if pool is None:
+            return {
+                "depth": 0,
+                "in_flight": 0,
+                "accepted": 0,
+                "replayed": 0,
+                "failed": 0,
+                "overflow": 0,
+                "alive": True,
+            }
+        return {
+            "depth": pool.depth,
+            "in_flight": pool.in_flight,
+            "accepted": pool.accepted_total,
+            "replayed": pool.replayed_total,
+            "failed": pool.failed_total,
+            "overflow": pool.overflow_total,
+            "alive": pool.alive,
+        }
+
+    @property
+    def bearing_publisher_snapshot(self) -> dict[str, Any]:
+        """H3-ASYNC：bearing 发布器运行指标（深度/接受/发布/失败/溢出）。"""
+        publisher = self.bearing_publisher
+        if publisher is None:
+            return {
+                "depth": 0,
+                "accepted": 0,
+                "published": 0,
+                "failed": 0,
+                "overflow": 0,
+                "alive": True,
+            }
+        return {
+            "depth": publisher.depth,
+            "accepted": publisher.accepted_total,
+            "published": publisher.published_total,
+            "failed": publisher.failed_total,
+            "overflow": publisher.overflow_total,
+            "alive": publisher.alive,
+        }
 
     def node_status(self) -> dict[str, Any]:
         now = self._clock_ns()
@@ -601,11 +795,11 @@ class EdgeRuntimeCoordinator:
             "provisional_promotions": 0,
             "rounds_finalized": 0,
             "device_results_published": 0,
+            "bearing_results_published": 0,
             "result_uploads": 0,
             "raw_sample_uploads": 0,
             "cloud_review_retries": 0,
             "outbox_published_cleaned": 0,
-            "suggestions_published": 0,
             "device_delivery_results_checked": 0,
             "aggregation_backfilled": 0,
         }
@@ -634,10 +828,17 @@ class EdgeRuntimeCoordinator:
                         retention_ns=retention_ns, now_ns=now
                     )
                 )
+        if self.bearing_result_outbox is not None:
+            summary["bearing_results_published"] = self.bearing_result_outbox.run_once(now)
+            retention_ns = self.outbox_published_retention_ns
+            if retention_ns is not None and retention_ns > 0:
+                summary["outbox_published_cleaned"] += (
+                    self.bearing_result_outbox.cleanup_published(
+                        retention_ns=retention_ns, now_ns=now
+                    )
+                )
         if self.result_uploader is not None:
             summary["result_uploads"] = self.result_uploader.run_once(now)
-        if self.suggestion_outbox is not None:
-            summary["suggestions_published"] = self.suggestion_outbox.run_once(now)
         if self.raw_sample_uploader is not None:
             summary["raw_sample_uploads"] = self.raw_sample_uploader.run_once(now)
         if self.cloud_review_service is not None:

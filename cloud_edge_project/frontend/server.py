@@ -38,6 +38,7 @@ BACKENDS: dict[str, str] = {
     "edge02": "http://127.0.0.1:8002",
     "scheduler": "http://127.0.0.1:8003",
     "cloud": "http://127.0.0.1:8004",
+    "summary": "http://127.0.0.1:8006",
     "network": "http://127.0.0.1:8090",
 }
 

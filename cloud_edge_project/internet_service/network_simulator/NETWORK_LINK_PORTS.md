@@ -8,7 +8,7 @@
 | Edge Service（edge_02，宿主机映射） | 8002 |
 | Scheduler Service | 8003 |
 | Cloud Service | 8004 |
-| Edge 建议 LLM（宿主机 llama.cpp 0.5B，不经网络模拟） | 8005 |
+| Summary 建议 LLM（宿主机 llama.cpp 0.5B，不经网络模拟） | 8005 |
 | 云端模型更新 LLM（宿主机 llama.cpp 3B，不经网络模拟） | 6006 |
 | MQTT Broker | 1883 |
 | Network API | 8090 |
@@ -46,7 +46,7 @@
 
 宿主机上的业务进程使用 `127.0.0.1:<代理端口>`，Compose 容器内的业务进程使用 `toxiproxy:<代理端口>`。业务如果继续直接访问 `8001`、`8002`、`8003` 或 `8004`，流量不会经过网络模拟链路。
 
-Edge 建议 LLM（宿主机 `8005`）由 Edge 容器经 `host.docker.internal:8005` 直连调用，云端模型更新 LLM（宿主机 `6006`）由 Cloud 直接调用；两者均不经过网络模拟，也不占用本表中的任何代理端口，且互不相干（详见启动手册第 6 节）。
+Summary 建议 LLM（宿主机 `8005`）由宿主机 Summary 通过 `127.0.0.1:8005` 调用，云端模型更新 LLM（宿主机 `6006`）由 Cloud 直接调用；Edge 不访问建议 LLM。两者均不经过网络模拟，也不占用本表中的任何代理端口（详见启动手册第 6 节）。
 
 Edge Status Reporter 经过网络模拟时，宿主机启动前设置：
 

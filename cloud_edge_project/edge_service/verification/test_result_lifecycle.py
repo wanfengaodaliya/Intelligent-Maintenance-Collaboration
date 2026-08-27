@@ -26,6 +26,12 @@ def _edge_result() -> EdgeBearingResult:
         recommended_action="continue_operation",
         model_version="edge_model_v1",
         created_at_ns=50_000_001,
+        diagnosis_label="healthy",
+        class_probabilities={
+            "healthy": 0.95,
+            "outer_ring_damage": 0.03,
+            "inner_ring_damage": 0.02,
+        },
     )
 
 
@@ -64,6 +70,8 @@ def test_route_lifecycle_matrix_persists_single_current_revision(tmp_path) -> No
     assert waiting.degraded is False
     assert provisional.lifecycle_state == "PROVISIONAL"
     assert provisional.degraded is True
+    assert provisional.diagnosis_label == "healthy"
+    assert provisional.class_probabilities["healthy"] == 0.95
     assert repository.get_current("machine_01", "task_001", "round_01", "bearing_02") == provisional
 
 
@@ -117,6 +125,7 @@ def test_cloud_result_replaces_waiting_edge_result_after_full_identity_validatio
     assert final.cloud_result_id == cloud.result_id
     assert final.replaces_result_id == waiting.result_id
     assert final.revision == 2
+    assert final.diagnosis_label == "healthy"
 
 
 def test_cloud_result_with_mismatched_window_is_rejected(tmp_path) -> None:

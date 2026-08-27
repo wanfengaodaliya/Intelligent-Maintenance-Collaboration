@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 总览大屏 | index.html | 实时诊断结果 / 维护建议 / 数据包推送 + 四服务健康条 | MQTT 实时流 + /health 轮询 |
 | 调度拓扑 | topology.html | 系统拓扑、Edge 健康摘要和最近批次九条 Sender 链路 | /health + /scheduler/assignments/recent-batch + 网络模拟器 |
-| 设备仲裁 | arbitration.html | 按冲突 ID 查询边缘 vs 云端对比与最终裁定 | /cloud/device-arbitration/* |
+| 一致性与仲裁 | arbitration.html | 展示三轴承跨 Edge 冲突率、一致性、Cloud 仲裁结果及冲突精确查询 | /summary/*、/cloud/device-arbitration/* |
 | 全局分析 | analysis.html | 触发/读取设备健康全局分析报告 | /cloud/global-analysis* |
 
 ## 启动步骤
@@ -43,7 +43,7 @@
 
 ## 网关做了什么（为什么需要它）
 
-浏览器有同源安全策略，而后端各服务（8001/8002/8003/8004）没有开 CORS，
+浏览器有同源安全策略，而后端各服务（8001/8002/8003/8004/8006）没有开 CORS，
 前端页面直接调用会被浏览器拦截。同时 MQTT 是 TCP 协议，浏览器无法直连。
 
 `server.py` 一个进程解决两件事：
@@ -54,6 +54,7 @@
 | `/api/edge02/*` | http://127.0.0.1:8002/* | Edge 节点 02 |
 | `/api/scheduler/*` | http://127.0.0.1:8003/* | 调度器 |
 | `/api/cloud/*` | http://127.0.0.1:8004/* | 云端服务 |
+| `/api/summary/*` | http://127.0.0.1:8006/* | 三轴承窗口汇总与一致性指标 |
 | `/api/network/*` | http://127.0.0.1:8090/* | 网络模拟器（链路质量） |
 | `/api/events` | MQTT 1883 → SSE | 订阅 `summary/device-results`、`summary/suggestions`、`edge/+/input`，实时推给浏览器 |
 

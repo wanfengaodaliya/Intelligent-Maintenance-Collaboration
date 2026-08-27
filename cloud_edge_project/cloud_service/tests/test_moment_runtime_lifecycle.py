@@ -13,6 +13,30 @@ from cloud_service.config import CloudSettings
 from cloud_service.model_update.model_types import ActiveModelVersionStore
 from cloud_service.model_update.repository import ModelUpdateRepository
 from cloud_service.moment_review_repository import MomentReviewRepository
+from cloud_service.storage.database import initialize_database
+from cloud_service.storage.schema import DDL
+
+
+def test_existing_v22_database_adds_raw_diagnosis_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "cloud-v22.db"
+    old_ddl = DDL.replace("    diagnosis_label TEXT,\n", "").replace(
+        "    class_probabilities_json TEXT,\n", ""
+    )
+    connection = sqlite3.connect(database_path)
+    connection.executescript(old_ddl)
+    connection.close()
+
+    initialize_database(database_path)
+
+    connection = sqlite3.connect(database_path)
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(cloud_moment_review_record)"
+        ).fetchall()
+    }
+    connection.close()
+    assert {"diagnosis_label", "class_probabilities_json"} <= columns
 
 
 def _moment_result() -> dict[str, object]:

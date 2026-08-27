@@ -7,7 +7,6 @@ from .config import (
     MaintenanceConfig,
     MqttConfig,
     SchedulerConfig,
-    SuggestionLlmConfig,
     V12RuntimeConfig,
 )
 from .contracts import action_level_for
@@ -30,7 +29,6 @@ __all__ = [
     "MaintenanceConfig",
     "MqttConfig",
     "PacketRouteErrorRecorder",
-    "SuggestionLlmConfig",
     "V12RuntimeConfig",
     "SchedulerConfig",
     "action_level_for",

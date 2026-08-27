@@ -38,12 +38,14 @@ def initialize_database(database_path: Path) -> None:
         _migrate_v10_to_v11_identity_fields(connection)
         _migrate_v15_model_update_table(connection)
         connection.executescript(DDL)
+        _migrate_v21_to_v22_device_arbitration_identity(connection)
         _migrate_v5_to_v6(connection)
         _migrate_v10_to_v11_identity_fields(connection)
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         _migrate_v16_to_v17_fault_labels(connection)
         _migrate_v17_to_v18_moment_edge_label(connection)
+        _migrate_v22_to_v23_moment_diagnosis_output(connection)
         _migrate_v18_to_v19_label_confirmation_risk_level(connection)
         _migrate_v19_to_v20_dual_model_support(connection)
         _migrate_v20_to_v21_model_update_columns(connection)
@@ -88,11 +90,39 @@ def initialize_database(database_path: Path) -> None:
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
-                SCHEMA_VERSION,
+                21,
                 time.time_ns(),
                 "unify abnormal labels to fault",
             ),
         )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "preserve raw MOMENT diagnosis labels for paired evaluation",
+            ),
+        )
+
+
+def _migrate_v21_to_v22_device_arbitration_identity(
+    connection: sqlite3.Connection,
+) -> None:
+    if not _table_exists(connection, "device_arbitration_record"):
+        return
+    columns = _columns(connection, "device_arbitration_record")
+    additions = {
+        "summary_result_id": "TEXT",
+        "window_start_sequence": "INTEGER",
+        "window_end_sequence": "INTEGER",
+        "request_payload_hash": "TEXT",
+    }
+    for name, sql_type in additions.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE device_arbitration_record ADD COLUMN {name} {sql_type}"
+            )
 
 
 def _migrate_v15_model_update_table(connection: sqlite3.Connection) -> None:
@@ -277,6 +307,25 @@ def _migrate_v17_to_v18_moment_edge_label(connection: sqlite3.Connection) -> Non
     if "edge_label" in _columns(connection, "cloud_moment_review_record"):
         return
     connection.execute("ALTER TABLE cloud_moment_review_record ADD COLUMN edge_label TEXT")
+
+
+def _migrate_v22_to_v23_moment_diagnosis_output(
+    connection: sqlite3.Connection,
+) -> None:
+    """Preserve the raw three-class MOMENT output for paired evaluation."""
+
+    if not _table_exists(connection, "cloud_moment_review_record"):
+        return
+    columns = _columns(connection, "cloud_moment_review_record")
+    if "diagnosis_label" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record ADD COLUMN diagnosis_label TEXT"
+        )
+    if "class_probabilities_json" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record "
+            "ADD COLUMN class_probabilities_json TEXT"
+        )
 
 
 def _migrate_v18_to_v19_label_confirmation_risk_level(

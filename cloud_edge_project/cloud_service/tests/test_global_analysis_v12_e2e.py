@@ -13,6 +13,7 @@ from cloud_service.global_analysis.result_repository import GlobalAnalysisResult
 from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.storage.database import initialize_database
 from cloud_service.task_results import TaskResultService
+from cloud_service.summary_windows import SummaryWindowRepository
 
 MOMENT_ROUND_MARKER = "DEVEL_E2E"
 
@@ -22,7 +23,14 @@ class _FakeMomentRunner:
 
     def predict(self, vibration, operating_context):
         return SimpleNamespace(
-            label="outer_ring_damage", confidence=0.95, model_version="moment_e2e_v1"
+            label="outer_ring_damage",
+            confidence=0.95,
+            probabilities={
+                "healthy": 0.02,
+                "outer_ring_damage": 0.95,
+                "inner_ring_damage": 0.03,
+            },
+            model_version="moment_e2e_v1",
         )
 
 
@@ -113,12 +121,25 @@ def test_phase_one_global_analysis_closes_the_loop(tmp_path: Path, monkeypatch) 
     initialize_database(database_path)
     monkeypatch.setattr(service_module, "get_moment_runner", lambda _settings: _FakeMomentRunner())
 
-    # 1) 真实 moment 推理落库：edge_label 被补记到 cloud_moment_review_record。
+    # 0) 配对评测端点只推理，不污染真实链路记录。
     window = _window(device_id="machine_01")
+    evaluation = service_module.evaluate_cloud_window(_v12_request(window), settings)
+    assert evaluation["diagnosis_label"] == "outer_ring_damage"
+    assert MomentReviewRepository(database_path).list_recent(
+        "machine_01", "task_001"
+    ) == []
+
+    # 1) 真实 moment 推理落库：edge_label 被补记到 cloud_moment_review_record。
     response = service_module.infer_cloud(_v12_request(window), settings)
     review = response["review_result"]
     assert review["edge_label"] == "normal"
     assert review["bearing_state"] == "warning"
+    assert review["diagnosis_label"] == "outer_ring_damage"
+    assert review["class_probabilities"]["outer_ring_damage"] == 0.95
+    persisted_review = MomentReviewRepository(database_path).get(review["review_id"])
+    assert persisted_review is not None
+    assert persisted_review["diagnosis_label"] == "outer_ring_damage"
+    assert '"outer_ring_damage":0.95' in persisted_review["class_probabilities_json"]
     decision_round_id = review["decision_round_id"]
 
     # 2) 设备判决参考同一个 task/round（构造高冲突环境）。
@@ -126,6 +147,20 @@ def test_phase_one_global_analysis_closes_the_loop(tmp_path: Path, monkeypatch) 
     assert results.ingest_device_decision(
         _device_decision(device_id="machine_01", decision_round_id=decision_round_id)
     )["duplicate"] is False
+    SummaryWindowRepository(database_path).accept(
+        {
+            "summary_result_id": "summary_machine_01_1",
+            "device_id": "machine_01",
+            "window_start_sequence": 1,
+            "window_end_sequence": 1,
+            "result_status": "PENDING_ARBITRATION",
+            "has_conflict": True,
+            "excluded_from_formal_metrics": False,
+            "max_cross_edge_grade_gap": 3,
+            "conflicting_pair_count": 1,
+            "closed_at_ns": 1,
+        }
+    )
 
     # 3) 凑足 packet 级样本量，让全局分析能输出 packet 模型更新的候选。
     _persist_moment_rows(database_path, decision_round_id, count=19)

@@ -31,6 +31,7 @@ except ImportError:  # Allows running scheduler/api.py directly.
 
 
 EXPECTED_PACKET_COUNT = 80
+EXPECTED_PACKET_COUNT_ENV = "SCHEDULER_EXPECTED_PACKET_COUNT"
 # 缓传门控：链路可用带宽低于该阈值时直接拒绝候选，等待网络恢复后重试。
 MIN_BUFFERED_THROUGHPUT_MBPS = 4.0
 REALTIME_DELIVERY_MODE = "realtime"
@@ -736,10 +737,11 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     expected_packet_count = _positive_int(
         payload.get("expected_packet_count"), "expected_packet_count"
     )
-    if expected_packet_count != EXPECTED_PACKET_COUNT:
+    configured_packet_count = _configured_expected_packet_count()
+    if expected_packet_count != configured_packet_count:
         raise AssignmentError(
             "INVALID_REQUEST",
-            f"expected_packet_count must equal {EXPECTED_PACKET_COUNT}",
+            f"expected_packet_count must equal {configured_packet_count}",
         )
     return {
         "device_id": device_id,
@@ -757,6 +759,17 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             payload.get("created_timestamp_ns"), "created_timestamp_ns"
         ),
     }
+
+
+def _configured_expected_packet_count() -> int:
+    raw = os.getenv(EXPECTED_PACKET_COUNT_ENV, str(EXPECTED_PACKET_COUNT))
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise RuntimeError(f"{EXPECTED_PACKET_COUNT_ENV} must be a positive integer") from error
+    if value <= 0:
+        raise RuntimeError(f"{EXPECTED_PACKET_COUNT_ENV} must be a positive integer")
+    return value
 
 
 def _required_throughput_mbps(request: Mapping[str, Any]) -> float:

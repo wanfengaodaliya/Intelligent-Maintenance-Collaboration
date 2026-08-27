@@ -3,8 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>设备决策与仲裁 · 智能运维协作平台</title>
+<title>决策一致性与仲裁 · 智能运维协作平台</title>
 <link rel="stylesheet" href="css/main.css">
+<style>
+.consistency-rail { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:16px; }
+.consistency-rail .metric { position:relative; overflow:hidden; }
+.consistency-rail .metric::after { content:""; position:absolute; inset:auto 0 0; height:3px; background:var(--rail,var(--accent)); }
+.bearing-lane { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:9px; }
+.bearing-unit { padding:7px 9px; border:1px solid var(--border-soft); border-radius:7px; background:var(--bg-input); font-size:11px; }
+.bearing-unit b { display:block; color:var(--text); font-family:var(--mono); }
+.bearing-unit span { color:var(--text-muted); }
+.window-item { padding:11px; border-bottom:1px solid var(--border-soft); cursor:pointer; border-left:3px solid transparent; }
+.window-item:hover, .window-item:focus { background:var(--bg-hover); outline:none; }
+.window-item.conflict { border-left-color:var(--danger); background:linear-gradient(90deg,var(--danger-soft),transparent 55%); }
+.window-item.incomplete { border-left-color:var(--warn); }
+.window-head { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+.window-meta { color:var(--text-muted); font-size:11.5px; margin-top:5px; }
+@media (max-width:1200px) { .consistency-rail { grid-template-columns:repeat(3,1fr); } }
+@media (max-width:760px) { .consistency-rail,.bearing-lane { grid-template-columns:1fr; } }
+</style>
 </head>
 <body>
 <div class="layout">
@@ -12,39 +29,48 @@
   <main class="main">
     <div class="page-header">
       <div>
-        <h1>设备决策与仲裁</h1>
-        <div class="desc">按设备和时间自动读取云端数据库；普通设备决策与冲突仲裁分开展示</div>
+        <h1>决策一致性与云端仲裁</h1>
+        <div class="desc">以同一设备、同一窗口的三个轴承局部结果为统计单位；只比较不同 Edge 之间的动作等级</div>
       </div>
     </div>
 
     <div class="card usage-tip">
-      <div class="usage-title">💡 两类记录有什么区别？</div>
+      <div class="usage-title">统计口径</div>
       <div class="usage-grid">
-        <div><b>设备最终决策</b><br>每个诊断轮次闭合后都会保存，包含设备状态、动作、置信度和是否冲突。</div>
-        <div><b>冲突仲裁</b><br>只有 <code>has_conflict=true</code> 并实际调用云端仲裁后才会产生，数量可能为 0。</div>
-        <div><b>怎么查看</b><br>页面每 5 秒自动刷新；可输入设备 ID 筛选，点击任意记录查看完整字段。</div>
-        <div><b>数据来源</b><br>直接读取 Cloud SQLite 已保存 JSON，不使用浏览器模拟数据。</div>
+        <div><b>完整窗口</b><br>收齐三个轴承且至少来自两个 Edge，才进入冲突率分母。</div>
+        <div><b>跨 Edge 冲突</b><br>不同 Edge 的动作等级最大差值达到 2；每个窗口最多计一次冲突。</div>
+        <div><b>仲裁上传成功率</b><br>Cloud 已确认保存的冲突数 ÷ Summary 检出的冲突数。</div>
+        <div><b>仲裁成功率</b><br>Cloud 状态为 resolved 的数量 ÷ Cloud 已完成仲裁数量。</div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">记录筛选 <span class="hint" id="refreshMeta">等待刷新…</span></div>
+      <div class="card-title">实验筛选 <span class="hint" id="refreshMeta">等待刷新…</span></div>
       <div class="form-row">
         <label class="field">设备 ID
-          <input type="text" id="deviceFilter" placeholder="留空显示全部，例如 machine_02" style="width:260px;">
+          <input type="text" id="deviceFilter" placeholder="留空显示本次实验全部设备" style="width:260px;">
         </label>
-        <button class="btn" id="refreshBtn">刷新记录</button>
+        <button class="btn" id="refreshBtn">刷新统计</button>
       </div>
+    </div>
+
+    <div class="consistency-rail" aria-label="决策一致性核心指标">
+      <div class="metric accent"><div class="label">完整窗口</div><div class="value" id="mEligible">0</div><div class="sub">正式统计分母</div></div>
+      <div class="metric danger" style="--rail:var(--danger)"><div class="label">冲突窗口</div><div class="value" id="mConflict">0</div><div class="sub">每个窗口最多一次</div></div>
+      <div class="metric warn" style="--rail:var(--warn)"><div class="label">冲突率</div><div class="value" id="mConflictRate">0.0%</div><div class="sub">冲突 / 完整</div></div>
+      <div class="metric ok" style="--rail:var(--ok)"><div class="label">一致性达成率</div><div class="value" id="mConsistency">0.0%</div><div class="sub">无冲突 / 完整</div></div>
+      <div class="metric accent"><div class="label">仲裁上传成功率</div><div class="value" id="mUpload">0.0%</div><div class="sub">Cloud 已确认保存</div></div>
+      <div class="metric ok" style="--rail:var(--ok)"><div class="label">仲裁成功率</div><div class="value" id="mResolved">0.0%</div><div class="sub" id="mIncomplete">不完整窗口 0</div></div>
     </div>
 
     <div class="grid grid-2" id="recordsGrid">
       <div class="card">
-        <div class="card-title">最近设备决策 <span class="hint">真实轮次结果</span></div>
-        <div id="decisionList" style="max-height:560px;overflow:auto;"><div class="empty">加载中…</div></div>
+        <div class="card-title">窗口一致性明细 <span class="hint">三个轴承 · 来源 Edge · 动作等级</span></div>
+        <div id="windowList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
       <div class="card" id="arbitrationCard">
-        <div class="card-title">冲突仲裁记录 <span class="hint">仅真实冲突</span></div>
-        <div id="arbitrationList" style="max-height:560px;overflow:auto;"><div class="empty">加载中…</div></div>
+        <div class="card-title">Cloud 仲裁记录 <span class="hint">只有冲突窗口会出现</span></div>
+        <div id="arbitrationList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
     </div>
 
@@ -67,138 +93,83 @@
 <script src="js/common.js"></script>
 <script>
 "use strict";
-
-let decisionItems = [];
+let windowItems = [];
 let arbitrationItems = [];
-
-function fmtNs(value) {
-  const ns = Number(value);
-  if (!Number.isFinite(ns) || ns <= 0) return "-";
-  return new Date(ns / 1e6).toLocaleString("zh-CN", { hour12: false });
+function fmtNs(value) { const ns=Number(value); return !Number.isFinite(ns)||ns<=0 ? "-" : new Date(ns/1e6).toLocaleString("zh-CN",{hour12:false}); }
+function pct(value) { return ((Number(value)||0)*100).toFixed(1)+"%"; }
+function kvRows(pairs) { return '<div class="kv">'+pairs.map(([k,v])=>'<div class="k">'+k+'</div><div class="v wrap">'+(v===null||v===undefined||v===""?"-":v)+'</div>').join("")+'</div>'; }
+function bearingLane(item) {
+  return '<div class="bearing-lane">'+(item.source_results||[]).map((r)=>
+    '<div class="bearing-unit"><b>'+fmt.escape(r.bearing_id||"-")+'</b><span>'+fmt.escape(r.edge_node_id||"-")+
+    ' · 等级 '+fmt.escape(r.action_grade)+' · 置信度 '+pct(r.confidence)+'</span></div>').join("")+'</div>';
 }
-
-function kvRows(pairs) {
-  return '<div class="kv">' + pairs.map(
-    ([k, v]) => '<div class="k">' + k + '</div><div class="v wrap">' +
-      (v === null || v === undefined || v === "" ? "-" : v) + "</div>"
-  ).join("") + "</div>";
-}
-
-function stateBadge(state) {
-  return badge(fmt.stateText(state), fmt.stateClass(state));
-}
-
-function renderDecisionList(items) {
-  if (!items.length) {
-    el("decisionList").innerHTML = '<div class="empty">暂无设备决策记录</div>';
-    return;
-  }
-  el("decisionList").innerHTML = items.map((item, index) => {
-    const state = item.final_state || item.status || "-";
-    const conflict = item.has_conflict ? badge("存在冲突", "danger") : badge("无冲突", "ok");
-    return '<div class="item" role="button" tabindex="0" onclick="showDecision(' + index + ')">' +
-      '<span class="time">' + fmt.escape(fmtNs(item.closed_at_ns || item.created_at_ns)) + '</span>' +
-      '<div class="body"><div class="row1">' + stateBadge(state) + conflict +
-      '设备 <b>' + fmt.escape(item.device_id || "-") + '</b></div>' +
-      '<div class="row2">任务 ' + fmt.escape(item.task_id || "-") +
-      ' · 置信度 ' + fmt.pct(item.confidence) +
-      ' · ' + fmt.escape(item.result_id || "-") + '</div></div></div>';
+function renderWindows(items) {
+  if (!items.length) { el("windowList").innerHTML='<div class="empty">尚未收齐任何三轴承窗口</div>'; return; }
+  el("windowList").innerHTML=items.map((item,index)=>{
+    const incomplete=!!item.excluded_from_formal_metrics;
+    const status=incomplete?badge("不完整","warn"):item.has_conflict?badge("跨 Edge 冲突","danger"):badge("决策一致","ok");
+    const cls=incomplete?" incomplete":item.has_conflict?" conflict":"";
+    return '<div class="window-item'+cls+'" role="button" tabindex="0" onclick="showWindow('+index+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();showWindow('+index+');}"><div class="window-head">'+status+
+      '设备 <b>'+fmt.escape(item.device_id||"-")+'</b><span class="badge muted">窗口 '+fmt.escape(item.window_start_sequence)+'</span></div>'+
+      '<div class="window-meta">最大跨 Edge 偏差 '+fmt.escape(item.max_grade_gap)+' · 冲突对 '+fmt.escape(item.conflict_pair_count)+
+      ' · '+fmt.escape(fmtNs(item.closed_at_ns))+'</div>'+bearingLane(item)+'</div>';
   }).join("");
 }
-
-function renderArbitrationList(items) {
-  if (!items.length) {
-    el("arbitrationList").innerHTML = '<div class="empty">暂无冲突仲裁记录</div>';
-    return;
-  }
-  el("arbitrationList").innerHTML = items.map((item, index) => {
-    const deviceId = item.device_id || item.subject_id || "-";
-    return '<div class="item" role="button" tabindex="0" onclick="showArbitration(' + index + ')">' +
-      '<span class="time">' + fmt.escape(fmtNs(item.created_at_ns)) + '</span>' +
-      '<div class="body"><div class="row1">' + badge("已仲裁", "warn") +
-      '设备 <b>' + fmt.escape(deviceId) + '</b></div>' +
-      '<div class="row2">冲突 ' + fmt.escape(item.conflict_id || "-") +
-      ' · 动作 ' + fmt.escape(item.final_action || "-") +
-      ' · 置信度 ' + fmt.pct(item.confidence) + '</div></div></div>';
-  }).join("");
+function renderArbitrations(items) {
+  if (!items.length) { el("arbitrationList").innerHTML='<div class="empty">当前筛选范围内没有冲突仲裁</div>'; return; }
+  el("arbitrationList").innerHTML=items.map((item,index)=>'<div class="window-item" role="button" tabindex="0" onclick="showArbitration('+index+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();showArbitration('+index+');}">'+
+    '<div class="window-head">'+badge(item.status==="resolved"?"已解决":"需人工复核",item.status==="resolved"?"ok":"warn")+
+    '设备 <b>'+fmt.escape(item.device_id||item.subject_id||"-")+'</b></div><div class="window-meta">动作 '+fmt.escape(item.final_action||"-")+
+    ' · 置信度 '+pct(item.confidence)+' · '+fmt.escape(item.resolution_method||"-")+'</div></div>').join("");
 }
-
-function showRecord(title, item, pairs) {
-  el("detailCard").style.display = "";
-  el("detailTitle").textContent = title;
-  el("detailBox").innerHTML = kvRows(pairs) + jsonDetails(item, "查看完整 JSON");
+function showWindow(index) {
+  const item=windowItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.summary_result_id||"";
+  el("detailBox").innerHTML=kvRows([["设备 / 窗口",fmt.escape(item.device_id)+" / "+fmt.escape(item.window_start_sequence)],
+    ["正式统计",item.excluded_from_formal_metrics?badge("排除","warn"):badge("计入","ok")],["是否冲突",item.has_conflict?badge("是","danger"):badge("否","ok")],
+    ["最大跨 Edge 偏差",fmt.escape(item.max_grade_gap)],["最终动作等级",fmt.escape(item.final_action_grade)],["数据质量",pct(item.data_quality_score)]])+bearingLane(item)+jsonDetails(item,"查看完整 JSON");
 }
-
-function showDecision(index) {
-  const item = decisionItems[index];
-  if (!item) return;
-  showRecord("设备决策 " + (item.result_id || ""), item, [
-    ["设备 ID", fmt.escape(item.device_id || "-")],
-    ["任务 ID", fmt.escape(item.task_id || "-")],
-    ["轮次 ID", fmt.escape(item.decision_round_id || "-")],
-    ["最终状态", stateBadge(item.final_state || item.status)],
-    ["最终动作", fmt.escape(item.final_action || "-")],
-    ["是否冲突", item.has_conflict ? badge("是", "danger") : badge("否", "ok")],
-    ["记录时间", fmt.escape(fmtNs(item.closed_at_ns || item.created_at_ns))],
-  ]);
-}
-
 function showArbitration(index) {
-  const item = arbitrationItems[index];
-  if (!item) return;
-  showRecord("冲突仲裁 " + (item.arbitration_id || ""), item, [
-    ["设备 ID", fmt.escape(item.device_id || item.subject_id || "-")],
-    ["冲突 ID", fmt.escape(item.conflict_id || "-")],
-    ["任务 ID", fmt.escape(item.task_id || "-")],
-    ["仲裁状态", fmt.escape(item.status || "-")],
-    ["最终动作", fmt.escape(item.final_action || "-")],
-    ["置信度", fmt.pct(item.confidence)],
-    ["记录时间", fmt.escape(fmtNs(item.created_at_ns))],
-  ]);
+  const item=arbitrationItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.arbitration_id||"";
+  el("detailBox").innerHTML=kvRows([["冲突 ID",fmt.escape(item.conflict_id||"-")],["Summary 结果",fmt.escape(item.summary_result_id||"-")],
+    ["状态",fmt.escape(item.status||"-")],["最终动作",fmt.escape(item.final_action||"-")],["仲裁方式",fmt.escape(item.resolution_method||"-")],["置信度",pct(item.confidence)]])+jsonDetails(item,"查看完整 JSON");
 }
-
 async function refreshRecords() {
-  const deviceId = el("deviceFilter").value.trim();
-  const query = "?limit=50" + (deviceId ? "&device_id=" + encodeURIComponent(deviceId) : "");
+  const deviceId=el("deviceFilter").value.trim(); const suffix=deviceId?"?device_id="+encodeURIComponent(deviceId)+"&limit=200":"?limit=200";
   try {
-    const [decisions, arbitrations] = await Promise.all([
-      Api.get("cloud/cloud/device-decision-results/recent" + query),
-      Api.get("cloud/cloud/device-arbitration/recent" + query),
-    ]);
-    decisionItems = decisions.items || [];
-    arbitrationItems = arbitrations.items || [];
-    const arbitrationCard = el("arbitrationCard");
-    const conflictQueryCard = el("conflictQueryCard");
-    arbitrationCard.hidden = arbitrationItems.length === 0;
-    conflictQueryCard.hidden = arbitrationItems.length === 0;
-    el("recordsGrid").className = arbitrationItems.length ? "grid grid-2" : "grid";
-    renderDecisionList(decisionItems);
-    renderArbitrationList(arbitrationItems);
-    el("refreshMeta").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  } catch (error) {
-    el("decisionList").innerHTML = '<div class="empty">读取失败：' + fmt.escape(error.message) + '</div>';
-    el("arbitrationList").innerHTML = '<div class="empty">读取失败：' + fmt.escape(error.message) + '</div>';
-  }
+    const [metrics,windows,arbitrations]=await Promise.all([Api.get("summary/summary/metrics"+(deviceId?"?device_id="+encodeURIComponent(deviceId):"")),
+      Api.get("summary/summary/window-results"+suffix),Api.get("cloud/cloud/device-arbitration/recent"+suffix)]);
+    windowItems=windows.items||[]; arbitrationItems=arbitrations.items||[]; const resolved=arbitrationItems.filter((item)=>item.status==="resolved").length;
+    el("mEligible").textContent=metrics.eligible_windows||0; el("mConflict").textContent=metrics.conflict_windows||0;
+    el("mConflictRate").textContent=pct(metrics.conflict_rate); el("mConsistency").textContent=pct(metrics.consistency_rate);
+    el("mUpload").textContent=pct(metrics.arbitration_upload_success_rate); el("mResolved").textContent=pct(arbitrationItems.length?resolved/arbitrationItems.length:0);
+    el("mIncomplete").textContent="不完整窗口 "+(metrics.incomplete_windows||0); renderWindows(windowItems); renderArbitrations(arbitrationItems);
+    const hasArbitrations=arbitrationItems.length>0;
+    el("arbitrationCard").hidden=!hasArbitrations;
+    el("conflictQueryCard").hidden=!hasArbitrations;
+    el("recordsGrid").className=hasArbitrations?"grid grid-2":"grid";
+    el("refreshMeta").textContent="刷新于 "+new Date().toLocaleTimeString("zh-CN",{hour12:false});
+  } catch(error) { el("windowList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; el("arbitrationList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; }
 }
-
 async function queryArbitration() {
-  const id = el("conflictId").value.trim();
-  if (!id) { toast("请输入冲突 ID", "warn"); return; }
+  const id=el("conflictId").value.trim();
+  if(!id){toast("请输入冲突 ID","warn");return;}
   try {
-    const item = await Api.get("cloud/cloud/device-arbitration/" + encodeURIComponent(id));
-    arbitrationItems = [item];
+    const item=await Api.get("cloud/cloud/device-arbitration/"+encodeURIComponent(id));
+    arbitrationItems=[item];
+    el("arbitrationCard").hidden=false;
+    el("conflictQueryCard").hidden=false;
+    el("recordsGrid").className="grid grid-2";
+    renderArbitrations(arbitrationItems);
     showArbitration(0);
-  } catch (error) {
-    toast(error.status === 404 ? "未找到该冲突 ID 的仲裁记录" : "查询失败：" + error.message, "warn");
+  } catch(error) {
+    toast(error.status===404?"未找到该冲突 ID 的仲裁记录":"查询失败："+error.message,"warn");
   }
 }
-
-el("refreshBtn").addEventListener("click", refreshRecords);
-el("deviceFilter").addEventListener("keydown", (event) => { if (event.key === "Enter") refreshRecords(); });
-el("queryBtn").addEventListener("click", queryArbitration);
-el("conflictId").addEventListener("keydown", (event) => { if (event.key === "Enter") queryArbitration(); });
-
-startPolling(refreshRecords, 5000);
+el("refreshBtn").addEventListener("click",refreshRecords);
+el("deviceFilter").addEventListener("keydown",(event)=>{if(event.key==="Enter")refreshRecords();});
+el("queryBtn").addEventListener("click",queryArbitration);
+el("conflictId").addEventListener("keydown",(event)=>{if(event.key==="Enter")queryArbitration();});
+startPolling(refreshRecords,5000);
 </script>
 </body>
 </html>

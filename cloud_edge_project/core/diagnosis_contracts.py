@@ -151,6 +151,8 @@ class BearingDecisionResult:
     model_version: str
     created_at_ns: int
     edge_accepted_at_ns: int
+    diagnosis_label: str | None = None
+    class_probabilities: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         _validate_identity(self)

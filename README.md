@@ -1,12 +1,13 @@
 # Intelligent Maintenance Collaboration
 
-面向智能运维场景的云边协同项目，包含 Sender、Edge、Scheduler、Cloud 与 Network Simulator。当前分支集成了 Edge Status Reporter，边缘节点启动后会默认向 Scheduler 和 Cloud 周期上报同一份节点状态快照。
+面向智能运维场景的云边协同项目，包含 Sender、Edge、Summary、Scheduler、Cloud 与 Network Simulator。当前分支集成了 Edge Status Reporter，边缘节点启动后会默认向 Scheduler 和 Cloud 周期上报同一份节点状态快照。
 
 ## 项目结构
 
 - `cloud_edge_project/edge_service/`：边缘接入、推理、状态采集与上报。
 - `cloud_edge_project/scheduler/`：节点注册、状态接收与任务调度。
 - `cloud_edge_project/cloud_service/`：云端推理、状态接收与全局处理。
+- `cloud_edge_project/summary_service/`：跨 Edge 结果汇总、最终维护建议翻译与发布。
 - `cloud_edge_project/sender_module/`：传感器数据发送端。
 - `cloud_edge_project/internet_service/network_simulator/`：基于 Toxiproxy 的网络链路模拟。
 - `cloud_edge_project/docs/Edge_Status_Reporter_完整测试流程.md`：完整配置、运行和联调流程。
@@ -18,6 +19,8 @@
 | Edge HTTP | `127.0.0.1:8001` |
 | Scheduler HTTP | `127.0.0.1:8003` |
 | Cloud HTTP | `127.0.0.1:8004` |
+| Summary HTTP | `127.0.0.1:8006` |
+| Summary 建议 LLM | `127.0.0.1:8005` |
 | MQTT Broker | `127.0.0.1:1883` |
 | Network API | `127.0.0.1:8090` |
 | Toxiproxy API | `127.0.0.1:8474` |
@@ -28,7 +31,7 @@
 
 H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权重和冻结归一化参数已随仓库分发，并镜像到 [Hugging Face](https://huggingface.co/wanfengaodaliya/intelligent-maintenance-distilled-h5)。
 
-当前单机完整系统统一使用仓库根目录的 `start_project.ps1` 启动。脚本会检查 Docker、Conda、MOMENT、H5 和可选 LLM 模型，启动网络模拟器及 Edge、Scheduler、Cloud，并执行健康检查：
+当前单机完整系统统一使用仓库根目录的 `start_project.ps1` 启动。脚本会检查 Docker、Conda、MOMENT、H5 和可选 LLM 模型，启动网络模拟器及 Edge、Summary、Scheduler、Cloud，并执行健康检查：
 
 ```powershell
 .\start_project.ps1
@@ -42,6 +45,7 @@ H5 边缘诊断服务使用 Conda 的 `moment` 环境（Python 3.11+）。H5 权
 Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8003/health
 Invoke-RestMethod http://127.0.0.1:8004/health
+Invoke-RestMethod http://127.0.0.1:8006/health
 ```
 
 旧版 `start_all.py`、Consistency 和 Log 服务已从当前启动链路移除，不再作为项目入口或运行依赖。网络模拟器细节见 `cloud_edge_project/internet_service/network_simulator/README.md`。

@@ -52,18 +52,20 @@ from scenarios.bearing.cloud.model_update.training_data_source import (
     BearingTrainingDataSource,
 )
 from cloud_service.task_results import TaskResultService
-from cloud_service.device_arbitration.v12_contract import (
-    adapt_v12_device_arbitration_request,
-    attach_v12_identity,
-    is_v12_device_arbitration_request,
+from cloud_service.device_arbitration.summary_contract import (
+    adapt_summary_arbitration_request,
+    attach_summary_identity,
 )
+from cloud_service.device_arbitration.errors import ArbitrationPayloadConflictError
 from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
+from cloud_service.summary_windows import SummaryWindowRepository
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.runtime_status import CloudRuntimeState
 from cloud_service.errors import CloudServiceError
 from cloud_service.service import (
     activate_moment_candidate,
     activate_moment_version,
+    evaluate_cloud_window,
     get_moment_runner,
     preload_moment_runner,
 )
@@ -234,6 +236,7 @@ def _edge_summary_repository() -> EdgeFeatureRepository:
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
+    runner = get_moment_runner(settings)
     return {
         "service": "cloud_service",
         "node_id": CLOUD_NODE_ID,
@@ -245,6 +248,8 @@ def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
             )
         ),
         "model_backend": settings.backend,
+        "model_version": runner.model_version,
+        "model_device": settings.moment_device,
     }
 
 
@@ -319,6 +324,29 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     except Exception as exc:
         packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
+        return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/evaluate", response_model=None)
+def cloud_evaluate(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    """State-free classifier endpoint used by run-scoped paired evaluation."""
+    try:
+        request = require_mapping(payload, "CloudEvaluationRequest")
+        cloud_runtime_state.begin_inference()
+        try:
+            return evaluate_cloud_window(request, load_cloud_settings())
+        finally:
+            cloud_runtime_state.finish_inference()
+    except ContractError as error:
+        return JSONResponse(status_code=400, content=error_response(error))
+    except CloudServiceError as error:
+        contract_error = ContractError(error.code, error.message, None)
+        return JSONResponse(
+            status_code=error.status_code,
+            content=error_response(contract_error),
+        )
+    except Exception as exc:
+        error = ContractError("MODEL_INFER_FAILED", str(exc), None)
         return JSONResponse(status_code=500, content=error_response(error))
 
 
@@ -408,18 +436,19 @@ def get_physical_evidence(sample_id: str) -> dict | JSONResponse:
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
-        adapted = (
-            adapt_v12_device_arbitration_request(payload)
-            if is_v12_device_arbitration_request(payload)
-            else None
-        )
+        adapted = adapt_summary_arbitration_request(payload)
         settings = load_cloud_settings()
         handler = get_scenario_handler(
-            (adapted or payload).get("scenario_type", DEFAULT_SCENARIO_TYPE),
+            adapted.get("scenario_type", DEFAULT_SCENARIO_TYPE),
             database_path=settings.database_path,
         )
-        result = handler.arbitrate_device_conflict(adapted or payload)
-        return attach_v12_identity(result, adapted) if adapted is not None else result
+        result = handler.arbitrate_device_conflict(adapted)
+        return attach_summary_identity(result, adapted)
+    except ArbitrationPayloadConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content={"error_code": "ARBITRATION_IDENTITY_CONFLICT", "message": str(error)},
+        )
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -433,6 +462,34 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
     except Exception as exc:
         LOGGER.exception("device arbitration failed: %s", exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
+
+
+@app.post("/cloud/summary-window-results", response_model=None)
+def accept_summary_window(payload: dict) -> dict | JSONResponse:
+    try:
+        return SummaryWindowRepository(load_cloud_settings().database_path).accept(payload)
+    except ArbitrationPayloadConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content={"error_code": "SUMMARY_IDENTITY_CONFLICT", "message": str(error)},
+        )
+    except ValueError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_SUMMARY_WINDOW", "message": str(error)},
+        )
+
+
+@app.get("/cloud/summary-window-results/recent", response_model=None)
+def list_recent_summary_windows(
+    device_id: str | None = None, limit: int = 100
+) -> dict:
+    parsed_limit = min(max(int(limit), 1), 1000)
+    return {
+        "items": SummaryWindowRepository(
+            load_cloud_settings().database_path
+        ).list_recent(device_id=device_id, limit=parsed_limit)
+    }
 
 
 @app.get("/cloud/device-arbitration/recent", response_model=None)
