@@ -122,6 +122,10 @@ def run_sender_task(
         url=node.scheduler_url,
         timeout_seconds=config.scheduler_timeout_seconds,
         max_retries=config.schedule_max_retries,
+        retry_delay_seconds=config.deferred_retry_initial_seconds,
+        retry_delay_max_seconds=config.deferred_retry_max_seconds,
+        retry_jitter_ratio=config.deferred_retry_jitter_ratio,
+        retry_window_seconds=config.deferred_retry_window_seconds,
     )
 
     task_id = id_store.next_task_id()
@@ -198,6 +202,9 @@ def run_sender_task(
         queue_max_packets=config.pending_queue_max_packets,
         recovery_retry_interval_ms=config.packet_interval_ms,
         log_sink=sink,
+        recovery_retry_initial_seconds=config.deferred_retry_initial_seconds,
+        recovery_retry_max_seconds=config.deferred_retry_max_seconds,
+        recovery_retry_jitter_ratio=config.deferred_retry_jitter_ratio,
     )
 
     try:
