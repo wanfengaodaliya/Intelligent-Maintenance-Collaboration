@@ -41,6 +41,10 @@ def allocate_batch_config(config: SenderConfig) -> SenderConfig:
         url=config.senders[0].scheduler_url,
         timeout_seconds=config.scheduler_timeout_seconds,
         max_retries=config.schedule_max_retries,
+        retry_delay_seconds=config.deferred_retry_initial_seconds,
+        retry_delay_max_seconds=config.deferred_retry_max_seconds,
+        retry_jitter_ratio=config.deferred_retry_jitter_ratio,
+        retry_window_seconds=config.deferred_retry_window_seconds,
     )
     return replace(
         config,

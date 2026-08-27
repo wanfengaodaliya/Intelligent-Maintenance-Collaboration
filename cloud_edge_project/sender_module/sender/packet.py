@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from typing import Any
+
+import numpy as np
 
 
 class PacketValidationError(ValueError):
@@ -18,6 +21,7 @@ ARRAY_SIGNALS = {
     "bearing_radial_load_n": (4000, None),
 }
 TEMPERATURE_SIGNAL = "bearing_module_temperature_c"
+WIRE_MAGIC = b"IMC1"
 TASK_ID_PATTERN = re.compile(r"^sd_(\d{2,})_tk_(\d{4,})$")
 SENDER_ID_PATTERN = re.compile(r"^sender_(\d{2,})$")
 BEARING_ID_PATTERN = re.compile(r"^bearing_\d{2,}$")
@@ -92,12 +96,39 @@ def build_sensor_packet(
 
 def serialize_packet(packet: dict[str, Any]) -> bytes:
     try:
-        text = json.dumps(
-            packet,
+        header = {key: value for key, value in packet.items() if key != "data"}
+        data = packet["data"]
+        header_data = {
+            TEMPERATURE_SIGNAL: data[TEMPERATURE_SIGNAL],
+        }
+        binary_parts: list[bytes] = []
+        offset = 0
+        for name in ARRAY_SIGNALS:
+            signal = data[name]
+            source_values = np.asarray(signal["values"], dtype=np.float64)
+            if source_values.ndim != 1 or len(source_values) != signal["sample_count"]:
+                raise ValueError(f"{name}.values must be a one-dimensional sample array")
+            values = source_values.astype("<f4")
+            if not np.all(np.isfinite(source_values)) or not np.all(np.isfinite(values)):
+                raise ValueError(f"{name}.values must contain finite float32 values")
+            raw_values = values.tobytes(order="C")
+            header_data[name] = {
+                key: value for key, value in signal.items() if key != "values"
+            }
+            header_data[name]["binary"] = {
+                "dtype": "float32-le",
+                "offset": offset,
+                "byte_length": len(raw_values),
+            }
+            binary_parts.append(raw_values)
+            offset += len(raw_values)
+        header["data"] = header_data
+        header_bytes = json.dumps(
+            header,
             ensure_ascii=False,
             separators=(",", ":"),
             allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
+        ).encode("utf-8")
+    except (KeyError, OverflowError, TypeError, ValueError) as exc:
         raise PacketValidationError(f"packet cannot be serialized: {exc}") from exc
-    return text.encode("utf-8")
+    return WIRE_MAGIC + struct.pack("<I", len(header_bytes)) + header_bytes + b"".join(binary_parts)

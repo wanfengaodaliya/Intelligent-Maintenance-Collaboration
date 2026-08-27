@@ -32,6 +32,10 @@ except ImportError:  # Allows running scheduler/api.py directly.
 
 EXPECTED_PACKET_COUNT = 80
 EXPECTED_PACKET_COUNT_ENV = "SCHEDULER_EXPECTED_PACKET_COUNT"
+# 缓传门控：链路可用带宽低于该阈值时直接拒绝候选，等待网络恢复后重试。
+MIN_BUFFERED_THROUGHPUT_MBPS = 4.0
+REALTIME_DELIVERY_MODE = "realtime"
+BUFFERED_DELIVERY_MODE = "buffered"
 _MODULE_LOGGER = logging.getLogger(__name__)
 ASSIGNMENT_REQUEST_FIELDS = frozenset(
     {
@@ -76,6 +80,9 @@ class AssignmentDecision:
     task_id: str
     bearing_id: str
     target_topic: str
+    delivery_mode: str
+    delivery_interval_ms: int
+    available_throughput_mbps: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +91,9 @@ class AssignmentDecision:
             "task_id": self.task_id,
             "bearing_id": self.bearing_id,
             "target_topic": self.target_topic,
+            "delivery_mode": self.delivery_mode,
+            "delivery_interval_ms": self.delivery_interval_ms,
+            "available_throughput_mbps": self.available_throughput_mbps,
         }
 
 
@@ -93,6 +103,7 @@ class RankedNode:
     total_score: float
     network_score: float
     stability_score: float
+    delivery_mode: str
 
 
 @dataclass(frozen=True)
@@ -227,12 +238,23 @@ class AssignmentScheduler:
                     "task_id belongs to an incompatible batch assignment",
                     409,
                 )
+            # 已分配任务幂等重试：从 repository 中的 edge_node_id 重新读取当前
+            # 链路快照并调用 _delivery_plan()，不修改数据库表结构。
+            existing_link = self.registry.link_snapshot(
+                existing["sender_id"], existing["edge_node_id"]
+            )
+            retry_mode, retry_interval, retry_mbps = _delivery_plan(
+                validated, existing_link
+            )
             return AssignmentDecision(
                 device_id=existing["device_id"],
                 sender_id=existing["sender_id"],
                 task_id=existing["task_id"],
                 bearing_id=existing["bearing_id"],
                 target_topic=existing["target_topic"],
+                delivery_mode=retry_mode,
+                delivery_interval_ms=retry_interval,
+                available_throughput_mbps=retry_mbps,
             )
 
         retry_constraints = self.repository.retry_constraints(validated["task_id"])
@@ -395,12 +417,22 @@ class AssignmentScheduler:
                 node.config.target_topic,
             )
             keep_reservation = True
+            # 新任务首次分配成功：基于当前链路快照计算缓传计划。
+            success_link = self.registry.link_snapshot(
+                validated["sender_id"], node.config.edge_node_id
+            )
+            success_mode, success_interval, success_mbps = _delivery_plan(
+                validated, success_link
+            )
             return AssignmentDecision(
                 device_id=validated["device_id"],
                 sender_id=validated["sender_id"],
                 task_id=validated["task_id"],
                 bearing_id=validated["bearing_id"],
                 target_topic=node.config.target_topic,
+                delivery_mode=success_mode,
+                delivery_interval_ms=success_interval,
+                available_throughput_mbps=success_mbps,
             )
         finally:
             if not keep_reservation:
@@ -598,18 +630,25 @@ class AssignmentScheduler:
             link = self.registry.link_snapshot(
                 request["sender_id"], node.config.edge_node_id
             )
-            if link and link.available_throughput_mbps < required_mbps:
+            if (
+                link is not None
+                and link.available_throughput_mbps < MIN_BUFFERED_THROUGHPUT_MBPS
+            ):
+                # 低于 4Mbps 直接拒绝候选；Sender 沿用现有调度重试机制等待恢复。
                 _append_rejection(
                     rejection_sink,
                     node,
                     "INSUFFICIENT_BANDWIDTH",
-                    "available throughput is below task requirement",
+                    "available throughput is below the buffered delivery minimum",
                     {
                         "required_mbps": round(required_mbps, 4),
                         "available_mbps": round(link.available_throughput_mbps, 4),
+                        "minimum_buffered_mbps": MIN_BUFFERED_THROUGHPUT_MBPS,
                     },
                 )
                 continue
+            # 4Mbps 以上、不足实时需求时允许成为候选，标记为 buffered。
+            delivery_mode, _, _ = _delivery_plan(request, link)
             network_score = _network_score(link, required_mbps)
             stability_score = self.repository.stability_score(node.config.edge_node_id)
             if time.monotonic() >= deadline:
@@ -630,11 +669,17 @@ class AssignmentScheduler:
                     total_score=round(total_score, 4),
                     network_score=network_score,
                     stability_score=stability_score,
+                    delivery_mode=delivery_mode,
                 )
             )
+        # 实时候选永远优先于缓传候选；同模式内按总分降序、edge_node_id 升序。
         return sorted(
             ranked,
-            key=lambda item: (-item.total_score, item.state.config.edge_node_id),
+            key=lambda item: (
+                item.delivery_mode != REALTIME_DELIVERY_MODE,
+                -item.total_score,
+                item.state.config.edge_node_id,
+            ),
         )
 
 
@@ -735,6 +780,53 @@ def _required_throughput_mbps(request: Mapping[str, Any]) -> float:
         * 8.0
     )
     return required_bits / duration_seconds / 1_000_000.0
+
+
+def _delivery_plan(
+    request: Mapping[str, Any],
+    link: LinkSnapshot | None,
+) -> tuple[str, int, float | None]:
+    """计算缓传计划，返回 (delivery_mode, delivery_interval_ms, available_mbps)。
+
+    - 无链路快照时保持旧兼容行为：realtime + 50ms（base_interval）。
+    - 链路带宽足以覆盖传感器采样窗口时返回 realtime。
+    - 带宽不足实时需求但 ≥ 4Mbps 时返回 buffered，并按链路容量降低发送速度。
+    - 低于 4Mbps 时统一返回可重试的 503，避免幂等重试等旁路绕过门槛。
+    """
+    base_interval_ms = math.ceil(
+        request["expected_duration_ms"] / request["expected_packet_count"]
+    )
+    if link is None:
+        return (REALTIME_DELIVERY_MODE, base_interval_ms, None)
+    if link.available_throughput_mbps < MIN_BUFFERED_THROUGHPUT_MBPS:
+        raise AssignmentError(
+            "NO_AVAILABLE_EDGE_NODE",
+            "assigned edge link is below the buffered delivery minimum",
+            503,
+            details={
+                "retryable": True,
+                "retry_after_ms": 500,
+                "available_mbps": link.available_throughput_mbps,
+                "minimum_buffered_mbps": MIN_BUFFERED_THROUGHPUT_MBPS,
+            },
+        )
+    effective_mbps = (
+        link.available_throughput_mbps
+        * (1.0 - link.simulated_packet_loss_rate)
+    )
+    # packet_size_bytes × 8 / Mbps / 1000 的结果是毫秒。
+    wire_interval_ms = math.ceil(
+        request["packet_size_bytes"] * 8.0
+        / max(effective_mbps, 0.001)
+        / 1000.0
+    )
+    delivery_interval_ms = max(base_interval_ms, wire_interval_ms)
+    delivery_mode = (
+        REALTIME_DELIVERY_MODE
+        if delivery_interval_ms <= base_interval_ms
+        else BUFFERED_DELIVERY_MODE
+    )
+    return (delivery_mode, delivery_interval_ms, link.available_throughput_mbps)
 
 
 def _base_score_with_reservations(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import threading
 import time
 from collections import OrderedDict
@@ -17,6 +18,19 @@ class MqttPublisherError(RuntimeError):
     pass
 
 
+def recovery_retry_delay_seconds(
+    attempt: int,
+    *,
+    initial_seconds: float,
+    max_seconds: float,
+    jitter_ratio: float,
+) -> float:
+    delay = initial_seconds * (2**attempt)
+    if jitter_ratio:
+        delay *= random.uniform(1.0 - jitter_ratio, 1.0 + jitter_ratio)
+    return min(delay, max_seconds)
+
+
 @dataclass
 class PendingMessage:
     packet: dict[str, Any]
@@ -29,6 +43,8 @@ class PendingMessage:
     mids: set[int] = field(default_factory=set)
     warned: bool = False
     initial_publish_error: bool = False
+    recovery_retry_count: int = 0
+    next_recovery_retry_monotonic_ns: int = 0
 
 
 class MqttPublisher:
@@ -47,6 +63,9 @@ class MqttPublisher:
         queue_max_packets: int,
         recovery_retry_interval_ms: int,
         log_sink: PacketLogSink,
+        recovery_retry_initial_seconds: float = 2.0,
+        recovery_retry_max_seconds: float = 16.0,
+        recovery_retry_jitter_ratio: float = 0.2,
         client: Any | None = None,
     ) -> None:
         self.sender_id = sender_id
@@ -60,6 +79,9 @@ class MqttPublisher:
         self.max_retries = max_retries
         self.queue_max_packets = queue_max_packets
         self.recovery_retry_interval_ns = recovery_retry_interval_ms * 1_000_000
+        self.recovery_retry_initial_seconds = recovery_retry_initial_seconds
+        self.recovery_retry_max_seconds = recovery_retry_max_seconds
+        self.recovery_retry_jitter_ratio = recovery_retry_jitter_ratio
         self.log_sink = log_sink
 
         self.client = client or mqtt.Client(
@@ -164,8 +186,7 @@ class MqttPublisher:
         if dropped_record is not None:
             self._write_packet_log(dropped_record)
 
-        if not self._attempt_publish(packet_id, is_retry=False):
-            self._retry_after_explicit_failure(packet_id)
+        self._attempt_publish(packet_id, is_retry=False)
 
     def _attempt_publish(
         self,
@@ -231,26 +252,23 @@ class MqttPublisher:
             self._write_packet_log(confirmed_record)
         return True
 
-    def _retry_after_explicit_failure(self, packet_id: str) -> None:
-        while True:
-            with self._condition:
-                pending = self._pending.get(packet_id)
-                if pending is None:
-                    return
-                age = time.monotonic_ns() - pending.first_publish_monotonic_ns
-                exhausted = pending.retry_count >= self.max_retries or age >= self.delivery_timeout_ns
-                if exhausted:
-                    # 快速重试耗尽后仍保留待确认包；任务发送结束后由有限恢复期补发。
-                    return
-            if self._attempt_publish(packet_id, is_retry=True):
-                return
-
     def wait_until_settled(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             if self._pending:
+                now = time.monotonic_ns()
                 self._recovery_deadline_monotonic_ns = int(deadline * 1_000_000_000)
-                self._next_recovery_retry_monotonic_ns = time.monotonic_ns()
+                self._next_recovery_retry_monotonic_ns = now
+                for pending in self._pending.values():
+                    pending.next_recovery_retry_monotonic_ns = now + int(
+                        recovery_retry_delay_seconds(
+                            0,
+                            initial_seconds=self.recovery_retry_initial_seconds,
+                            max_seconds=self.recovery_retry_max_seconds,
+                            jitter_ratio=self.recovery_retry_jitter_ratio,
+                        )
+                        * 1_000_000_000
+                    )
                 self._condition.notify_all()
             while self._pending:
                 remaining = deadline - time.monotonic()
@@ -301,17 +319,12 @@ class MqttPublisher:
         if getattr(reason_code, "is_failure", False):
             return
 
-        recovery_packet_ids: list[str] = []
         with self._condition:
             if self._has_connected_once:
                 self._reconnect_count += 1
-                recovery_packet_ids = list(self._pending)
             self._has_connected_once = True
             self._connected.set()
             self._condition.notify_all()
-
-        for packet_id in recovery_packet_ids:
-            self._retry_after_explicit_failure(packet_id)
 
     def _on_disconnect(
         self,
@@ -351,7 +364,6 @@ class MqttPublisher:
         while not self._stop_monitor.wait(0.01):
             now = time.monotonic_ns()
             expired_records: list[dict[str, Any]] = []
-            retry_packet_ids: list[str] = []
             recovery_retry_packet_id: str | None = None
             with self._condition:
                 recovery_deadline = self._recovery_deadline_monotonic_ns
@@ -362,13 +374,7 @@ class MqttPublisher:
                         pending.warned = True
                         self.warning_packet_ids.add(packet_id)
                     if (
-                        pending.retry_count < self.max_retries
-                        and attempt_age >= self.warning_timeout_ns
-                    ):
-                        retry_packet_ids.append(packet_id)
-                    elif (
-                        pending.retry_count >= self.max_retries
-                        and recovery_deadline is not None
+                        recovery_deadline is not None
                         and now >= recovery_deadline
                     ):
                         error_code = (
@@ -386,18 +392,27 @@ class MqttPublisher:
                         )
                     elif (
                         recovery_retry_packet_id is None
-                        and pending.retry_count >= self.max_retries
                         and recovery_deadline is not None
+                        and pending.recovery_retry_count < self.max_retries
                         and now >= self._next_recovery_retry_monotonic_ns
+                        and now >= pending.next_recovery_retry_monotonic_ns
                         and attempt_age >= self.warning_timeout_ns
                         and self._connected.is_set()
                     ):
                         recovery_retry_packet_id = packet_id
+                        pending.recovery_retry_count += 1
+                        pending.next_recovery_retry_monotonic_ns = now + int(
+                            recovery_retry_delay_seconds(
+                                pending.recovery_retry_count,
+                                initial_seconds=self.recovery_retry_initial_seconds,
+                                max_seconds=self.recovery_retry_max_seconds,
+                                jitter_ratio=self.recovery_retry_jitter_ratio,
+                            )
+                            * 1_000_000_000
+                        )
                         self._next_recovery_retry_monotonic_ns = (
                             now + self.recovery_retry_interval_ns
                         )
-            for packet_id in retry_packet_ids:
-                self._attempt_publish(packet_id, is_retry=True)
             if recovery_retry_packet_id is not None:
                 self._attempt_publish(
                     recovery_retry_packet_id,

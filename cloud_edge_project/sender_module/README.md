@@ -79,14 +79,18 @@ Test-NetConnection 127.0.0.1 -Port 1883
     }
   ],
   "scheduler_timeout_seconds": 2.0,
-  "schedule_max_retries": 3,
+  "schedule_max_retries": 6,
   "mqtt_keepalive_seconds": 30,
   "qos": 1,
   "retain": false,
   "puback_warning_timeout_ms": 500,
   "packet_delivery_timeout_ms": 1000,
-  "max_publish_retries": 2,
-  "recovery_window_seconds": 5.0,
+  "max_publish_retries": 6,
+  "recovery_window_seconds": 60.0,
+  "deferred_retry_window_seconds": 60.0,
+  "deferred_retry_initial_seconds": 2.0,
+  "deferred_retry_max_seconds": 16.0,
+  "deferred_retry_jitter_ratio": 0.2,
   "pending_queue_max_packets": 80,
   "task_duration_ms": 4000,
   "packet_interval_ms": 50,
@@ -98,7 +102,9 @@ Test-NetConnection 127.0.0.1 -Port 1883
 
 `qos` 固定为 `1`，表示 Broker 至少接收一次；`retain` 固定为 `false`，避免后来订阅的边缘节点误把旧数据当成新任务。
 
-单包先按 `max_publish_retries` 做快速重试。80 包生成结束后，仍未收到 PUBACK 的包会进入最多 `recovery_window_seconds` 秒的有限恢复期，并按 `packet_interval_ms` 的节奏继续补发；恢复期结束后仍未确认才记为失败。该确认只代表 Broker 收到消息，不代表边缘节点已完成处理。
+每个数据包先发布一次，不做紧密循环重发。80 包生成结束后，只有仍未收到 PUBACK 的包会进入最多 `recovery_window_seconds` 秒的有限恢复期；每包最多补发 `max_publish_retries` 次，补发间隔从 `deferred_retry_initial_seconds` 开始按指数增长，在 `deferred_retry_max_seconds` 封顶，并加入随机抖动。所有补发仍受 `packet_interval_ms` 的全局节奏限制。恢复期结束后仍未确认才记为失败。该确认只代表 Broker 收到消息，不代表边缘节点已完成处理。
+
+调度器仅对连接异常以及 HTTP 408、425、429、500、502、503、504 这类临时故障延时重试；请求格式错误、响应标识不匹配等永久故障立即结束。调度重试沿用原 `task_id`，总等待不超过 `deferred_retry_window_seconds`，程序退出后不会在下次启动时补发旧任务。
 
 ## 4. 启动
 
@@ -223,9 +229,9 @@ Content-Type: application/json
 - `sender_id`、`bearing_id`、`task_id`：说明这条任务属于哪台发送器、哪个轴承和哪一次任务。
 - `target_topic`：调度器为该任务返回的 MQTT 主题；调度失败时为 `null`。
 - `expected_packet_count`：本任务预计发送包数，当前固定为 80。
-- `schedule_retry_count`：本次 HTTP 调度请求的重试次数，不包含第一次请求；当前最多重试 3 次，依次等待 0.5、1、2 秒。
+- `schedule_retry_count`：本次 HTTP 调度请求的重试次数，不包含第一次请求；当前最多重试 6 次，按约 2、4、8、16 秒的指数退避并加入随机抖动，总等待最多 60 秒。
 - `mqtt_reconnect_count`：任务期间 MQTT 断线后重新连接成功的次数。
-- `mqtt_publish_retry_total`：本任务全部数据包的 MQTT 重发次数总和，包含快速重试和恢复期补发。
+- `mqtt_publish_retry_total`：本任务全部数据包在有限恢复期内的补发次数总和。
 - `task_started_timestamp_ns`、`task_finished_timestamp_ns`：发送器任务开始和结束的本机时间，单位为纳秒。
 - `replay_mode`：`realtime` 表示按 50 ms 节奏回放，`accelerated` 表示测试用快速回放。
 - `error_code`：机器可读取的失败原因；成功时为 `null`。
@@ -233,7 +239,7 @@ Content-Type: application/json
 ### 7.2 每包发送状态
 
 - `confirmed`：QoS 1 PUBACK 已返回，只表示 Broker 收到，不表示边缘完成推理。
-- `failed`：快速重试及 5 秒恢复期补发后仍未获得确认。
+- `failed`：60 秒有限恢复期结束后仍未获得确认。
 - `dropped`：待发送队列已满，最早的旧包被发送器丢弃。
 
 每包日志关键字段：
@@ -249,7 +255,7 @@ Content-Type: application/json
 
 - `null`：发送成功，没有错误。
 - `MQTT_NOT_CONNECTED`：发送时无法连接 Broker。
-- `PUBACK_TIMEOUT`：快速重试及任务恢复期结束后仍未收到 PUBACK。
+- `PUBACK_TIMEOUT`：任务恢复期结束后仍未收到 PUBACK。
 - `SEND_QUEUE_FULL`：缓存已满，旧包被丢弃。
 - `SCHEDULER_REQUEST_FAILED`：调度请求重试后仍失败。
 - `MQTT_TASK_ERROR`：MQTT 任务运行期间发生致命异常。

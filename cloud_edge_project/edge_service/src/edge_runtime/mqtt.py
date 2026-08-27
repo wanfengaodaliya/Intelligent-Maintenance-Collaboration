@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import queue
+import struct
 import threading
 import time
 from typing import Any, Callable, Mapping, Optional
 
+import numpy as np
 import paho.mqtt.client as mqtt
 
 from .config import MqttConfig
@@ -14,10 +16,89 @@ from .json_utils import json_bytes
 
 
 MQTT_MAX_PAYLOAD_BYTES = 512 * 1024
+SENSOR_PACKET_WIRE_MAGIC = b"IMC1"
+SENSOR_PACKET_ARRAY_SIGNALS = (
+    "vibration",
+    "phase_current_1_A",
+    "phase_current_2_A",
+    "shaft_speed_rpm",
+    "load_torque_nm",
+    "bearing_radial_load_n",
+)
+SENSOR_PACKET_TEMPERATURE_SIGNAL = "bearing_module_temperature_c"
 
 
 class MqttRuntimeError(RuntimeError):
     pass
+
+
+def decode_sensor_packet(payload: bytes) -> dict[str, Any]:
+    if not payload.startswith(SENSOR_PACKET_WIRE_MAGIC):
+        value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("sensor packet must be a JSON object")
+        return value
+
+    if len(payload) < 8:
+        raise ValueError("binary sensor packet header is truncated")
+    header_length = struct.unpack("<I", payload[4:8])[0]
+    body_start = 8 + header_length
+    if body_start > len(payload):
+        raise ValueError("binary sensor packet header length is invalid")
+    value = json.loads(payload[8:body_start].decode("utf-8"))
+    if not isinstance(value, dict) or not isinstance(value.get("data"), dict):
+        raise ValueError("binary sensor packet header must contain data")
+
+    data = value["data"]
+    expected_names = set(SENSOR_PACKET_ARRAY_SIGNALS) | {
+        SENSOR_PACKET_TEMPERATURE_SIGNAL
+    }
+    if set(data) != expected_names:
+        raise ValueError("binary sensor packet must contain exactly six array signals")
+
+    body = memoryview(payload)[body_start:]
+    ranges: list[tuple[int, int, dict[str, Any]]] = []
+    for name in SENSOR_PACKET_ARRAY_SIGNALS:
+        signal = data[name]
+        if not isinstance(signal, dict) or "values" in signal:
+            raise ValueError("binary signal metadata is invalid")
+        descriptor = signal.get("binary")
+        if not isinstance(descriptor, dict) or descriptor.get("dtype") != "float32-le":
+            raise ValueError("binary signal dtype must be float32-le")
+        offset = descriptor.get("offset")
+        byte_length = descriptor.get("byte_length")
+        sample_count = signal.get("sample_count")
+        if (
+            type(offset) is not int
+            or type(byte_length) is not int
+            or type(sample_count) is not int
+            or offset < 0
+            or byte_length <= 0
+            or sample_count <= 0
+            or offset % 4 != 0
+            or byte_length % 4 != 0
+            or byte_length != sample_count * 4
+            or offset + byte_length > len(body)
+        ):
+            raise ValueError("binary signal range is invalid")
+        ranges.append((offset, byte_length, signal))
+
+    ranges.sort(key=lambda item: item[0])
+    consumed = 0
+    for offset, byte_length, _signal in ranges:
+        if offset != consumed:
+            raise ValueError("binary signal ranges must form one continuous body")
+        consumed += byte_length
+    if consumed != len(body):
+        raise ValueError("binary sensor packet contains unused or missing data")
+
+    for offset, byte_length, signal in ranges:
+        values = np.frombuffer(body[offset : offset + byte_length], dtype="<f4")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("binary signal values must be finite")
+        signal.pop("binary")
+        signal["values"] = values.tolist()
+    return value
 
 
 class MqttIngress:
@@ -126,9 +207,7 @@ class MqttIngress:
             self._ack(message)
             return
         try:
-            value = json.loads(message.payload.decode("utf-8"))
-            if not isinstance(value, dict):
-                raise ValueError("sensor packet must be a JSON object")
+            value = decode_sensor_packet(message.payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             self._emit_error("INVALID_MQTT_PACKET", str(exc))
             self._ack(message)

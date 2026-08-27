@@ -63,14 +63,24 @@
       <div class="metric ok" style="--rail:var(--ok)"><div class="label">仲裁成功率</div><div class="value" id="mResolved">0.0%</div><div class="sub" id="mIncomplete">不完整窗口 0</div></div>
     </div>
 
-    <div class="grid grid-2">
+    <div class="grid grid-2" id="recordsGrid">
       <div class="card">
         <div class="card-title">窗口一致性明细 <span class="hint">三个轴承 · 来源 Edge · 动作等级</span></div>
         <div id="windowList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
-      <div class="card">
+      <div class="card" id="arbitrationCard">
         <div class="card-title">Cloud 仲裁记录 <span class="hint">只有冲突窗口会出现</span></div>
         <div id="arbitrationList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
+      </div>
+    </div>
+
+    <div class="card" id="conflictQueryCard">
+      <div class="card-title">按冲突 ID 精确查询 <span class="hint">可选</span></div>
+      <div class="form-row">
+        <label class="field">conflict_id
+          <input type="text" id="conflictId" placeholder="已有 conflict_id 时可直接定位" style="width:300px;">
+        </label>
+        <button class="btn ghost" id="queryBtn">查询</button>
       </div>
     </div>
 
@@ -133,11 +143,32 @@ async function refreshRecords() {
     el("mConflictRate").textContent=pct(metrics.conflict_rate); el("mConsistency").textContent=pct(metrics.consistency_rate);
     el("mUpload").textContent=pct(metrics.arbitration_upload_success_rate); el("mResolved").textContent=pct(arbitrationItems.length?resolved/arbitrationItems.length:0);
     el("mIncomplete").textContent="不完整窗口 "+(metrics.incomplete_windows||0); renderWindows(windowItems); renderArbitrations(arbitrationItems);
+    const hasArbitrations=arbitrationItems.length>0;
+    el("arbitrationCard").hidden=!hasArbitrations;
+    el("conflictQueryCard").hidden=!hasArbitrations;
+    el("recordsGrid").className=hasArbitrations?"grid grid-2":"grid";
     el("refreshMeta").textContent="刷新于 "+new Date().toLocaleTimeString("zh-CN",{hour12:false});
   } catch(error) { el("windowList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; el("arbitrationList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; }
 }
+async function queryArbitration() {
+  const id=el("conflictId").value.trim();
+  if(!id){toast("请输入冲突 ID","warn");return;}
+  try {
+    const item=await Api.get("cloud/cloud/device-arbitration/"+encodeURIComponent(id));
+    arbitrationItems=[item];
+    el("arbitrationCard").hidden=false;
+    el("conflictQueryCard").hidden=false;
+    el("recordsGrid").className="grid grid-2";
+    renderArbitrations(arbitrationItems);
+    showArbitration(0);
+  } catch(error) {
+    toast(error.status===404?"未找到该冲突 ID 的仲裁记录":"查询失败："+error.message,"warn");
+  }
+}
 el("refreshBtn").addEventListener("click",refreshRecords);
 el("deviceFilter").addEventListener("keydown",(event)=>{if(event.key==="Enter")refreshRecords();});
+el("queryBtn").addEventListener("click",queryArbitration);
+el("conflictId").addEventListener("keydown",(event)=>{if(event.key==="Enter")queryArbitration();});
 startPolling(refreshRecords,5000);
 </script>
 </body>
