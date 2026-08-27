@@ -1,17 +1,16 @@
 # 数据发送器模块
 
-本模块模拟一台设备上的三个独立数据发送器。每个发送器固定负责一个轴承，独立申请调度、建立 MQTT 连接并发送 80 个 50 ms 数据包。
+本模块模拟一台设备上的两个独立数据发送器。每个发送器固定负责一个轴承，独立申请调度、建立 MQTT 连接并发送 80 个 50 ms 数据包。云端仲裁合同只接受 `bearing_01` 与 `bearing_02` 的结果，两发送器是正式默认模式。
 
 ## 1. 模块结构
 
 ```text
 machine_01
 ├── sender_01 -> bearing_01 -> 独立 HTTP 调度请求 -> 独立 MQTT 连接
-├── sender_02 -> bearing_02 -> 独立 HTTP 调度请求 -> 独立 MQTT 连接
-└── sender_03 -> bearing_03 -> 独立 HTTP 调度请求 -> 独立 MQTT 连接
+└── sender_02 -> bearing_02 -> 独立 HTTP 调度请求 -> 独立 MQTT 连接
 ```
 
-三个发送器在同一个 Python 程序中并行运行，但拥有不同的 `sender_id`、任务计数器、MQTT `client_id`、待确认队列和重试统计。它们可以连接同一个 Mosquitto Broker，也可以通过不同网络代理端口模拟不同链路。
+两个发送器在同一个 Python 程序中并行运行，但拥有不同的 `sender_id`、任务计数器、MQTT `client_id`、待确认队列和重试统计。它们可以连接同一个 Mosquitto Broker，也可以通过不同网络代理端口模拟不同链路。
 
 ## 2. 拉取和安装
 
@@ -50,7 +49,7 @@ Test-NetConnection 127.0.0.1 -Port 1883
 
 ## 3. 配置
 
-配置文件为 `config/local.json`。三个发送器分别配置调度器地址和 MQTT 地址，便于插入不同的网络模拟链路。
+配置文件为 `config/local.json`。两个发送器分别配置调度器地址和 MQTT 地址，便于插入不同的网络模拟链路。
 
 ```json
 {
@@ -59,23 +58,24 @@ Test-NetConnection 127.0.0.1 -Port 1883
     {
       "sender_id": "sender_01",
       "bearing_id": "bearing_01",
-      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+      "scheduler_url": "http://127.0.0.1:18031/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 1883
+      "mqtt_port": 18831,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18831,
+        "edge_02": 18832
+      }
     },
     {
       "sender_id": "sender_02",
       "bearing_id": "bearing_02",
-      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
+      "scheduler_url": "http://127.0.0.1:18032/scheduler/decide",
       "mqtt_host": "127.0.0.1",
-      "mqtt_port": 1883
-    },
-    {
-      "sender_id": "sender_03",
-      "bearing_id": "bearing_03",
-      "scheduler_url": "http://127.0.0.1:8003/scheduler/decide",
-      "mqtt_host": "127.0.0.1",
-      "mqtt_port": 1883
+      "mqtt_port": 18931,
+      "edge_mqtt_proxy_ports": {
+        "edge_01": 18931,
+        "edge_02": 18932
+      }
     }
   ],
   "scheduler_timeout_seconds": 2.0,
@@ -124,26 +124,24 @@ python tools/mock_scheduler.py
 python tools/test_subscriber.py
 ```
 
-终端三启动三个发送器：
+终端三启动两个发送器：
 
 ```powershell
 python -m sender --config config/local.json `
   --source "sender_01=D:\data\bearing_01.mat" `
-  --source "sender_02=D:\data\bearing_02.mat" `
-  --source "sender_03=D:\data\bearing_03.mat"
+  --source "sender_02=D:\data\bearing_02.mat"
 ```
 
-正常运行约 4 秒。三个发送器各发送 80 包，总计 240 包。快速测试可增加 `--accelerated`，但加速模式不能用于计算真实端到端时延。
+正常运行约 4 秒。两个发送器各发送 80 包，总计 160 包。快速测试可增加 `--accelerated`，但加速模式不能用于计算真实端到端时延。
 
-正式 3,600 窗口实验使用 15 轮；每轮仍并发启动三个 Sender，
+正式 3,600 窗口实验使用 15 轮；每轮仍并发启动两个 Sender，
 每个 Sender 发送 80 个 50 ms 窗口：
 
 ```powershell
 python -m sender --config config/local.json `
   --rounds 15 `
   --source "sender_01=D:\data\bearing_01.mat" `
-  --source "sender_02=D:\data\bearing_02.mat" `
-  --source "sender_03=D:\data\bearing_03.mat"
+  --source "sender_02=D:\data\bearing_02.mat"
 ```
 
 ## 5. 调度接口
@@ -199,7 +197,7 @@ Content-Type: application/json
 }
 ```
 
-- `task_id`：发送器节点编号加本地任务序号。三个发送器都从 1 计数也不会冲突。
+- `task_id`：发送器节点编号加本地任务序号。两个发送器都从 1 计数也不会冲突。
 - `packet_id`：任务、轴承和包序号组成的唯一编号。
 - `sequence_number`：该任务中的第几包，范围为 1 至 80。
 - `end_generate_timestamp_ns`：这一包数据准备完成的时间，也是端到端时延的起点。
@@ -270,9 +268,8 @@ Content-Type: application/json
 ### 8.1 调度 HTTP 链路
 
 ```text
-sender_01 -> HTTP代理 127.0.0.1:18001 -> 调度器 127.0.0.1:8003
-sender_02 -> HTTP代理 127.0.0.1:18002 -> 调度器 127.0.0.1:8003
-sender_03 -> HTTP代理 127.0.0.1:18003 -> 调度器 127.0.0.1:8003
+sender_01 -> HTTP代理 127.0.0.1:18031 -> 调度器 127.0.0.1:8003
+sender_02 -> HTTP代理 127.0.0.1:18032 -> 调度器 127.0.0.1:8003
 ```
 
 发送器配置中的 `scheduler_url` 分别改成代理地址，但保留 `/scheduler/decide` 路径。
@@ -282,12 +279,11 @@ sender_03 -> HTTP代理 127.0.0.1:18003 -> 调度器 127.0.0.1:8003
 ```text
 sender_01 -> MQTT代理 127.0.0.1:11881 -> Mosquitto 127.0.0.1:1883
 sender_02 -> MQTT代理 127.0.0.1:11882 -> Mosquitto 127.0.0.1:1883
-sender_03 -> MQTT代理 127.0.0.1:11883 -> Mosquitto 127.0.0.1:1883
 ```
 
 发送器配置中的 `mqtt_host` 和 `mqtt_port` 改成对应代理监听地址。代理内部仍转发原始 MQTT/TCP 数据，因此业务字段和 MQTT 主题不需要变化。
 
-如果三个发送器共用同一种网络状态，它们可以连接同一个代理端口；如果要模拟三条不同链路，则必须使用三个独立代理端口。以上端口只是示例，最终以网络模块实际提供的监听端口为准。
+如果两个发送器共用同一种网络状态，它们可以连接同一个代理端口；如果要模拟两条不同链路，则必须使用两个独立代理端口。以上端口只是示例，最终以网络模块实际提供的监听端口为准。
 
 ## 9. 其他模块的接入位置
 
@@ -303,4 +299,4 @@ sender_03 -> MQTT代理 127.0.0.1:11883 -> Mosquitto 127.0.0.1:1883
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖配置校验、任务和数据包编号、MAT 切窗、调度响应校验、三个发送器并行运行、MQTT QoS 1、重试、PUBACK超时、缓存丢弃和本地日志。若本机 Mosquitto 正在运行，还会额外执行三台真实 Paho 客户端发布 240 包的集成测试。
+测试覆盖配置校验、任务和数据包编号、MAT 切窗、调度响应校验、两个发送器并行运行、MQTT QoS 1、重试、PUBACK超时、缓存丢弃和本地日志。若本机 Mosquitto 正在运行，还会额外执行两台真实 Paho 客户端发布 160 包的集成测试。
