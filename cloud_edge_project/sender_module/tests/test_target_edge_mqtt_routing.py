@@ -109,7 +109,11 @@ def _run_task(node, config, target_topic, tmp_path, monkeypatch):
 
     scheduler = SimpleNamespace(
         assign=lambda request: SimpleNamespace(
-            target_topic=target_topic, schedule_retry_count=0
+            target_topic=target_topic,
+            schedule_retry_count=0,
+            delivery_mode="realtime",
+            delivery_interval_ms=50,
+            available_throughput_mbps=None,
         )
     )
     task_id = "sd_%s_tk_0001" % node.sender_id[-2:]

@@ -23,6 +23,9 @@ class ScheduleAssignment:
     bearing_id: str
     target_topic: str
     schedule_retry_count: int
+    delivery_mode: str
+    delivery_interval_ms: int
+    available_throughput_mbps: float | None
 
 
 def validate_assignment(
@@ -48,6 +51,36 @@ def validate_assignment(
     target_topic = payload.get("target_topic")
     if not isinstance(target_topic, str) or not target_topic.strip():
         raise SchedulerError("scheduler response target_topic is missing", retry_count)
+    # 缓传字段：缺少时回退为 realtime + 50ms，兼容旧 Scheduler 响应。
+    delivery_mode = payload.get("delivery_mode", "realtime")
+    if delivery_mode not in ("realtime", "buffered"):
+        raise SchedulerError(
+            "scheduler response delivery_mode must be realtime or buffered",
+            retry_count,
+        )
+    delivery_interval_ms = payload.get("delivery_interval_ms", 50)
+    # 布尔是 int 的子类，必须显式拒绝；间隔必须是正整数。
+    if (
+        isinstance(delivery_interval_ms, bool)
+        or not isinstance(delivery_interval_ms, int)
+        or delivery_interval_ms <= 0
+    ):
+        raise SchedulerError(
+            "scheduler response delivery_interval_ms must be a positive integer",
+            retry_count,
+        )
+    available_throughput_mbps = payload.get("available_throughput_mbps")
+    if available_throughput_mbps is not None:
+        if (
+            isinstance(available_throughput_mbps, bool)
+            or not isinstance(available_throughput_mbps, (int, float))
+            or float(available_throughput_mbps) < 0
+        ):
+            raise SchedulerError(
+                "scheduler response available_throughput_mbps must be a non-negative number",
+                retry_count,
+            )
+        available_throughput_mbps = float(available_throughput_mbps)
     return ScheduleAssignment(
         device_id=expected_device_id,
         sender_id=expected_sender_id,
@@ -55,6 +88,9 @@ def validate_assignment(
         bearing_id=expected_bearing_id,
         target_topic=target_topic.strip(),
         schedule_retry_count=retry_count,
+        delivery_mode=delivery_mode,
+        delivery_interval_ms=delivery_interval_ms,
+        available_throughput_mbps=available_throughput_mbps,
     )
 
 
