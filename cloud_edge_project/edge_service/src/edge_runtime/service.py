@@ -106,11 +106,13 @@ class EdgeRuntimeService:
             thread.join(timeout=2.0)
         self._server = None
         self._server_thread = None
-        # H1：dispatcher 在 pipeline 之前停，先排空在途完成事件，再停数据面。
-        if self.coordinator is not None:
-            self.coordinator.stop_background()
+        # H2：先停数据面（推理 worker 不再产生新完成事件），再由
+        # coordinator 按 dispatcher 首次 drain → routing pool 排空停止 →
+        # dispatcher 二次 drain/stop 的顺序排空在途完成与回放事件。
         if self.pipeline.started:
             self.pipeline.stop()
+        if self.coordinator is not None:
+            self.coordinator.stop_background()
         self.cache.stop()
         self._started = False
 

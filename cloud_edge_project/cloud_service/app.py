@@ -65,6 +65,7 @@ from cloud_service.errors import CloudServiceError
 from cloud_service.service import (
     activate_moment_candidate,
     activate_moment_version,
+    evaluate_cloud_window,
     get_moment_runner,
     preload_moment_runner,
 )
@@ -235,6 +236,7 @@ def _edge_summary_repository() -> EdgeFeatureRepository:
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
+    runner = get_moment_runner(settings)
     return {
         "service": "cloud_service",
         "node_id": CLOUD_NODE_ID,
@@ -246,6 +248,8 @@ def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
             )
         ),
         "model_backend": settings.backend,
+        "model_version": runner.model_version,
+        "model_device": settings.moment_device,
     }
 
 
@@ -320,6 +324,29 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
     except Exception as exc:
         packet = payload.get("cloud_raw_packet", {}) if isinstance(payload, dict) and isinstance(payload.get("cloud_raw_packet"), dict) else {}
         error = ContractError("MODEL_INFER_FAILED", str(exc), packet.get("packet_id"))
+        return JSONResponse(status_code=500, content=error_response(error))
+
+
+@app.post("/cloud/evaluate", response_model=None)
+def cloud_evaluate(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    """State-free classifier endpoint used by run-scoped paired evaluation."""
+    try:
+        request = require_mapping(payload, "CloudEvaluationRequest")
+        cloud_runtime_state.begin_inference()
+        try:
+            return evaluate_cloud_window(request, load_cloud_settings())
+        finally:
+            cloud_runtime_state.finish_inference()
+    except ContractError as error:
+        return JSONResponse(status_code=400, content=error_response(error))
+    except CloudServiceError as error:
+        contract_error = ContractError(error.code, error.message, None)
+        return JSONResponse(
+            status_code=error.status_code,
+            content=error_response(contract_error),
+        )
+    except Exception as exc:
+        error = ContractError("MODEL_INFER_FAILED", str(exc), None)
         return JSONResponse(status_code=500, content=error_response(error))
 
 

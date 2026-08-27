@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import deque
 from typing import Any, Callable, Optional
 
@@ -35,6 +36,7 @@ class CompletionDispatcher:
         self._queue: deque = deque()
         self._cond = threading.Condition()
         self._stop = threading.Event()
+        self._busy = False
         self._thread: Optional[threading.Thread] = None
         self.overflow_total = 0
         self.processed_total = 0
@@ -57,6 +59,20 @@ class CompletionDispatcher:
         self._thread = None
         if thread is not None:
             thread.join(timeout=timeout_seconds)
+
+    def drain(self, *, timeout_seconds: float = 10.0) -> bool:
+        """等待队列排空且当前无处理中的事件；返回是否排空。
+
+        H2：停机时先排空在途完成事件（它们会向 routing pool 提交 job），
+        再停 routing pool；回放事件回到本队列后也需再次 drain。
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._cond:
+                if not self._queue and not self._busy:
+                    return True
+            time.sleep(0.01)
+        return False
 
     @property
     def alive(self) -> bool:
@@ -100,7 +116,11 @@ class CompletionDispatcher:
                     return
                 item = self._queue.popleft()
             self.processed_total += 1
-            self._dispatch(item)
+            self._busy = True
+            try:
+                self._dispatch(item)
+            finally:
+                self._busy = False
 
     def _dispatch(self, item: Any) -> None:
         try:

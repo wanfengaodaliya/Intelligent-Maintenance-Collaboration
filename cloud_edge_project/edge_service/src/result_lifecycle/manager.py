@@ -72,6 +72,8 @@ class BearingResultLifecycleManager:
             model_version=edge_result.model_version,
             created_at_ns=edge_result.created_at_ns,
             edge_accepted_at_ns=accepted_at_ns,
+            diagnosis_label=edge_result.diagnosis_label,
+            class_probabilities=edge_result.class_probabilities,
         )
         return self._repository.save_revision(draft)
 
@@ -145,6 +147,8 @@ class BearingResultLifecycleManager:
             model_version=cloud_result.model_version,
             created_at_ns=cloud_result.created_at_ns,
             edge_accepted_at_ns=current.edge_accepted_at_ns,
+            diagnosis_label=current.diagnosis_label,
+            class_probabilities=current.class_probabilities,
         )
         return self._repository.save_revision(draft, connection=connection)
 

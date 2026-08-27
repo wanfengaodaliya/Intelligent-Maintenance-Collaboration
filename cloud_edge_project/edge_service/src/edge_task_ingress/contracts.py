@@ -2,6 +2,7 @@
 """任务接入、包匹配和处理记录的最小公共契约。"""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -9,7 +10,9 @@ from edge_validation_cache import RawPacketRef
 
 
 SUPPORTED_TASK_TYPE = "BEARING_EDGE_INFERENCE"
-EXPECTED_PACKET_COUNT = 80
+EXPECTED_PACKET_COUNT = int(os.getenv("EDGE_EXPECTED_PACKET_COUNT", "80"))
+if EXPECTED_PACKET_COUNT <= 0:
+    raise RuntimeError("EDGE_EXPECTED_PACKET_COUNT must be a positive integer")
 
 ACK_ACCEPTED = "ACCEPTED"
 ACK_REJECTED = "REJECTED"

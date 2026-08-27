@@ -8,6 +8,8 @@ tests/
 !scheduler/tests/**
 !sender_module/tests/
 !sender_module/tests/**
+!experiments/dual_phase_benchmark/tests/
+!experiments/dual_phase_benchmark/tests/**
 scheduler/tests/__pycache__/
 scheduler/tests/*.pyc
 cloud_service/tests/__pycache__/

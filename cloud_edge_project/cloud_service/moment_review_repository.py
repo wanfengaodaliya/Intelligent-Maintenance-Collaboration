@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,16 @@ class MomentReviewRepository:
                     review_id, result_id, schema_version, device_id, task_id, bearing_id,
                     sender_id, decision_round_id, diagnosis_window_id,
                     window_start_sequence, window_end_sequence, window_start_ns, window_end_ns,
-                    bearing_state, edge_label, confidence, data_quality_score, risk_level,
+                    bearing_state, edge_label, diagnosis_label, class_probabilities_json,
+                    confidence, data_quality_score, risk_level,
                     action_grade, recommended_action, model_version, created_at_ns
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(review_id) DO UPDATE SET
                     result_id=excluded.result_id,
                     bearing_state=excluded.bearing_state,
                     edge_label=excluded.edge_label,
+                    diagnosis_label=excluded.diagnosis_label,
+                    class_probabilities_json=excluded.class_probabilities_json,
                     confidence=excluded.confidence,
                     risk_level=excluded.risk_level,
                     action_grade=excluded.action_grade,
@@ -51,6 +55,14 @@ class MomentReviewRepository:
                     result["window_end_ns"],
                     result["bearing_state"],
                     result.get("edge_label"),
+                    result.get("diagnosis_label"),
+                    json.dumps(
+                        result.get("class_probabilities"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if result.get("class_probabilities") is not None
+                    else None,
                     result["confidence"],
                     result["data_quality_score"],
                     result["risk_level"],

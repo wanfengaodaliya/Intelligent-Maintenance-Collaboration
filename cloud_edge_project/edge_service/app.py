@@ -402,6 +402,10 @@ def _liveness_snapshot() -> dict[str, object]:
         bool(coordinator.pipeline.worker.worker_alive) if uses_model_worker else True
     )
     dispatcher_alive = bool(coordinator.completion_dispatcher_alive)
+    routing_pool_alive = bool(coordinator.routing_pool_alive)
+    bearing_publisher_alive = bool(
+        coordinator.bearing_publisher_snapshot.get("alive", False)
+    )
     poller = runtime_assembly.service.model_update_poller
     poller_alive = True if poller is None else poller.running
     critical = bool(
@@ -409,6 +413,8 @@ def _liveness_snapshot() -> dict[str, object]:
         and mqtt_ingress.worker_alive
         and model_worker_alive
         and dispatcher_alive
+        and routing_pool_alive
+        and bearing_publisher_alive
     )
     return {
         "alive": critical,
@@ -416,6 +422,8 @@ def _liveness_snapshot() -> dict[str, object]:
         "mqtt_worker_alive": mqtt_ingress.worker_alive,
         "model_worker_alive": model_worker_alive,
         "completion_dispatcher_alive": dispatcher_alive,
+        "routing_pool_alive": routing_pool_alive,
+        "bearing_publisher_alive": bearing_publisher_alive,
         "model_update_poller_alive": poller_alive,
     }
 
@@ -536,6 +544,10 @@ def health() -> dict[str, object]:
             "overflow_total": runtime_assembly.coordinator.dispatch_overflow_total,
             "alive": runtime_assembly.coordinator.completion_dispatcher_alive,
         },
+        # H2：routing worker 池观测（深度/在途/接受/回放/失败/溢出）。
+        "routing_pool": runtime_assembly.coordinator.routing_pool_snapshot,
+        # H3-ASYNC：bearing 发布器观测（深度/接受/发布/失败/溢出）。
+        "bearing_publisher": runtime_assembly.coordinator.bearing_publisher_snapshot,
         "maintenance": maintenance_health,
         "device_result_outbox": outbox.health() if outbox is not None else None,
         # 阶段 5：关键外部发送队列指标（积压、死信、最老记录年龄）。

@@ -45,6 +45,7 @@ def initialize_database(database_path: Path) -> None:
             _copy_legacy_summaries(connection, legacy_summary_table)
         _migrate_v16_to_v17_fault_labels(connection)
         _migrate_v17_to_v18_moment_edge_label(connection)
+        _migrate_v22_to_v23_moment_diagnosis_output(connection)
         _migrate_v18_to_v19_label_confirmation_risk_level(connection)
         _migrate_v19_to_v20_dual_model_support(connection)
         _migrate_v20_to_v21_model_update_columns(connection)
@@ -100,7 +101,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "summary-window consistency and arbitration identity",
+                "preserve raw MOMENT diagnosis labels for paired evaluation",
             ),
         )
 
@@ -306,6 +307,25 @@ def _migrate_v17_to_v18_moment_edge_label(connection: sqlite3.Connection) -> Non
     if "edge_label" in _columns(connection, "cloud_moment_review_record"):
         return
     connection.execute("ALTER TABLE cloud_moment_review_record ADD COLUMN edge_label TEXT")
+
+
+def _migrate_v22_to_v23_moment_diagnosis_output(
+    connection: sqlite3.Connection,
+) -> None:
+    """Preserve the raw three-class MOMENT output for paired evaluation."""
+
+    if not _table_exists(connection, "cloud_moment_review_record"):
+        return
+    columns = _columns(connection, "cloud_moment_review_record")
+    if "diagnosis_label" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record ADD COLUMN diagnosis_label TEXT"
+        )
+    if "class_probabilities_json" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record "
+            "ADD COLUMN class_probabilities_json TEXT"
+        )
 
 
 def _migrate_v18_to_v19_label_confirmation_risk_level(

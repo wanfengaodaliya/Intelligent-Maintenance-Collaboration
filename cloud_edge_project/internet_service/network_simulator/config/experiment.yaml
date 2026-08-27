@@ -1,6 +1,6 @@
 experiment:
   experiment_id: network_markov_v3_001
-  mode: markov
+  mode: fixed
   global_seed: 20260806
   duration_seconds: 0
   timezone: Asia/Shanghai

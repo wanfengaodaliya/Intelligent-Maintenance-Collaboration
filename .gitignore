@@ -20,6 +20,23 @@ interface-gap-analysis/
 experiments/
 local_experiment/
 
+# 双阶段基准的定义与工具需要版本化；运行结果仍保持本地。
+!cloud_edge_project/experiments/
+cloud_edge_project/experiments/*
+!cloud_edge_project/experiments/dual_phase_benchmark/
+cloud_edge_project/experiments/dual_phase_benchmark/*
+!cloud_edge_project/experiments/dual_phase_benchmark/ground_truth.json
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/
+cloud_edge_project/experiments/dual_phase_benchmark/tools/*
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/__init__.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/dpb_common.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/build_manifest.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/memory.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/paired_eval.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/snapshot.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tools/timeline.py
+!cloud_edge_project/experiments/dual_phase_benchmark/tests/
+
 # 云端 MOMENT 运行资产由 Hugging Face 下载，不提交大模型文件。
 /cloud_edge_project/model_assets/
 

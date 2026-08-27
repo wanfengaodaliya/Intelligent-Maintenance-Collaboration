@@ -295,6 +295,8 @@ def _infer_v12_moment(
         "window_end_ns": window["window_end_ns"],
         "bearing_state": bearing_state,
         "edge_label": _edge_result_label(edge),
+        "diagnosis_label": prediction.label,
+        "class_probabilities": dict(prediction.probabilities),
         "confidence": prediction.confidence,
         "data_quality_score": 1.0,
         "risk_level": risk_level,
@@ -309,6 +311,33 @@ def _infer_v12_moment(
         "review_id": review_id,
         "cloud_packet_result": result,
         "review_result": result,
+    }
+
+
+def evaluate_cloud_window(
+    request: dict[str, Any], settings: CloudSettings | None = None
+) -> dict[str, Any]:
+    """Run the deployed MOMENT classifier without persisting a review record."""
+
+    selected = settings or load_cloud_settings()
+    if selected.backend != "moment_light_adapt":
+        raise CloudServiceError(
+            "UNSUPPORTED_CLOUD_BACKEND",
+            "paired evaluation requires moment_light_adapt",
+            400,
+        )
+    window = _validate_v12_request(request)
+    edge = request["edge_perception_result"]
+    prediction = get_moment_runner(selected).predict(
+        _moment_vibration(window), edge["features"]["operating_context"]
+    )
+    return {
+        "success": True,
+        "diagnosis_label": prediction.label,
+        "class_probabilities": dict(prediction.probabilities),
+        "confidence": prediction.confidence,
+        "model_version": prediction.model_version,
+        "created_at_ns": time.time_ns(),
     }
 
 
