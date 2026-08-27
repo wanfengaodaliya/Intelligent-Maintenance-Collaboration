@@ -5,13 +5,19 @@
 2. 带宽不足实时需求但 ≥ 4Mbps 时进入 buffered，间隔按链路有效容量（扣除丢包）推导。
 3. 无链路快照时保持旧兼容行为：realtime + 50ms。
 
-注意：低于 4Mbps 的候选在 _rank_candidates 中直接拒绝（INSUFFICIENT_BANDWIDTH），
-不会进入 _delivery_plan 的缓传分支，由 Sender 沿用调度重试机制等待网络恢复。
+低于 4Mbps 时，_delivery_plan 也会返回可重试的 503，确保已分配任务的幂等
+重试等旁路不能绕过门槛；Sender 沿用调度重试机制等待网络恢复。
 """
 
 from types import SimpleNamespace
 
-from scheduler.assignment_scheduler import _delivery_plan
+import pytest
+
+from scheduler.assignment_scheduler import (
+    AssignmentError,
+    AssignmentScheduler,
+    _delivery_plan,
+)
 
 
 REQUEST = {
@@ -49,3 +55,43 @@ def test_delivery_plan_slows_down_at_four_mbps_with_loss():
 
 def test_delivery_plan_keeps_old_behavior_without_snapshot():
     assert _delivery_plan(REQUEST, None) == ("realtime", 50, None)
+
+
+def test_delivery_plan_rejects_link_below_buffered_minimum():
+    with pytest.raises(AssignmentError) as captured:
+        _delivery_plan(REQUEST, _link(0.5))
+
+    assert captured.value.code == "NO_AVAILABLE_EDGE_NODE"
+    assert captured.value.status_code == 503
+    assert captured.value.details["retryable"] is True
+    assert captured.value.details["available_mbps"] == 0.5
+
+
+def test_assigned_task_retry_cannot_bypass_buffered_minimum():
+    registry = SimpleNamespace(link_snapshot=lambda _sender, _edge: _link(0.5))
+    scheduler = AssignmentScheduler(
+        registry,
+        SimpleNamespace(),
+        edge_client=SimpleNamespace(),
+    )
+    scheduler._claim_or_wait = lambda _request, _claim, _deadline: {
+        "assignment_status": "ASSIGNED",
+        "device_id": "machine_01",
+        "sender_id": "sender_01",
+        "task_id": "sd_01_tk_0001",
+        "bearing_id": "bearing_01",
+        "edge_node_id": "edge_01",
+        "target_topic": "edge/edge_01/input",
+    }
+
+    with pytest.raises(AssignmentError) as captured:
+        scheduler.decide(REQUEST | {
+            "device_id": "machine_01",
+            "sender_id": "sender_01",
+            "task_id": "sd_01_tk_0001",
+            "bearing_id": "bearing_01",
+            "created_timestamp_ns": 1,
+        })
+
+    assert captured.value.status_code == 503
+    assert captured.value.details["retryable"] is True

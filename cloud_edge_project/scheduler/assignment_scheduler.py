@@ -778,13 +778,25 @@ def _delivery_plan(
     - 无链路快照时保持旧兼容行为：realtime + 50ms（base_interval）。
     - 链路带宽足以覆盖传感器采样窗口时返回 realtime。
     - 带宽不足实时需求但 ≥ 4Mbps 时返回 buffered，并按链路容量降低发送速度。
-    - 调用方（_rank_candidates）负责在 < 4Mbps 时直接拒绝候选。
+    - 低于 4Mbps 时统一返回可重试的 503，避免幂等重试等旁路绕过门槛。
     """
     base_interval_ms = math.ceil(
         request["expected_duration_ms"] / request["expected_packet_count"]
     )
     if link is None:
         return (REALTIME_DELIVERY_MODE, base_interval_ms, None)
+    if link.available_throughput_mbps < MIN_BUFFERED_THROUGHPUT_MBPS:
+        raise AssignmentError(
+            "NO_AVAILABLE_EDGE_NODE",
+            "assigned edge link is below the buffered delivery minimum",
+            503,
+            details={
+                "retryable": True,
+                "retry_after_ms": 500,
+                "available_mbps": link.available_throughput_mbps,
+                "minimum_buffered_mbps": MIN_BUFFERED_THROUGHPUT_MBPS,
+            },
+        )
     effective_mbps = (
         link.available_throughput_mbps
         * (1.0 - link.simulated_packet_loss_rate)
