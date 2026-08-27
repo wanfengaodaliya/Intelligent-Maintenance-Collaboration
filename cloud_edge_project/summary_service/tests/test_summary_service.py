@@ -55,24 +55,23 @@ def bearing_result(
     }
 
 
-def test_aggregates_three_bearings_and_detects_only_cross_edge_conflict(tmp_path):
+def test_aggregates_two_bearings_and_detects_cross_edge_conflict(tmp_path):
     published: list[dict[str, object]] = []
     repository = SummaryRepository(tmp_path / "summary.db")
     service = SummaryService(repository, publish_window_result=lambda value: published.append(dict(value)))
 
     assert service.ingest(bearing_result("bearing_01", "edge_01", 0)) is None
-    assert service.ingest(bearing_result("bearing_02", "edge_01", 3)) is None
-    result = service.ingest(bearing_result("bearing_03", "edge_02", 1))
+    result = service.ingest(bearing_result("bearing_02", "edge_02", 3))
 
     assert result is not None
     assert result["result_status"] == "PENDING_ARBITRATION"
     assert result["has_conflict"] is True
-    assert result["cross_edge_pair_count"] == 2
+    assert result["cross_edge_pair_count"] == 1
     assert result["conflict_pair_count"] == 1
-    assert result["max_grade_gap"] == 2
-    assert result["action_grades_by_edge"] == {"edge_01": [0, 3], "edge_02": [1]}
+    assert result["max_grade_gap"] == 3
+    assert result["action_grades_by_edge"] == {"edge_01": [0], "edge_02": [3]}
     assert result["final_action_grade"] == 3
-    assert len(result["source_results"]) == 3
+    assert len(result["source_results"]) == 2
     assert published == [result]
 
 
@@ -105,7 +104,7 @@ def test_summary_settings_loads_expected_bearings_from_environment(monkeypatch):
     assert settings.expected_bearing_ids == ("bearing_01", "bearing_02")
 
 
-def test_summary_settings_defaults_to_three_bearings(monkeypatch):
+def test_summary_settings_defaults_to_two_bearings(monkeypatch):
     monkeypatch.delenv("SUMMARY_EXPECTED_BEARING_IDS", raising=False)
 
     settings = load_summary_settings()
@@ -113,13 +112,17 @@ def test_summary_settings_defaults_to_three_bearings(monkeypatch):
     assert settings.expected_bearing_ids == (
         "bearing_01",
         "bearing_02",
-        "bearing_03",
     )
 
 
 @pytest.mark.parametrize(
     "expected_bearing_ids",
-    [(), ("bearing_01", "bearing_01"), ("bearing_01", "bearing_04")],
+    [
+        (),
+        ("bearing_01", "bearing_01"),
+        ("bearing_01", "bearing_04"),
+        ("bearing_01", "bearing_02", "bearing_03"),
+    ],
 )
 def test_summary_service_rejects_invalid_expected_bearings(
     tmp_path,
@@ -140,7 +143,6 @@ def test_duplicate_delivery_is_idempotent(tmp_path):
     payloads = [
         bearing_result("bearing_01", "edge_01", 0),
         bearing_result("bearing_02", "edge_02", 0),
-        bearing_result("bearing_03", "edge_01", 0),
     ]
     for payload in payloads:
         service.ingest(payload)
@@ -157,9 +159,9 @@ def test_same_edge_window_is_excluded_from_formal_metrics(tmp_path):
     service = SummaryService(repository)
     for bearing_id, grade in (("bearing_01", 0), ("bearing_02", 3)):
         service.ingest(bearing_result(bearing_id, "edge_01", grade))
-    result = service.ingest(bearing_result("bearing_03", "edge_01", 1))
 
-    assert result is not None
+    result = repository.list_window_results()[0]
+
     assert result["result_status"] == "INCOMPLETE"
     assert result["has_conflict"] is False
     assert result["incomplete_reason"] == "INSUFFICIENT_EDGE_DIVERSITY"
@@ -175,8 +177,7 @@ def test_conflict_is_uploaded_once_and_acknowledged(tmp_path):
     service = SummaryService(repository)
     for payload in (
         bearing_result("bearing_01", "edge_01", 0),
-        bearing_result("bearing_02", "edge_01", 3),
-        bearing_result("bearing_03", "edge_02", 1),
+        bearing_result("bearing_02", "edge_02", 3),
     ):
         service.ingest(payload)
 
@@ -191,9 +192,9 @@ def test_conflict_is_uploaded_once_and_acknowledged(tmp_path):
     assert outbox.run_due() == 1
     assert outbox.run_due() == 0
     assert len(requests) == 1
-    assert len(requests[0]["bearing_results"]) == 3
+    assert len(requests[0]["bearing_results"]) == 2
     assert requests[0]["comparison"] == {
-        "max_cross_edge_grade_gap": 2,
+        "max_cross_edge_grade_gap": 3,
         "conflicting_pair_count": 1,
     }
 
@@ -226,14 +227,13 @@ def test_missing_bearing_closes_as_incomplete_after_timeout(tmp_path):
     repository = SummaryRepository(tmp_path / "summary.db")
     service = SummaryService(repository, now_ns=lambda: now["value"])
     service.ingest(bearing_result("bearing_01", "edge_01", 0))
-    service.ingest(bearing_result("bearing_02", "edge_02", 1))
 
     assert service.close_expired(now_ns=109, timeout_ns=10) == 0
     assert service.close_expired(now_ns=110, timeout_ns=10) == 1
 
     result = repository.list_window_results()[0]
     assert result["result_status"] == "INCOMPLETE"
-    assert result["missing_bearing_ids"] == ["bearing_03"]
+    assert result["missing_bearing_ids"] == ["bearing_02"]
     assert result["excluded_from_formal_metrics"] is True
     assert repository.metrics()["incomplete_windows"] == 1
 
@@ -272,7 +272,6 @@ def test_final_summary_calls_llm_once_and_persists_suggestion(tmp_path) -> None:
     payloads = [
         bearing_result("bearing_01", "edge_01", 2),
         bearing_result("bearing_02", "edge_02", 2),
-        bearing_result("bearing_03", "edge_01", 2),
     ]
     for payload in payloads:
         result = runtime.service.ingest(payload)
@@ -298,7 +297,6 @@ def test_suggestion_publish_retry_does_not_call_llm_again(tmp_path) -> None:
     for payload in (
         bearing_result("bearing_01", "edge_01", 2),
         bearing_result("bearing_02", "edge_02", 2),
-        bearing_result("bearing_03", "edge_01", 2),
     ):
         runtime.service.ingest(payload)
 
@@ -330,8 +328,7 @@ def test_conflict_waits_for_resolved_cloud_action(tmp_path) -> None:
     runtime.suggestion_client = llm
     for payload in (
         bearing_result("bearing_01", "edge_01", 0),
-        bearing_result("bearing_02", "edge_01", 3),
-        bearing_result("bearing_03", "edge_02", 1),
+        bearing_result("bearing_02", "edge_02", 3),
     ):
         result = runtime.service.ingest(payload)
 
@@ -367,7 +364,6 @@ def test_disabled_llm_uses_summary_fallback(tmp_path) -> None:
     for payload in (
         bearing_result("bearing_01", "edge_01", 4),
         bearing_result("bearing_02", "edge_02", 4),
-        bearing_result("bearing_03", "edge_01", 4),
     ):
         result = runtime.service.ingest(payload)
 

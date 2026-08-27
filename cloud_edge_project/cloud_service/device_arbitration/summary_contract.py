@@ -11,7 +11,7 @@ from core.arbitration_contracts import ArbitrationValidationError
 from core.bearing_actions import ACTION_TO_STATE, action_for_grade
 
 
-EXPECTED_BEARING_IDS = {"bearing_01", "bearing_02", "bearing_03"}
+EXPECTED_BEARING_IDS = {"bearing_01", "bearing_02"}
 
 
 def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -41,8 +41,8 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
         _invalid("window_end_sequence must not precede window_start_sequence")
 
     results = payload["bearing_results"]
-    if not isinstance(results, list) or len(results) != 3:
-        _invalid("bearing_results must contain exactly three results")
+    if not isinstance(results, list) or len(results) != len(EXPECTED_BEARING_IDS):
+        _invalid("bearing_results must contain exactly two results")
 
     scenario_results: list[dict[str, Any]] = []
     normalized_results: list[dict[str, Any]] = []
@@ -125,7 +125,7 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
         )
 
     if bearing_ids != EXPECTED_BEARING_IDS:
-        _invalid("bearing_results must contain bearing_01, bearing_02 and bearing_03")
+        _invalid("bearing_results must contain bearing_01 and bearing_02")
     if len(edge_ids) < 2:
         _invalid("bearing_results must come from at least two edge nodes")
 

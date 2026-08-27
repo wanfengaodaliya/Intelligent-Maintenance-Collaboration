@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-EXPECTED_BEARING_IDS = ("bearing_01", "bearing_02", "bearing_03")
+EXPECTED_BEARING_IDS = ("bearing_01", "bearing_02")
 
 ACTION_BY_GRADE = {
     0: "continue_operation",

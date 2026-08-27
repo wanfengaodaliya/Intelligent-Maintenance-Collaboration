@@ -8,9 +8,10 @@
     [int]$EdgeModelTotalTimeoutMs = 20000,
     [int]$SummaryWindowTimeoutSeconds = 40,
     [int]$ExpectedPacketCount = 80,
-    # 2：Summary 等待 bearing_01/02；3：保持默认三轴承汇总。
+    # 2：正式默认（Summary 等待 bearing_01/02，云端仲裁合同只接受两轴承）；
+    # 3：旧三轴承模式，Summary 已不支持 bearing_03，仅保留参数兼容。
     [ValidateSet(2, 3)]
-    [int]$SenderCount = 3,
+    [int]$SenderCount = 2,
     # 每个健康门的统一总超时（秒），每 2 秒轮询一次。
     [int]$HealthTimeoutSeconds = 180
 )

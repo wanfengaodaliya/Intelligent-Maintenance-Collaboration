@@ -53,7 +53,6 @@ def test_summary_to_cloud_arbitration_and_global_analysis_loop(tmp_path):
     for payload in (
         bearing("bearing_01", "edge_01", 0),
         bearing("bearing_02", "edge_02", 3),
-        bearing("bearing_03", "edge_01", 1),
     ):
         summary_service.ingest(payload)
 

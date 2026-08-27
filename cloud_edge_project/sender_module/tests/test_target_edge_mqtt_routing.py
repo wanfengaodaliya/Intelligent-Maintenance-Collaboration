@@ -2,8 +2,8 @@
 
 使用 fake/mock Scheduler（返回 edge/edge_01/input 或 edge/edge_02/input，
 不连接真实 Scheduler）验证：
-  - Scheduler 分配 edge_01 时，三个 Sender 分别选择 18831/18931/19031；
-  - Scheduler 分配 edge_02 时，三个 Sender 分别选择 18832/18932/19032；
+  - Scheduler 分配 edge_01 时，两个 Sender 分别选择 18831/18931；
+  - Scheduler 分配 edge_02 时，两个 Sender 分别选择 18832/18932；
   - 任务摘要正确记录 target_edge_node_id。
 """
 
@@ -26,10 +26,9 @@ CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "local.json"
 EXPECTED_PROXY_PORTS = {
     "sender_01": {"edge_01": 18831, "edge_02": 18832},
     "sender_02": {"edge_01": 18931, "edge_02": 18932},
-    "sender_03": {"edge_01": 19031, "edge_02": 19032},
 }
 
-SENDERS = ("sender_01", "sender_02", "sender_03")
+SENDERS = ("sender_01", "sender_02")
 EDGE_TOPICS = (("edge_01", "edge/edge_01/input"), ("edge_02", "edge/edge_02/input"))
 
 
