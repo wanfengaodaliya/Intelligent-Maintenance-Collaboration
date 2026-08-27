@@ -53,7 +53,7 @@ def allocate_batch_config(config: SenderConfig) -> SenderConfig:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Replay three independent bearing senders")
+    parser = argparse.ArgumentParser(description="Replay configured independent bearing senders")
     parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument(
         "--source",
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rounds",
         type=positive_int,
         default=1,
-        help="run this many 3-Sender rounds (15 rounds = 3,600 windows)",
+        help="run this many configured-Sender rounds",
     )
     return parser
 
@@ -83,7 +83,7 @@ def main() -> int:
         source_files = parse_source_files(args.source)
         summaries = []
         for _round_number in range(1, args.rounds + 1):
-            # run_all_senders starts the three configured Senders concurrently;
+            # run_all_senders starts all configured Senders concurrently;
             # rounds stay sequential so one formal run has a deterministic size.
             round_config = (
                 allocate_batch_config(config)

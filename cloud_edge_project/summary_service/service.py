@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .aggregation import build_incomplete_window_result, build_window_result
@@ -18,15 +18,23 @@ class SummaryService:
         publish_window_result: Callable[[Mapping[str, Any]], None] | None = None,
         build_suggestion: Callable[[Mapping[str, Any]], Mapping[str, Any]] = build_final_suggestion,
         now_ns: Callable[[], int] = time.time_ns,
+        expected_bearing_ids: Sequence[str] = EXPECTED_BEARING_IDS,
     ) -> None:
+        expected = tuple(expected_bearing_ids)
+        if not expected or len(set(expected)) != len(expected):
+            raise ValueError("expected_bearing_ids must be non-empty and unique")
+        unsupported = sorted(set(expected) - set(EXPECTED_BEARING_IDS))
+        if unsupported:
+            raise ValueError(f"unsupported expected bearing IDs: {', '.join(unsupported)}")
         self.repository = repository
         self.publish_window_result = publish_window_result
         self.build_suggestion = build_suggestion
         self.now_ns = now_ns
+        self.expected_bearing_ids = expected
 
     def ingest(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
         result = normalize_bearing_result(payload)
-        if result["bearing_id"] not in EXPECTED_BEARING_IDS:
+        if result["bearing_id"] not in self.expected_bearing_ids:
             raise ValueError(f"unsupported bearing_id: {result['bearing_id']}")
 
         inserted = self.repository.save_bearing_result(
@@ -42,11 +50,13 @@ class SummaryService:
         source_results = self.repository.load_window_bearing_results(
             device_id, window_start, window_end
         )
-        if len(source_results) < len(EXPECTED_BEARING_IDS):
+        if len(source_results) < len(self.expected_bearing_ids):
             return None
 
         window_result = build_window_result(
-            source_results, closed_at_ns=self.now_ns()
+            source_results,
+            closed_at_ns=self.now_ns(),
+            expected_bearing_ids=self.expected_bearing_ids,
         )
         suggestion = (
             self.build_suggestion(window_result)
@@ -67,13 +77,17 @@ class SummaryService:
         for source_results in self.repository.load_expired_open_windows(
             cutoff_ns=int(now_ns) - int(timeout_ns)
         ):
-            if len(source_results) >= len(EXPECTED_BEARING_IDS):
+            if len(source_results) >= len(self.expected_bearing_ids):
                 window_result = build_window_result(
-                    source_results, closed_at_ns=int(now_ns)
+                    source_results,
+                    closed_at_ns=int(now_ns),
+                    expected_bearing_ids=self.expected_bearing_ids,
                 )
             else:
                 window_result = build_incomplete_window_result(
-                    source_results, closed_at_ns=int(now_ns)
+                    source_results,
+                    closed_at_ns=int(now_ns),
+                    expected_bearing_ids=self.expected_bearing_ids,
                 )
             suggestion = (
                 self.build_suggestion(window_result)

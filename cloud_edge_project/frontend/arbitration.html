@@ -30,14 +30,14 @@
     <div class="page-header">
       <div>
         <h1>决策一致性与云端仲裁</h1>
-        <div class="desc">以同一设备、同一窗口的三个轴承局部结果为统计单位；只比较不同 Edge 之间的动作等级</div>
+        <div class="desc">以同一设备、同一窗口的预期轴承局部结果为统计单位；只比较不同 Edge 之间的动作等级</div>
       </div>
     </div>
 
     <div class="card usage-tip">
       <div class="usage-title">统计口径</div>
       <div class="usage-grid">
-        <div><b>完整窗口</b><br>收齐三个轴承且至少来自两个 Edge，才进入冲突率分母。</div>
+        <div><b>完整窗口</b><br>收齐当前模式的预期轴承且至少来自两个 Edge，才进入冲突率分母。</div>
         <div><b>跨 Edge 冲突</b><br>不同 Edge 的动作等级最大差值达到 2；每个窗口最多计一次冲突。</div>
         <div><b>仲裁上传成功率</b><br>Cloud 已确认保存的冲突数 ÷ Summary 检出的冲突数。</div>
         <div><b>仲裁成功率</b><br>Cloud 状态为 resolved 的数量 ÷ Cloud 已完成仲裁数量。</div>
@@ -65,7 +65,7 @@
 
     <div class="grid grid-2" id="recordsGrid">
       <div class="card">
-        <div class="card-title">窗口一致性明细 <span class="hint">三个轴承 · 来源 Edge · 动作等级</span></div>
+        <div class="card-title">窗口一致性明细 <span class="hint">预期轴承 · 来源 Edge · 动作等级</span></div>
         <div id="windowList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
       </div>
       <div class="card" id="arbitrationCard">

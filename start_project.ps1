@@ -8,6 +8,9 @@
     [int]$EdgeModelTotalTimeoutMs = 20000,
     [int]$SummaryWindowTimeoutSeconds = 40,
     [int]$ExpectedPacketCount = 80,
+    # 2：Summary 等待 bearing_01/02；3：保持默认三轴承汇总。
+    [ValidateSet(2, 3)]
+    [int]$SenderCount = 3,
     # 每个健康门的统一总超时（秒），每 2 秒轮询一次。
     [int]$HealthTimeoutSeconds = 180
 )
@@ -19,7 +22,7 @@
 #            （HTTP ready，Cloud 模型已加载，Summary 已连接 MQTT）。
 #   Stage 3  LLM 服务：Summary 建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
 #            （3B @ 6006）；-SkipLLM 时跳过并禁用 Summary LLM 调用。
-#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，--no-build），
+#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，自动构建当前源码），
 #            轮询 /health/ready（Docker HEALTHCHECK 仅代表 liveness）。
 #   全部通过后才允许 Sender 开始发送。
 # 任一健康门失败：打印对应容器/进程状态与最近日志并终止，不依赖 restart 策略排序。
@@ -91,7 +94,8 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
 }
 
 Write-Host "=== Project Root: $ProjectRoot ==="
-Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --no-build) ==="
+Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --build) ==="
+Write-Host "=== Sender mode: $SenderCount senders ==="
 Write-Host "=== Experiment: $ExperimentId ==="
 
 function Get-Json {
@@ -319,7 +323,8 @@ Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $summaryDb = Join-Path $ExperimentData "summary_service.db"
 $summaryLlmEnabled = if ($SkipLLM) { "false" } else { "true" }
-$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_WINDOW_TIMEOUT_SECONDS='$SummaryWindowTimeoutSeconds'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
+$summaryExpectedBearingIds = if ($SenderCount -eq 2) { "bearing_01,bearing_02" } else { "bearing_01,bearing_02,bearing_03" }
+$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_WINDOW_TIMEOUT_SECONDS='$SummaryWindowTimeoutSeconds'; `$env:SUMMARY_EXPECTED_BEARING_IDS='$summaryExpectedBearingIds'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
 
 $stage2 = $true
@@ -388,7 +393,7 @@ try {
             exit 1
         }
     }
-    docker compose -f compose.multi-edge.yml up -d --no-build
+    docker compose -f compose.multi-edge.yml up -d --build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  Edge compose failed to start"
         Show-EdgeDiagnostics

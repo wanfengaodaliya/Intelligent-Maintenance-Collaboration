@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from dashboard_state import BinaryAccuracyEvaluator, DashboardSession
+from mqtt_payload import decode_dashboard_payload
 
 FRONTEND_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = FRONTEND_ROOT.parent
@@ -156,8 +157,8 @@ class MqttBridge:
 
     def _on_message(self, client, userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = decode_dashboard_payload(msg.payload)
+        except (UnicodeDecodeError, ValueError):
             payload = msg.payload.decode("utf-8", errors="replace")
         self._broadcast(
             {

@@ -76,6 +76,64 @@ def test_aggregates_three_bearings_and_detects_only_cross_edge_conflict(tmp_path
     assert published == [result]
 
 
+def test_two_bearing_mode_completes_without_waiting_for_third_bearing(tmp_path):
+    repository = SummaryRepository(tmp_path / "summary.db")
+    service = SummaryService(
+        repository,
+        expected_bearing_ids=("bearing_01", "bearing_02"),
+    )
+
+    assert service.ingest(bearing_result("bearing_01", "edge_01", 0)) is None
+    result = service.ingest(bearing_result("bearing_02", "edge_02", 1))
+
+    assert result is not None
+    assert result["result_status"] == "FINAL"
+    assert [item["bearing_id"] for item in result["source_results"]] == [
+        "bearing_01",
+        "bearing_02",
+    ]
+
+
+def test_summary_settings_loads_expected_bearings_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "SUMMARY_EXPECTED_BEARING_IDS",
+        "bearing_01,bearing_02",
+    )
+
+    settings = load_summary_settings()
+
+    assert settings.expected_bearing_ids == ("bearing_01", "bearing_02")
+
+
+def test_summary_settings_defaults_to_three_bearings(monkeypatch):
+    monkeypatch.delenv("SUMMARY_EXPECTED_BEARING_IDS", raising=False)
+
+    settings = load_summary_settings()
+
+    assert settings.expected_bearing_ids == (
+        "bearing_01",
+        "bearing_02",
+        "bearing_03",
+    )
+
+
+@pytest.mark.parametrize(
+    "expected_bearing_ids",
+    [(), ("bearing_01", "bearing_01"), ("bearing_01", "bearing_04")],
+)
+def test_summary_service_rejects_invalid_expected_bearings(
+    tmp_path,
+    expected_bearing_ids,
+):
+    repository = SummaryRepository(tmp_path / "summary.db")
+
+    with pytest.raises(ValueError):
+        SummaryService(
+            repository,
+            expected_bearing_ids=expected_bearing_ids,
+        )
+
+
 def test_duplicate_delivery_is_idempotent(tmp_path):
     repository = SummaryRepository(tmp_path / "summary.db")
     service = SummaryService(repository)

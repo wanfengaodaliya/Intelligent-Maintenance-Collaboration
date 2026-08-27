@@ -43,6 +43,7 @@ def health() -> dict[str, Any] | JSONResponse:
         "mqtt_input_topic": selected.settings.mqtt_input_topic,
         "mqtt_output_topic": selected.settings.mqtt_output_topic,
         "mqtt_suggestion_topic": selected.settings.mqtt_suggestion_topic,
+        "expected_bearing_ids": list(selected.settings.expected_bearing_ids),
         "suggestion_llm_enabled": selected.settings.suggestion_llm_enabled,
         "last_error": selected.last_error,
     }

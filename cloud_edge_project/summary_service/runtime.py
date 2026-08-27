@@ -14,6 +14,7 @@ import paho.mqtt.client as mqtt
 
 from .outbox import ArbitrationOutbox, PermanentDeliveryError
 from .repository import SummaryRepository
+from .contracts import EXPECTED_BEARING_IDS
 from .service import SummaryService
 from .suggestion_llm import SuggestionClient
 from .suggestions import action_grade_for, build_final_suggestion
@@ -37,6 +38,7 @@ class SummarySettings:
     suggestion_llm_base_url: str
     suggestion_llm_timeout_seconds: float
     suggestion_fallback_text: str
+    expected_bearing_ids: tuple[str, ...]
 
 
 def load_summary_settings() -> SummarySettings:
@@ -81,6 +83,13 @@ def load_summary_settings() -> SummarySettings:
         suggestion_fallback_text=os.getenv(
             "SUMMARY_SUGGESTION_FALLBACK_TEXT", ""
         ).strip(),
+        expected_bearing_ids=tuple(
+            item.strip()
+            for item in os.getenv(
+                "SUMMARY_EXPECTED_BEARING_IDS", ",".join(EXPECTED_BEARING_IDS)
+            ).split(",")
+            if item.strip()
+        ),
     )
 
 
@@ -106,7 +115,9 @@ class SummaryRuntime:
             else None
         )
         self.service = SummaryService(
-            self.repository, build_suggestion=self._build_suggestion
+            self.repository,
+            build_suggestion=self._build_suggestion,
+            expected_bearing_ids=settings.expected_bearing_ids,
         )
         self.arbitration_outbox = ArbitrationOutbox(
             self.repository, self._post_arbitration
