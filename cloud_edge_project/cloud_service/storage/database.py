@@ -109,7 +109,7 @@ def initialize_database(database_path: Path) -> None:
             (
                 SCHEMA_VERSION,
                 time.time_ns(),
-                "scope binary summary windows by shared sender run identity",
+                "remove legacy summary-window grade-gap storage",
             ),
         )
 

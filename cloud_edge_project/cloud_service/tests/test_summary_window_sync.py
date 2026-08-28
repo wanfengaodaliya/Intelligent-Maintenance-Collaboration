@@ -91,7 +91,7 @@ def test_cloud_summary_window_storage_is_idempotent_and_rejects_identity_reuse(t
     assert repository.accept(payload) == payload
     assert repository.accept(payload) == payload
     changed = dict(payload)
-    changed["max_action_level_gap"] = 1
+    changed["closed_at_ns"] += 1
     with pytest.raises(ArbitrationPayloadConflictError):
         repository.accept(changed)
     assert repository.list_recent(device_id="machine_01") == [payload]
@@ -246,5 +246,5 @@ def test_global_analysis_uses_summary_windows_for_formal_consistency_metrics(tmp
     assert analysis["conflict_count"] == 1
     assert analysis["conflict_rate"] == pytest.approx(0.5)
     assert analysis["consistency_rate"] == pytest.approx(0.5)
-    assert analysis["max_decision_gap"] == 3
+    assert analysis["max_action_level_gap"] == 3
     assert list_subject_ids(tmp_path / "cloud.db") == ["machine_01"]
