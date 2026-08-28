@@ -156,6 +156,74 @@ function Show-EdgeDiagnostics {
     Pop-Location
 }
 
+function Clear-PreviousRun {
+    param([string]$CloudEdgePath, [string]$EdgeServicePath, [string]$NetSimPath, [string]$NetSimProjectName)
+    Write-Host "`n========== Clear previous run =========="
+
+    $deletedItems = @()
+
+    # 1. 停 Edge 容器（释放 data/edge_xx/ 文件锁）
+    Write-Host "  Stopping stale Edge containers ..."
+    Push-Location $EdgeServicePath
+    try {
+        docker compose -f compose.multi-edge.yml down 2>&1 | Out-Null
+    } finally { Pop-Location }
+
+    # 2. 停网络模拟器（释放可能的文件占用）
+    Write-Host "  Stopping stale network simulator ..."
+    Push-Location $NetSimPath
+    try {
+        docker compose -p $NetSimProjectName down 2>&1 | Out-Null
+    } finally { Pop-Location }
+
+    # 3. 删除上次运行产生的数据文件和目录
+    $pathsToDelete = @(
+        (Join-Path $CloudEdgePath "data\experiments"),
+        (Join-Path $CloudEdgePath "data\scheduler.db"),
+        (Join-Path $CloudEdgePath "data\cloud_review.db"),
+        (Join-Path $CloudEdgePath "data\edge_v12.db"),
+        (Join-Path $CloudEdgePath "data\edge_01"),
+        (Join-Path $CloudEdgePath "data\edge_02"),
+        (Join-Path $CloudEdgePath "data\raw_analysis_samples"),
+        (Join-Path $CloudEdgePath "sender_module\runtime\state"),
+        (Join-Path $CloudEdgePath "sender_module\runtime\logs"),
+        (Join-Path $CloudEdgePath "logs\task_trace.jsonl"),
+        (Join-Path $CloudEdgePath "edge_service\data")
+    )
+
+    foreach ($p in $pathsToDelete) {
+        if (Test-Path -LiteralPath $p) {
+            Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $p) {
+                Write-Host "  WARN: could not delete $p (file may be locked)"
+            } else {
+                $deletedItems += $p
+            }
+        }
+    }
+
+    # 4. 重建空目录（Sender 运行时需要目录存在）
+    $dirsToRecreate = @(
+        (Join-Path $CloudEdgePath "sender_module\runtime\state"),
+        (Join-Path $CloudEdgePath "sender_module\runtime\logs"),
+        (Join-Path $CloudEdgePath "logs")
+    )
+    foreach ($d in $dirsToRecreate) {
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+    }
+
+    # 5. 打印清理报告
+    if ($deletedItems.Count -gt 0) {
+        Write-Host "  Cleared $($deletedItems.Count) item(s):"
+        foreach ($item in $deletedItems) {
+            Write-Host "    - $item"
+        }
+    } else {
+        Write-Host "  No previous data found (clean start)"
+    }
+    Write-Host ""
+}
+
 # ---------- Pre-checks ----------
 Write-Host "[Check] Docker Desktop ..."
 $dockerInfo = docker info 2>&1
@@ -259,6 +327,9 @@ if (-not $SkipLLM) {
         Write-Host "[Check] Cloud model-update LLM OK (3B)"
     }
 }
+
+# ---------- Clear previous run data ----------
+Clear-PreviousRun -CloudEdgePath $CloudEdge -EdgeServicePath $EdgeService -NetSimPath $NetSim -NetSimProjectName $NetSimProject
 
 # ---------- Stage 1: network simulator ----------
 Write-Host "`n========== Stage 1/4: Network simulator =========="
