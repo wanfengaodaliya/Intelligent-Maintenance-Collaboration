@@ -16,22 +16,12 @@ from summary_service.repository import (
 )
 
 
-ACTIONS = {
-    0: "continue_operation",
-    1: "enhanced_monitoring",
-    2: "scheduled_inspection",
-    3: "urgent_intervention",
-    4: "shutdown",
-}
-
 LEVEL_PROBS = {
     0: ({"healthy": 1.0, "outer_ring_damage": 0.0, "inner_ring_damage": 0.0}, "low"),
     1: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "low"),
     2: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "high"),
     3: ({"healthy": 0.0, "outer_ring_damage": 1.0, "inner_ring_damage": 0.0}, "high"),
 }
-
-LEGACY_GRADE = {0: 0, 1: 1, 2: 2, 3: 4}
 
 
 def bearing(
@@ -44,7 +34,6 @@ def bearing(
 ) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level = LEVEL_PROBS[action_level]
-    grade = LEGACY_GRADE[action_level]
     return normalize_bearing_result(
         {
             "result_id": f"result_{seq}_{suffix}",
@@ -58,8 +47,6 @@ def bearing(
             "window_end_sequence": seq,
             "bearing_state": state,
             "risk_level": risk_level,
-            "action_grade": grade,
-            "recommended_action": ACTIONS[grade],
             "confidence": 0.9,
             "data_quality_score": 1.0,
             "model_version": "model-test",
@@ -277,11 +264,12 @@ def test_resolved_arbitration_marks_window_final_and_republishes(tmp_path):
     assert arbitrated["arbitration_status"] == "RESOLVED"
     assert arbitrated["final_state"] == "fault"
     assert arbitrated["final_action"] == "shutdown"
-    assert arbitrated["final_action_grade"] == 4
+    assert arbitrated["final_action_level"] == 3
     assert arbitrated["recommended_action"] == "shutdown"
     assert arbitrated["final_source"] == "cloud_arbitration"
     assert arbitrated["arbitration_confidence"] == 0.92
-    assert arbitrated["confidence"] == 0.92
+    # confidence is no longer overwritten by arbitration_confidence.
+    assert arbitrated["confidence"] == 0.9
     assert arbitrated["revision"] == 2
     assert arbitrated["has_conflict"] is True
 
@@ -328,7 +316,7 @@ def test_manual_review_outcome_moves_window_to_manual_review(tmp_path):
     assert arbitrated["revision"] == 2
 
 
-def test_warning_final_state_requires_manual_review(tmp_path):
+def test_scheduled_inspection_resolves_to_warning_final_decision(tmp_path):
     repository = SummaryRepository(tmp_path / "summary.db")
     payload = conflict_window(repository)
 
@@ -344,8 +332,51 @@ def test_warning_final_state_requires_manual_review(tmp_path):
         now_ns=2_000,
     )
 
+    assert arbitrated["result_status"] == "FINAL"
+    assert arbitrated["arbitration_status"] == "RESOLVED"
+    assert arbitrated["final_state"] == "warning"
+    assert arbitrated["final_action_level"] == 2
+    assert arbitrated["recommended_action"] == "scheduled_inspection"
+
+
+@pytest.mark.parametrize("cloud_final_state", ["normal", 3])
+def test_resolved_arbitration_rejects_invalid_cloud_final_state(
+    tmp_path, cloud_final_state
+):
+    repository = SummaryRepository(tmp_path / "summary.db")
+    payload = conflict_window(repository)
+
+    with pytest.raises(ValueError, match="cloud final_state"):
+        repository.apply_arbitration_result(
+            payload["summary_result_id"],
+            {
+                "arbitration_id": "arbitration_invalid_state",
+                "status": "resolved",
+                "final_state": cloud_final_state,
+                "final_action": "shutdown",
+            },
+            now_ns=2_000,
+        )
+
+
+def test_resolved_arbitration_with_non_string_action_requires_manual_review(tmp_path):
+    repository = SummaryRepository(tmp_path / "summary.db")
+    payload = conflict_window(repository)
+
+    arbitrated = repository.apply_arbitration_result(
+        payload["summary_result_id"],
+        {
+            "arbitration_id": "arbitration_invalid_action",
+            "status": "resolved",
+            "final_state": None,
+            "final_action": [],
+        },
+        now_ns=2_000,
+    )
+
     assert arbitrated["result_status"] == "MANUAL_REVIEW"
-    assert arbitrated["final_state"] is None
+    assert arbitrated["arbitration_status"] == "MANUAL_REVIEW"
+    assert arbitrated["final_action"] is None
 
 
 def test_apply_rejects_windows_that_are_not_pending(tmp_path):

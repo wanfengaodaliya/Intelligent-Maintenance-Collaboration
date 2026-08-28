@@ -15,13 +15,6 @@ from summary_service.aggregation import build_arbitration_request, build_window_
 from summary_service.contracts import normalize_bearing_result
 
 
-ACTIONS = (
-    "continue_operation",
-    "enhanced_monitoring",
-    "scheduled_inspection",
-    "urgent_intervention",
-    "shutdown",
-)
 RUN_ID = "run_01"
 SUMMARY_WINDOW_ID = build_summary_window_id(
     device_id="machine_01",
@@ -37,7 +30,6 @@ LEVEL_PROBS = {
     3: ({"healthy": 0.0, "outer_ring_damage": 1.0, "inner_ring_damage": 0.0}, "high", 1.0),
 }
 
-LEGACY_GRADE = {0: 0, 1: 1, 2: 2, 3: 4}
 SCORED_ACTION = {
     0: "continue_operation",
     1: "enhanced_monitoring",
@@ -49,7 +41,6 @@ SCORED_ACTION = {
 def _bearing(bearing_id: str, edge_node_id: str, state: str, level: int) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level, score = LEVEL_PROBS[level]
-    grade = LEGACY_GRADE[level]
     return {
         "result_id": f"edge_result_{suffix}",
         "device_id": "machine_01",
@@ -64,13 +55,10 @@ def _bearing(bearing_id: str, edge_node_id: str, state: str, level: int) -> dict
         "confidence": 0.9,
         "data_quality_score": 1.0,
         "risk_level": risk_level,
-        "action_grade": grade,
-        "recommended_action": ACTIONS[grade],
         "action_scorer_version": "action_scorer_v1",
         "action_score": score,
         "action_level": level,
         "scored_action": SCORED_ACTION[level],
-        "scored_action_grade": grade,
         "class_probabilities": probabilities,
     }
 
@@ -96,7 +84,6 @@ def _request() -> dict:
             "node_states": {"edge_01": "normal", "edge_02": "fault"},
             "state_mismatch": True,
             "state_mismatch_pair_count": 1,
-            "max_cross_edge_grade_gap": 4,
         },
         "bearing_results": [
             _bearing("bearing_01", "edge_01", "normal", 0),
@@ -117,7 +104,6 @@ _RECOMPUTED_COMPARISON = {
     "node_states": {"edge_01": "normal", "edge_02": "fault"},
     "state_mismatch": True,
     "state_mismatch_pair_count": 1,
-    "max_cross_edge_grade_gap": 4,
 }
 
 
@@ -165,10 +151,10 @@ def test_state_mismatch_with_small_level_gap_is_not_a_conflict() -> None:
     request["comparison"]["max_action_level_gap"] = 1
     request["comparison"]["max_action_score_gap"] = 0.35
     request["comparison"]["conflicting_pair_count"] = 0
-    request["comparison"]["max_cross_edge_grade_gap"] = 1
 
-    with pytest.raises(ArbitrationValidationError, match="NOT_A_CONFLICT"):
+    with pytest.raises(ArbitrationValidationError) as exc_info:
         adapt_summary_arbitration_request(request)
+    assert exc_info.value.code == "NOT_A_CONFLICT"
 
 
 def test_summary_contract_rejects_non_binary_bearing_state() -> None:

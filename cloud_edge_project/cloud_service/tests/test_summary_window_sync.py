@@ -30,7 +30,6 @@ def window_payload(
         max_action_level_gap = 0
         max_action_score_gap = 0.0
         final_action_level = None
-        final_action_grade = None
         recommended_action = None
     elif conflict:
         result_status = "PENDING_ARBITRATION"
@@ -40,7 +39,6 @@ def window_payload(
         max_action_level_gap = 3
         max_action_score_gap = 1.0
         final_action_level = None
-        final_action_grade = None
         recommended_action = None
     else:
         result_status = "FINAL"
@@ -50,7 +48,6 @@ def window_payload(
         max_action_level_gap = 1
         max_action_score_gap = 0.35
         final_action_level = 1
-        final_action_grade = 1
         recommended_action = "enhanced_monitoring"
     return {
         "summary_result_id": summary_result_id,
@@ -69,20 +66,19 @@ def window_payload(
         "has_conflict": conflict,
         "conflict_semantics": "action_level_gap_v1",
         "action_scorer_version": "action_scorer_v1",
+        "final_decision_semantics": "action_derived_v1",
         "state_mismatch": conflict and not excluded,
         "state_mismatch_pair_count": 1 if (conflict and not excluded) else 0,
         "node_states": node_states,
         "final_state": None if (conflict or excluded) else "normal",
         "arbitration_status": "PENDING" if conflict else None,
         "excluded_from_formal_metrics": excluded,
-        "max_cross_edge_grade_gap": 3 if conflict else 0,
         "conflicting_pair_count": 1 if conflict else 0,
         "action_levels_by_edge": action_levels_by_edge,
         "action_scores_by_edge": action_scores_by_edge,
         "max_action_level_gap": max_action_level_gap,
         "max_action_score_gap": max_action_score_gap,
         "final_action_level": final_action_level,
-        "final_action_grade": final_action_grade,
         "recommended_action": recommended_action,
         "closed_at_ns": sequence * 100,
     }
@@ -95,7 +91,7 @@ def test_cloud_summary_window_storage_is_idempotent_and_rejects_identity_reuse(t
     assert repository.accept(payload) == payload
     assert repository.accept(payload) == payload
     changed = dict(payload)
-    changed["max_cross_edge_grade_gap"] = 1
+    changed["closed_at_ns"] += 1
     with pytest.raises(ArbitrationPayloadConflictError):
         repository.accept(changed)
     assert repository.list_recent(device_id="machine_01") == [payload]
@@ -114,7 +110,6 @@ def test_higher_revision_replaces_window_after_arbitration(tmp_path):
             "final_state": "fault",
             "arbitration_status": "RESOLVED",
             "final_action_level": 3,
-            "final_action_grade": 4,
             "recommended_action": "shutdown",
         }
     )
@@ -251,5 +246,5 @@ def test_global_analysis_uses_summary_windows_for_formal_consistency_metrics(tmp
     assert analysis["conflict_count"] == 1
     assert analysis["conflict_rate"] == pytest.approx(0.5)
     assert analysis["consistency_rate"] == pytest.approx(0.5)
-    assert analysis["max_decision_gap"] == 3
+    assert analysis["max_action_level_gap"] == 3
     assert list_subject_ids(tmp_path / "cloud.db") == ["machine_01"]

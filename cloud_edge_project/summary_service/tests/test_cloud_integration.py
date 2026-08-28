@@ -15,14 +15,6 @@ from summary_service.repository import SummaryRepository
 from summary_service.service import SummaryService
 
 
-ACTIONS = (
-    "continue_operation",
-    "enhanced_monitoring",
-    "scheduled_inspection",
-    "urgent_intervention",
-    "shutdown",
-)
-
 LEVEL_PROBS = {
     0: ({"healthy": 1.0, "outer_ring_damage": 0.0, "inner_ring_damage": 0.0}, "low"),
     1: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "low"),
@@ -30,13 +22,10 @@ LEVEL_PROBS = {
     3: ({"healthy": 0.0, "outer_ring_damage": 1.0, "inner_ring_damage": 0.0}, "high"),
 }
 
-LEGACY_GRADE = {0: 0, 1: 1, 2: 2, 3: 4}
-
 
 def bearing(bearing_id: str, edge_node_id: str, action_level: int) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level = LEVEL_PROBS[action_level]
-    grade = LEGACY_GRADE[action_level]
     return {
         "result_id": f"result_{suffix}",
         "device_id": "machine_01",
@@ -50,8 +39,6 @@ def bearing(bearing_id: str, edge_node_id: str, action_level: int) -> dict:
         "window_end_sequence": 1,
         "bearing_state": "fault" if action_level == 3 else "normal",
         "risk_level": risk_level,
-        "action_grade": grade,
-        "recommended_action": ACTIONS[grade],
         "confidence": 0.9,
         "data_quality_score": 1.0,
         "model_version": "model-test",
