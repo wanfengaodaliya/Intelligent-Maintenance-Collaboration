@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -245,7 +245,6 @@ CREATE TABLE IF NOT EXISTS summary_window_record (
     arbitration_status TEXT,
     conflict_semantics TEXT NOT NULL DEFAULT 'binary_state',
     excluded_from_formal_metrics INTEGER NOT NULL,
-    max_cross_edge_grade_gap INTEGER NOT NULL,
     conflicting_pair_count INTEGER NOT NULL,
     payload_hash TEXT NOT NULL,
     payload_json TEXT NOT NULL,

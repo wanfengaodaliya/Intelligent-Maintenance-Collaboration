@@ -17,16 +17,6 @@ EXPECTED_EDGE_NODE_IDS = ("edge_01", "edge_02")
 BINARY_BEARING_STATES = {"normal", "fault"}
 RISK_LEVELS = {"low", "medium", "high"}
 
-ACTION_BY_GRADE = {
-    0: "continue_operation",
-    1: "enhanced_monitoring",
-    2: "scheduled_inspection",
-    3: "urgent_intervention",
-    4: "shutdown",
-}
-
-GRADE_BY_ACTION = {action: grade for grade, action in ACTION_BY_GRADE.items()}
-
 
 def canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -101,8 +91,6 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "window_end_sequence",
         "bearing_state",
         "risk_level",
-        "action_grade",
-        "recommended_action",
         "confidence",
         "data_quality_score",
         "model_version",
@@ -122,7 +110,6 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "edge_node_id",
         "decision_round_id",
         "risk_level",
-        "recommended_action",
         "model_version",
     ):
         result[field] = str(result[field]).strip()
@@ -144,12 +131,6 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("window_start_sequence must be positive")
     if result["window_end_sequence"] < result["window_start_sequence"]:
         raise ValueError("window_end_sequence must not precede window_start_sequence")
-
-    result["action_grade"] = int(result["action_grade"])
-    if result["action_grade"] not in ACTION_BY_GRADE:
-        raise ValueError("action_grade must be between 0 and 4")
-    if result["recommended_action"] != ACTION_BY_GRADE[result["action_grade"]]:
-        raise ValueError("recommended_action does not match action_grade")
 
     for field in ("confidence", "data_quality_score"):
         if isinstance(result[field], bool):

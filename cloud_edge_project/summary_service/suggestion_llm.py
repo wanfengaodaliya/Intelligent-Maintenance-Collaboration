@@ -52,7 +52,7 @@ def normalize_suggestion(text: str, fallback_text: str) -> str:
 def build_suggestion_messages(
     *,
     device_id: str,
-    final_action_grade: int,
+    final_action_level: int,
     recommended_action: str,
     confidence: float,
 ) -> list[dict[str, str]]:
@@ -62,7 +62,7 @@ def build_suggestion_messages(
             "role": "user",
             "content": (
                 f"设备：{device_id}\n"
-                f"最终动作等级：{final_action_grade}\n"
+                f"最终动作等级：{final_action_level}\n"
                 f"最终维护动作：{recommended_action}\n"
                 f"置信度：{confidence:.0%}\n"
             ),
@@ -84,7 +84,7 @@ class SuggestionClient:
         self,
         *,
         device_id: str,
-        final_action_grade: int,
+        final_action_level: int,
         recommended_action: str,
         confidence: float,
         fallback_text: str,
@@ -93,7 +93,7 @@ class SuggestionClient:
         payload = {
             "messages": build_suggestion_messages(
                 device_id=device_id,
-                final_action_grade=final_action_grade,
+                final_action_level=final_action_level,
                 recommended_action=recommended_action,
                 confidence=confidence,
             ),

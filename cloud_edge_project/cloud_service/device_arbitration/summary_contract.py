@@ -9,7 +9,6 @@ from typing import Any
 
 from core.action_level_contract import (
     ACTION_LEVEL_TO_ACTION,
-    ACTION_LEVEL_TO_LEGACY_GRADE,
     ACTION_SCORER_VERSION,
     CONFLICT_LEVEL_GAP,
     CONFLICT_SEMANTICS,
@@ -17,7 +16,6 @@ from core.action_level_contract import (
     action_level_for_score,
 )
 from core.arbitration_contracts import ArbitrationValidationError
-from core.bearing_actions import action_for_grade
 from core.diagnosis_identity import build_summary_window_id
 
 
@@ -106,13 +104,6 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
         if result_window_end != window_end:
             _invalid("bearing result window_end_sequence does not match request")
 
-        # Edge legacy action fields remain audit-only for the arbitration input.
-        action_grade = _action_grade(value.get("action_grade"))
-        recommended_action = _text(
-            value.get("recommended_action"), "recommended_action"
-        )
-        if recommended_action != action_for_grade(action_grade):
-            _invalid("recommended_action does not match action_grade")
         confidence = _score(value.get("confidence"), "confidence")
         data_quality_score = _score(
             value.get("data_quality_score"), "data_quality_score"
@@ -143,21 +134,12 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
                 "CONFLICT_COMPARISON_MISMATCH",
                 "scored_action does not match action_level",
             )
-        scored_action_grade = _action_level_grade(
-            value.get("scored_action_grade")
-        )
-        if scored_action_grade != ACTION_LEVEL_TO_LEGACY_GRADE[action_level]:
-            raise ArbitrationValidationError(
-                "CONFLICT_COMPARISON_MISMATCH",
-                "scored_action_grade does not match action_level",
-            )
 
         normalized_results.append(
             {
                 "result_id": result_id,
                 "bearing_id": bearing_id,
                 "edge_node_id": edge_node_id,
-                "action_grade": action_grade,
                 "bearing_state": bearing_state,
                 "action_score": action_score,
                 "action_level": action_level,
@@ -171,16 +153,13 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
                 "confidence": confidence,
                 "data_quality_score": data_quality_score,
                 "risk_level": risk_level,
-                # DecisionUnit consumes the scorer-derived action, not the raw
-                # edge recommendation.
+                # DecisionUnit consumes the scorer-derived action.
                 "recommended_action": scored_action,
                 "scenario_payload": {
                     "result_id": result_id,
                     "task_id": task_id,
                     "sender_id": sender_id,
                     "edge_node_id": edge_node_id,
-                    "edge_recommended_action": recommended_action,
-                    "edge_action_grade": action_grade,
                     "action_score": action_score,
                     "action_level": action_level,
                     "action_scorer_version": scorer_version,
@@ -342,26 +321,6 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
             "reported state_mismatch_pair_count does not match Cloud recomputation",
         )
 
-    # Legacy observational grade gap is kept but never decides the conflict.
-    max_grade_gap = max(
-        abs(
-            int(left["action_grade"]) - int(right["action_grade"])
-        )
-        for left in normalized_results
-        for right in normalized_results
-        if left is not right
-    )
-    if "max_cross_edge_grade_gap" in comparison:
-        reported_gap = _non_negative_int(
-            comparison.get("max_cross_edge_grade_gap"),
-            "comparison.max_cross_edge_grade_gap",
-        )
-        if reported_gap != max_grade_gap:
-            raise ArbitrationValidationError(
-                "CONFLICT_COMPARISON_MISMATCH",
-                "reported max_cross_edge_grade_gap does not match Cloud recomputation",
-            )
-
     payload_hash = hashlib.sha256(
         json.dumps(
             dict(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -393,7 +352,6 @@ def adapt_summary_arbitration_request(payload: Mapping[str, Any]) -> dict[str, A
                 "node_states": node_states,
                 "state_mismatch": state_mismatch,
                 "state_mismatch_pair_count": state_mismatch_pair_count,
-                "max_cross_edge_grade_gap": max_grade_gap,
             },
         },
         "request_payload_hash": payload_hash,
@@ -445,21 +403,9 @@ def _enum(value: Any, field: str, allowed: set[str]) -> str:
     return result
 
 
-def _action_grade(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in range(5):
-        _invalid("action_grade must be an integer from 0 to 4")
-    return value
-
-
 def _action_level(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value not in range(4):
         _invalid("action_level must be an integer from 0 to 3")
-    return value
-
-
-def _action_level_grade(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in range(5):
-        _invalid("scored_action_grade must be an integer from 0 to 4")
     return value
 
 
