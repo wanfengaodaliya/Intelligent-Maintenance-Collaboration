@@ -4,6 +4,8 @@ __pycache__/
 tests/
 !cloud_service/tests/
 !cloud_service/tests/**
+!summary_service/tests/
+!summary_service/tests/**
 !scheduler/tests/
 !scheduler/tests/**
 !sender_module/tests/
@@ -14,6 +16,8 @@ scheduler/tests/__pycache__/
 scheduler/tests/*.pyc
 cloud_service/tests/__pycache__/
 cloud_service/tests/*.pyc
+summary_service/tests/__pycache__/
+summary_service/tests/*.pyc
 sender_module/tests/__pycache__/
 sender_module/tests/*.pyc
 logs/*.jsonl

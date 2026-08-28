@@ -19,6 +19,27 @@ def analyze_device_arbitration(
     incomplete_count = len(summary_rows) - complete_count
     conflict_count = sum(bool(row.get("has_conflict")) for row in eligible_rows)
     gaps = [int(row.get("max_cross_edge_grade_gap", 0)) for row in eligible_rows]
+    level_gaps = [
+        float(row["max_action_level_gap"])
+        for row in eligible_rows
+        if row.get("max_action_level_gap") is not None
+    ]
+    score_gaps = [
+        float(row["max_action_score_gap"])
+        for row in eligible_rows
+        if row.get("max_action_score_gap") is not None
+    ]
+    new_semantics_rows = [
+        row
+        for row in eligible_rows
+        if row.get("conflict_semantics") == "action_level_gap_v1"
+    ]
+    new_conflict_count = sum(
+        bool(row.get("has_conflict")) for row in new_semantics_rows
+    )
+    semantics_counter: Counter = Counter(
+        row.get("conflict_semantics") or "legacy" for row in eligible_rows
+    )
     arbitration_count = len(arbitration_rows)
     resolved_count = sum(row.get("status") == "resolved" for row in arbitration_rows)
     success = rate(resolved_count, arbitration_count)
@@ -32,6 +53,16 @@ def analyze_device_arbitration(
         "consistency_rate": rate(complete_count - conflict_count, complete_count),
         "average_decision_gap": (sum(gaps) / len(gaps)) if gaps else None,
         "max_decision_gap": max(gaps) if gaps else None,
+        "average_action_level_gap": (
+            (sum(level_gaps) / len(level_gaps)) if level_gaps else None
+        ),
+        "max_action_level_gap": max(level_gaps) if level_gaps else None,
+        "average_action_score_gap": (
+            (sum(score_gaps) / len(score_gaps)) if score_gaps else None
+        ),
+        "max_action_score_gap": max(score_gaps) if score_gaps else None,
+        "action_level_conflict_rate": rate(new_conflict_count, len(new_semantics_rows)),
+        "conflict_semantics_distribution": dict(sorted(semantics_counter.items())),
         "arbitration_count": arbitration_count,
         "resolved_count": resolved_count,
         "arbitration_success_rate": success,
