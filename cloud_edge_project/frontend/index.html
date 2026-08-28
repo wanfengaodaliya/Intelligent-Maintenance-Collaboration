@@ -119,12 +119,127 @@ const stats = {
 };
 const evaluation = { available: true, accuracy: null, correct: 0, total: 0 };
 
+
 /* ================= 5 秒分桶 ================= */
 
 const BUCKET_MS = 5000;
 const MAX_BUCKETS = 60;
 const series = { packets: [], results: [], faults: [], suggestions: [] };
 const bucketTimes = [];
+
+/* ================= KPI / 系列 / 明细流 sessionStorage 持久化 ================= */
+
+const STORAGE_KEY = "imc.index.snapshot.v1";
+
+function saveSnapshot() {
+  try {
+    const payload = JSON.stringify({
+      savedAt: Date.now(),
+      stats,
+      evaluation,
+      series,
+      bucketTimes,
+      streamData,
+    });
+    sessionStorage.setItem(STORAGE_KEY, payload);
+  } catch (_) {
+    // sessionStorage 满或禁用时静默失败，不影响实时渲染
+  }
+}
+
+function restoreSnapshot() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return false;
+
+    // —— 恢复 KPI 计数 ——
+    const savedStats = data.stats || {};
+    Object.keys(stats).forEach((k) => {
+      const v = Number(savedStats[k]);
+      stats[k] = Number.isFinite(v) && v >= 0 ? v : 0;
+    });
+
+    // —— 恢复准确率上一次显示值 ——
+    const savedEval = data.evaluation || {};
+    ["available", "accuracy", "correct", "total"].forEach((k) => {
+      if (k in savedEval) evaluation[k] = savedEval[k];
+    });
+    if ("min_samples_required" in savedEval) evaluation.min_samples_required = savedEval.min_samples_required;
+    if ("insufficient_samples" in savedEval) evaluation.insufficient_samples = savedEval.insufficient_samples;
+
+    // —— 恢复分桶序列 ——
+    Object.keys(series).forEach((k) => { series[k] = []; });
+    bucketTimes.length = 0;
+    const savedBuckets = Array.isArray(data.bucketTimes) ? data.bucketTimes : [];
+    const savedSeries = data.series || {};
+    const nowMs = Date.now();
+    const cutoffMs = nowMs - MAX_BUCKETS * BUCKET_MS;
+    savedBuckets.forEach((ts, idx) => {
+      if (ts < cutoffMs) return;
+      bucketTimes.push(Number(ts));
+      Object.keys(series).forEach((k) => {
+        const s = savedSeries[k] || [];
+        const v = Number(s[idx]);
+        series[k].push(Number.isFinite(v) && v >= 0 ? v : 0);
+      });
+    });
+
+    // —— 恢复明细流 ——
+    Object.keys(streamData).forEach((k) => {
+      streamData[k] = Array.isArray(data.streamData && data.streamData[k])
+        ? data.streamData[k].slice(-MAX_STREAM)
+        : [];
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function replayStreamFromStorage() {
+  const resultEl = el("resultStream");
+  const suggestionEl = el("suggestionStream");
+  const packetEl = el("packetStream");
+  [resultEl, suggestionEl, packetEl].forEach((c) => { if (c) c.innerHTML = ""; });
+
+  if (streamData.result.length) {
+    streamData.result.slice().reverse().forEach((r) => {
+      if (!r || !r.ts) return;
+      prepend(resultEl, renderResultItem(r), null, null);
+    });
+  } else {
+    showEmpty(resultEl, "等待实时诊断结果…（需 Sender 发送数据）");
+  }
+
+  if (streamData.suggestion.length) {
+    streamData.suggestion.slice().reverse().forEach((r) => {
+      if (!r || !r.ts) return;
+      prepend(suggestionEl, renderSuggestionItem(r), null, null);
+    });
+  } else {
+    showEmpty(suggestionEl, "等待维护建议…");
+  }
+
+  if (streamData.packet.length) {
+    streamData.packet.slice().reverse().forEach((r) => {
+      if (!r || !r.ts) return;
+      prepend(packetEl, renderPacketItem(r), null, null);
+    });
+  } else {
+    showEmpty(packetEl, "等待传感器数据包…");
+  }
+}
+
+let _snapshotTimer = null;
+function scheduleSnapshot() {
+  if (_snapshotTimer) return;
+  _snapshotTimer = setTimeout(() => {
+    _snapshotTimer = null;
+    saveSnapshot();
+  }, 80);
+}
 
 function appendEmptyBucket(timestampMs) {
   bucketTimes.push(timestampMs);
@@ -200,6 +315,7 @@ function updateKpis() {
       setKpiVal(k.id, stats[k.id] || 0);
     }
   });
+  scheduleSnapshot();
 }
 
 function deltaHtml(key) {
@@ -903,32 +1019,41 @@ async function refreshAccuracy() {
 function restoreSessionSnapshot(ev) {
   const snapshot = ev.payload || {};
   const savedStats = snapshot.stats || {};
-  Object.keys(stats).forEach((key) => { stats[key] = Number(savedStats[key]) || 0; });
-  Object.keys(streamData).forEach((key) => { streamData[key] = []; });
-  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
-  showEmpty(el("suggestionStream"), "等待维护建议…");
-  showEmpty(el("packetStream"), "等待传感器数据包…");
+  // Merge，不要覆盖 sessionStorage 已经累积的值（谁大用谁，保证不回退）
+  Object.keys(stats).forEach((key) => {
+    const incoming = Number(savedStats[key]) || 0;
+    stats[key] = Math.max(stats[key], incoming);
+  });
 
-  Object.keys(series).forEach((key) => { series[key] = []; });
-  bucketTimes.length = 0;
-  const savedBuckets = snapshot.buckets || [];
-  const byTimestamp = new Map(savedBuckets.map((bucket) => [Number(bucket.timestamp_ms), bucket]));
-  if (savedBuckets.length) {
-    const end = Number(savedBuckets[savedBuckets.length - 1].timestamp_ms);
-    const start = Math.max(Number(savedBuckets[0].timestamp_ms), end - (MAX_BUCKETS - 1) * BUCKET_MS);
+  // buckets + series 只在 sessionStorage 完全没数据时才覆盖，否则合并：以 sessionStorage 为主，后端 bucket 补齐缺失
+  const incomingBuckets = snapshot.buckets || [];
+  if (incomingBuckets.length && !bucketTimes.length) {
+    const byTimestamp = new Map(incomingBuckets.map((bucket) => [Number(bucket.timestamp_ms), bucket]));
+    const end = Number(incomingBuckets[incomingBuckets.length - 1].timestamp_ms);
+    const start = Math.max(Number(incomingBuckets[0].timestamp_ms), end - (MAX_BUCKETS - 1) * BUCKET_MS);
     for (let timestamp = start; timestamp <= end; timestamp += BUCKET_MS) {
       appendEmptyBucket(timestamp);
       const bucket = byTimestamp.get(timestamp);
       if (!bucket) continue;
-      Object.keys(series).forEach((key) => { series[key][series[key].length - 1] = Number(bucket[key]) || 0; });
+      Object.keys(series).forEach((key) => {
+        series[key][series[key].length - 1] = Number(bucket[key]) || 0;
+      });
     }
   }
 
-  const recent = snapshot.recent || {};
-  (recent["device-result"] || []).forEach((item) => renderResult(item, false));
-  (recent.suggestion || []).forEach((item) => renderSuggestion(item, false));
-  (recent["input-packet"] || []).forEach((item) => renderPacket(item, false));
-  // session snapshot 回放完 -> 立即重算"设备最终处置"
+  // recent 明细流只在 sessionStorage 为空时回放，避免和本地已回放的重复
+  const needRecentReplay = streamData.result.length === 0 && streamData.suggestion.length === 0 && streamData.packet.length === 0;
+  if (needRecentReplay) {
+    Object.keys(streamData).forEach((key) => { streamData[key] = []; });
+    showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+    showEmpty(el("suggestionStream"), "等待维护建议…");
+    showEmpty(el("packetStream"), "等待传感器数据包…");
+    const recent = snapshot.recent || {};
+    (recent["device-result"] || []).forEach((item) => renderResult(item, false));
+    (recent.suggestion || []).forEach((item) => renderSuggestion(item, false));
+    (recent["input-packet"] || []).forEach((item) => renderPacket(item, false));
+  }
+
   renderDeviceVerdict();
   updateKpis();
   redrawAll();
@@ -942,12 +1067,19 @@ window.addEventListener("resize", () => {
 
 function init() {
   renderHero();
-  showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
-  showEmpty(el("suggestionStream"), "等待维护建议…");
-  showEmpty(el("packetStream"), "等待传感器数据包…");
-  renderDeviceVerdict();
 
+  // 优先从 sessionStorage 恢复（0ms，切页回来立即有值，不等 MQTT/后端）
+  const restored = restoreSnapshot();
+  if (restored) {
+    replayStreamFromStorage();
+  } else {
+    showEmpty(el("resultStream"), "等待实时诊断结果…（需 Sender 发送数据）");
+    showEmpty(el("suggestionStream"), "等待维护建议…");
+    showEmpty(el("packetStream"), "等待传感器数据包…");
+  }
+  renderDeviceVerdict();
   updateKpis();
+  redrawAll();
   setMqttStatus(false);
 
   connectEvents({

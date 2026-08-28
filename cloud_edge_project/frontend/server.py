@@ -170,13 +170,69 @@ class MqttBridge:
         )
 
 
+def _resolve_latest_experiment_cloud_db(project_root: Path) -> Path | None:
+    """在 ``{project_root}/data/experiments/*/`` 下找到最近一次写入的 cloud_review.db。
+
+    目录名形如 ``YYYYMMDD_HHMMSS_<hash>``，所以直接按名称倒序取第一个
+    含有 ``cloud_review.db`` 且文件非空的目录即可，不用读 mtime。
+    """
+    experiments_dir = project_root / "data" / "experiments"
+    if not experiments_dir.is_dir():
+        return None
+    candidates = sorted(
+        (d for d in experiments_dir.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    for folder in candidates:
+        candidate = folder / "cloud_review.db"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _build_accuracy(args: argparse.Namespace) -> BinaryAccuracyEvaluator:
+    project_root = PROJECT_ROOT
+    sender_db = Path(args.sender_db).resolve() if args.sender_db else (
+        project_root / "sender_module" / "runtime" / "state" / "packet_source_mapping.db"
+    )
+
+    if args.cloud_db:
+        cloud_db = Path(args.cloud_db).resolve()
+        cloud_source = "cli"
+    else:
+        latest = _resolve_latest_experiment_cloud_db(project_root)
+        fallback = project_root / "data" / "cloud_review.db"
+        cloud_db = latest if latest is not None else fallback
+        cloud_source = "latest_experiment" if latest is not None else "fallback_global"
+
+    evaluator = BinaryAccuracyEvaluator(
+        sender_db,
+        cloud_db,
+        started_at_ns=DASHBOARD.started_at_ns,
+    )
+    print(
+        "[accuracy] sender_db=%s (%s)"
+        % (sender_db, "exists" if sender_db.is_file() else "MISSING")
+    )
+    print(
+        "[accuracy] cloud_db =%s (%s, source=%s)"
+        % (
+            cloud_db,
+            "exists" if cloud_db.is_file() else "MISSING",
+            cloud_source,
+        )
+    )
+    return evaluator
+
+
 DASHBOARD = DashboardSession()
-ACCURACY = BinaryAccuracyEvaluator(
-    PROJECT_ROOT / "sender_module" / "runtime" / "state" / "packet_source_mapping.db",
-    PROJECT_ROOT / "data" / "cloud_review.db",
-    started_at_ns=DASHBOARD.started_at_ns,
-)
 BRIDGE = MqttBridge(MQTT_HOST, MQTT_PORT, DASHBOARD)
+# 注意：真正的 ACCURACY 实例在 main() 里 parse_args 之后构建；
+# 这里占位是为了 GatewayHandler 中能按名称引用，避免 NameError。
+# 如果有任何路由在 server 启动前访问 ACCURACY，会触发 AttributeError，
+# 等价于直接报错告诉调用方还没初始化完成。
+ACCURACY: BinaryAccuracyEvaluator  # type: ignore[assignment]
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -206,7 +262,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/events":
             self._handle_sse()
         elif path == "/api/dashboard/accuracy":
-            self._send_json(200, ACCURACY.evaluate())
+            result = ACCURACY.evaluate()
+            # 附加当前使用的 DB 路径，前端调试与展示透明
+            try:
+                result["sender_database"] = str(Path(ACCURACY.sender_database).resolve())
+                result["cloud_database"] = str(Path(ACCURACY.cloud_database).resolve())
+            except Exception:  # noqa: BLE001 - 字段不影响准确率本身
+                pass
+            self._send_json(200, result)
         elif path.startswith("/api/"):
             self._handle_proxy()
         else:
@@ -343,10 +406,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global ACCURACY  # noqa: PLW0603 - 单例，启动时一次性构建完成
+
     parser = argparse.ArgumentParser(description="智能运维协作平台 前端网关")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8088)
+    parser.add_argument(
+        "--sender-db",
+        help="packet_source_mapping.db 真实标签数据库路径（默认 sender_module/runtime/state 下）",
+    )
+    parser.add_argument(
+        "--cloud-db",
+        help="cloud_review.db 云端轴承诊断结果库路径（默认自动取 data/experiments 最新一次）",
+    )
     args = parser.parse_args()
+    ACCURACY = _build_accuracy(args)
+
     server = ThreadingHTTPServer((args.host, args.port), GatewayHandler)
     print("=" * 60)
     print("  智能运维协作平台 前端已启动")

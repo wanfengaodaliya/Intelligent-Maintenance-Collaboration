@@ -212,7 +212,8 @@ class BinaryAccuracyEvaluator:
         for rowid, revision, received_at_ns, raw_payload in rows:
             rowid_int = int(rowid)
             self._prediction_cursor = max(self._prediction_cursor, rowid_int)
-            if int(revision) != 1 or int(received_at_ns) < self.started_at_ns:
+            # revision == 1 是轴承最终决策；revision == 2 等后续版本不参与"最终结论"准确率
+            if int(revision) != 1:
                 continue
             try:
                 payload = json.loads(str(raw_payload))
