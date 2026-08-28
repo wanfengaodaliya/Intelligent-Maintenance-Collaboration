@@ -34,6 +34,7 @@ def run_all(
     scenario_type: str = "bearing",
     task_limit: int = DEFAULT_TASK_LIMIT,
     analyzers: dict[str, Callable[..., Any]] | None = None,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[str]:
     """Run a global analysis for every known subject, isolating per-subject failures.
 
@@ -43,8 +44,16 @@ def run_all(
     succeeded: list[str] = []
     for subject_id in list_subject_ids(database_path):
         try:
-            service.analyze(scenario_type, subject_id, task_limit)
+            result = service.analyze(scenario_type, subject_id, task_limit)
             succeeded.append(subject_id)
         except Exception as exc:
             LOGGER.exception("periodic global analysis failed for %s: %s", subject_id, exc)
+            continue
+        if on_result is not None:
+            try:
+                on_result(result)
+            except Exception as exc:
+                LOGGER.exception(
+                    "post-analysis callback failed for %s: %s", subject_id, exc
+                )
     return succeeded

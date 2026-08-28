@@ -45,7 +45,8 @@ def detect_problem_candidates(
     if conflict is not None and conflict > config.conflict_rate_target:
         evidence = {
             "conflict_rate": conflict,
-            "sample_count": device_arbitration.get("arbitration_count") or 0,
+            "sample_count": device_arbitration.get("complete_window_count") or 0,
+            "arbitration_count": device_arbitration.get("arbitration_count") or 0,
         }
         candidates.append(_candidate("device_arbitration", "high_conflict_rate", "medium", evidence, "arbitration_rule_review", previous_analysis))
         # 高冲突率常因边端模型对样本判断错误，直接作为模型更新信号。

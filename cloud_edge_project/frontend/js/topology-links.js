@@ -2,7 +2,7 @@
 (function (root) {
   "use strict";
 
-  const SENDERS = ["sender_01", "sender_02", "sender_03"];
+  const SENDERS = ["sender_01", "sender_02"];
   const TARGETS = [
     { id: "scheduler", protocol: "http" },
     { id: "edge_01", protocol: "mqtt" },

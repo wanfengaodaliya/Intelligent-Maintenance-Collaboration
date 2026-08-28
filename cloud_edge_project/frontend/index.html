@@ -203,10 +203,13 @@ function replayStreamFromStorage() {
   const suggestionEl = el("suggestionStream");
   const packetEl = el("packetStream");
   [resultEl, suggestionEl, packetEl].forEach((c) => { if (c) c.innerHTML = ""; });
+  deviceLast.clear();
+  deviceLastSug.clear();
 
   if (streamData.result.length) {
     streamData.result.slice().reverse().forEach((r) => {
       if (!r || !r.ts) return;
+      recomputeDeviceVerdict(r);
       prepend(resultEl, renderResultItem(r), null, null);
     });
   } else {
@@ -216,6 +219,7 @@ function replayStreamFromStorage() {
   if (streamData.suggestion.length) {
     streamData.suggestion.slice().reverse().forEach((r) => {
       if (!r || !r.ts) return;
+      rememberDeviceSuggestion(r);
       prepend(suggestionEl, renderSuggestionItem(r), null, null);
     });
   } else {
@@ -291,7 +295,10 @@ function setKpiVal(id, v) {
 function updateKpis() {
   KPIS.forEach((k) => {
     if (k.id === "accuracy") {
-      const hasResult = evaluation.available && evaluation.total > 0 && !evaluation.insufficient_samples;
+      const hasResult = evaluation.available
+        && evaluation.total > 0
+        && !evaluation.insufficient_samples
+        && typeof evaluation.accuracy === "number";
       setKpiVal(k.id, hasResult ? (evaluation.accuracy * 100).toFixed(1) : "—");
       const sub = el("kpi-sub-accuracy");
       if (sub) {
@@ -904,17 +911,46 @@ function renderDeviceVerdict() {
 
 /* ================= 云端模型更新建议书 ================= */
 
+async function explainEmptyModelUpdates() {
+  try {
+    const response = await Api.get("cloud/global-analysis/recent?limit=1");
+    const latest = response && Array.isArray(response.items) ? response.items[0] : null;
+    if (!latest) {
+      return "暂无云端模型更新任务：全局分析尚未产生结果";
+    }
+    const candidates = Array.isArray(latest.problem_candidates)
+      ? latest.problem_candidates
+      : [];
+    if (candidates.some((item) => item && item.suggested_action === "model_update")) {
+      return "已发现模型更新候选，等待云端生成建议书";
+    }
+    const packet = latest.packet_diagnosis_analysis || {};
+    if (packet.status === "insufficient_data") {
+      return "未触发模型更新：缺少云端复核或纠偏证据；设备故障不等于模型失准";
+    }
+    return "未触发模型更新：最新全局分析未发现模型偏差";
+  } catch (e) {
+    return "暂无云端模型更新任务：无法读取最新全局分析";
+  }
+}
+
 async function refreshModelUpdates() {
   let items = [];
+  let requestFailed = false;
   try {
     items = (await Api.get("cloud/model-update/recent?limit=20")) || [];
   } catch (e) {
+    requestFailed = true;
     el("muSummaryHint").textContent = "云端接口不可用：" + (e && e.message ? e.message : "等待 Cloud 启动");
   }
 
   const wrap = el("modelUpdateList");
   if (!Array.isArray(items) || !items.length) {
-    wrap.innerHTML = '<div class="empty">暂无云端模型更新任务</div>';
+    const reason = requestFailed
+      ? "暂无云端模型更新任务"
+      : await explainEmptyModelUpdates();
+    wrap.innerHTML = '<div class="empty">' + fmt.escape(reason) + '</div>';
+    if (!requestFailed) el("muSummaryHint").textContent = reason;
     return;
   }
 
@@ -1013,6 +1049,8 @@ async function refreshAccuracy() {
   evaluation.accuracy = typeof value.accuracy === "number" ? value.accuracy : null;
   evaluation.correct = Number(value.correct) || 0;
   evaluation.total = Number(value.total) || 0;
+  evaluation.insufficient_samples = value.insufficient_samples === true;
+  evaluation.min_samples_required = Number(value.min_samples_required) || 0;
   updateKpis();
 }
 

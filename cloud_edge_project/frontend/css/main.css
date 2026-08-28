@@ -353,7 +353,7 @@ html, body {
 @media (max-width: 1200px) { .hero { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
 
-/* ---------- Sender 九链路折叠视图 ---------- */
+/* ---------- Sender 六链路折叠视图 ---------- */
 
 .sender-link-list {
   display: grid;

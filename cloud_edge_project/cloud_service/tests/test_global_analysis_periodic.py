@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 from cloud_service.global_analysis.periodic import list_subject_ids, run_all
@@ -47,3 +48,27 @@ def test_run_all_analyses_every_subject_and_persists(tmp_path: Path) -> None:
     repository = GlobalAnalysisResultRepository(database_path)
     for subject in succeeded:
         assert repository.get_latest("bearing", subject) is not None
+
+
+def test_run_all_supports_result_callback_after_analysis(tmp_path: Path) -> None:
+    assert "on_result" in inspect.signature(run_all).parameters
+
+    database_path = tmp_path / "cloud.db"
+    results = TaskResultService(database_path)
+    assert results.ingest_device_decision(
+        _device(device_id="machine_01", result_id="d1", revision=1)
+    )["duplicate"] is False
+    observed = []
+
+    succeeded = run_all(
+        database_path,
+        scenario_type="bearing",
+        on_result=observed.append,
+    )
+
+    assert succeeded == ["machine_01"]
+    assert len(observed) == 1
+    assert observed[0]["subject_id"] == "machine_01"
+    assert GlobalAnalysisResultRepository(database_path).get_latest(
+        "bearing", "machine_01"
+    ) is not None

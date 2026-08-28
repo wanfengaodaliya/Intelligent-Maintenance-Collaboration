@@ -180,8 +180,44 @@ def _run_periodic_global_analysis_once(database_path: Path) -> list[str]:
     """Run global analysis for every known bearing device in a single pass."""
     analyzers = _build_bearing_global_analyzers()
     return run_periodic_global_analysis(
-        database_path, scenario_type="bearing", analyzers=analyzers
+        database_path,
+        scenario_type="bearing",
+        analyzers=analyzers,
+        on_result=_create_suggested_model_updates,
     )
+
+
+def _create_suggested_model_updates(analysis: dict[str, Any]) -> None:
+    """Create review-only update tasks for model-update problem candidates."""
+
+    analysis_id = analysis.get("analysis_id")
+    candidates = analysis.get("problem_candidates")
+    if not isinstance(analysis_id, str) or not isinstance(candidates, list):
+        return
+    service = None
+    for candidate in candidates:
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("suggested_action") != "model_update"
+            or not isinstance(candidate.get("problem_id"), str)
+        ):
+            continue
+        try:
+            service = service or _model_update_service()
+            service.create(
+                {
+                    "analysis_id": analysis_id,
+                    "problem_id": candidate["problem_id"],
+                },
+                reuse_active=True,
+                use_llm_suggestion=False,
+            )
+        except Exception as exc:
+            LOGGER.exception(
+                "automatic model-update suggestion creation failed for %s: %s",
+                candidate["problem_id"],
+                exc,
+            )
 
 
 async def _run_periodic_global_analysis() -> None:
@@ -552,6 +588,7 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
             payload.get("subject_id"),
             payload.get("task_limit", DEFAULT_TASK_LIMIT),
         )
+        _create_suggested_model_updates(result)
         return {"success": True, "result": result}
     except UnsupportedScenarioError as error:
         return JSONResponse(

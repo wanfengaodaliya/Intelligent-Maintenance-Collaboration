@@ -42,7 +42,10 @@ from cloud_service.model_update.post_validator import (
     validate_post_deployment,
 )
 from cloud_service.model_update.repository import ModelUpdateRepository
-from cloud_service.model_update.suggestion import generate_suggestion as _generate_suggestion
+from cloud_service.model_update.suggestion import (
+    generate_suggestion as _generate_suggestion,
+    template_suggestion,
+)
 from cloud_service.model_update.trainer import build_training_plan
 from cloud_service.model_update.training import OfflineTrainingRunner
 from cloud_service.model_update.validator import validate_candidate
@@ -89,7 +92,13 @@ class ModelUpdateService:
     def _active_versions(self) -> ActiveModelVersionStore:
         return ActiveModelVersionStore(self.database_path)
 
-    def create(self, request: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self,
+        request: dict[str, Any],
+        *,
+        reuse_active: bool = False,
+        use_llm_suggestion: bool = True,
+    ) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ModelUpdateError("INVALID_UPDATE_REQUEST")
         analysis_id = _required_string(request, "analysis_id")
@@ -140,9 +149,25 @@ class ModelUpdateService:
             "created_at_ns": now,
             "updated_at_ns": now,
         }
-        created = self.repository.create(task)
+        if reuse_active:
+            created, was_created = self.repository.create_or_get_active(task)
+            if not was_created:
+                return {"decision": "create_update", "update": created}
+        else:
+            created = self.repository.create(task)
         try:
-            self.generate_suggestion(created["update_id"])
+            if use_llm_suggestion:
+                self.generate_suggestion(created["update_id"])
+            else:
+                self.repository.update(
+                    created["update_id"],
+                    suggestion_json={
+                        "text": template_suggestion(created),
+                        "source": "template",
+                        "generated_at_ns": time.time_ns(),
+                    },
+                    updated_at_ns=time.time_ns(),
+                )
         except Exception:
             pass
         return {"decision": decision, "update": self.repository.get(created["update_id"])}

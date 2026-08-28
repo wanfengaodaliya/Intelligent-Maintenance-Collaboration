@@ -283,13 +283,12 @@ class EdgeValidationCache:
         now_ns = self._read_clock()
         with state.mutex:
             self._cleanup_state_locked(state, now_ns)
-            if (
-                state.device_id != request["device_id"]
-                or state.bearing_id != request["bearing_id"]
-            ):
-                return self._query_result(request, INVALID_CONTEXT_REQUEST)
-
-            slots = list(state.slots)
+            slots = [
+                slot
+                for slot in state.slots
+                if slot.device_id == request["device_id"]
+                and slot.bearing_id == request["bearing_id"]
+            ]
             matches = [
                 index
                 for index, slot in enumerate(slots)
@@ -398,19 +397,7 @@ class EdgeValidationCache:
         state = self._state_for(identity)
         with state.mutex:
             self._cleanup_state_locked(state, received_at_ns)
-            if state.slots:
-                if (
-                    state.device_id != identity["device_id"]
-                    or state.bearing_id != identity["bearing_id"]
-                ):
-                    raise _CacheError(
-                        "sender_binding",
-                        {
-                            "bound_device_id": state.device_id,
-                            "bound_bearing_id": state.bearing_id,
-                        },
-                    )
-            else:
+            if not state.slots:
                 state.device_id = identity["device_id"]
                 state.bearing_id = identity["bearing_id"]
             if len(state.slots) >= self.config.context_queue_capacity_per_sender:

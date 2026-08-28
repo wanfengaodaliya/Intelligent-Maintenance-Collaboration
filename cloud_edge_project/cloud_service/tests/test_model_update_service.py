@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,97 @@ def _service(tmp_path: Path):
     )
     _save_analysis(database_path, _analysis(_problem()))
     return service
+
+
+def test_create_reuses_active_task_for_same_device_problem_across_analyses(tmp_path: Path):
+    database_path = tmp_path / "cloud.db"
+    service = ModelUpdateService(database_path, data_root=tmp_path)
+    first_problem = _problem(problem_id="problem_001")
+    second_problem = _problem(problem_id="problem_002")
+    _save_analysis(
+        database_path,
+        _analysis(first_problem, analysis_id="analysis_001"),
+        created_at_ns=1,
+    )
+    _save_analysis(
+        database_path,
+        _analysis(second_problem, analysis_id="analysis_002"),
+        created_at_ns=2,
+    )
+
+    first = service.create({
+        "analysis_id": "analysis_001",
+        "problem_id": "problem_001",
+    })["update"]
+    second = service.create(
+        {
+            "analysis_id": "analysis_002",
+            "problem_id": "problem_002",
+        },
+        reuse_active=True,
+    )["update"]
+
+    assert second["update_id"] == first["update_id"]
+    assert len(service.repository.list_recent()) == 1
+
+
+def test_automatic_create_uses_template_without_calling_llm(
+    tmp_path: Path, monkeypatch
+):
+    database_path = tmp_path / "cloud.db"
+    service = ModelUpdateService(database_path, data_root=tmp_path)
+    _save_analysis(database_path, _analysis(_problem()))
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("automatic creation must not wait for the LLM")
+
+    monkeypatch.setattr(
+        "cloud_service.model_update.service._generate_suggestion", fail_if_called
+    )
+    created = service.create(
+        {"analysis_id": "analysis_001", "problem_id": "problem_001"},
+        reuse_active=True,
+        use_llm_suggestion=False,
+    )["update"]
+
+    assert created["suggestion"]["source"] == "template"
+    assert created["suggestion"]["text"]
+
+
+def test_concurrent_automatic_create_reuses_one_active_task(
+    tmp_path: Path
+):
+    database_path = tmp_path / "cloud.db"
+    first_service = ModelUpdateService(database_path, data_root=tmp_path)
+    second_service = ModelUpdateService(database_path, data_root=tmp_path)
+    _save_analysis(
+        database_path,
+        _analysis(_problem(problem_id="problem_001"), analysis_id="analysis_001"),
+        created_at_ns=1,
+    )
+    _save_analysis(
+        database_path,
+        _analysis(_problem(problem_id="problem_002"), analysis_id="analysis_002"),
+        created_at_ns=2,
+    )
+    def create(service, analysis_id, problem_id):
+        return service.create(
+            {"analysis_id": analysis_id, "problem_id": problem_id},
+            reuse_active=True,
+            use_llm_suggestion=False,
+        )["update"]["update_id"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ids = list(executor.map(
+            lambda args: create(*args),
+            (
+                (first_service, "analysis_001", "problem_001"),
+                (second_service, "analysis_002", "problem_002"),
+            ),
+        ))
+
+    assert len(set(ids)) == 1
+    assert len(first_service.repository.list_recent()) == 1
 
 
 def _validation_results(manifest):

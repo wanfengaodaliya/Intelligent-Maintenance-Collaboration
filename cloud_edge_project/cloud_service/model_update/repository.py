@@ -61,6 +61,43 @@ class ModelUpdateRepository:
             )
         return self.get(task["update_id"])
 
+    def create_or_get_active(
+        self, task: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically create a task or reuse the matching active task."""
+
+        columns = tuple(task)
+        values = tuple(_encode_value(key, task[key]) for key in columns)
+        with connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM model_update_task "
+                "WHERE analysis_id=? AND problem_id=?",
+                (task["analysis_id"], task["problem_id"]),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT * FROM model_update_task "
+                    "WHERE subject_id=? AND problem_type=? AND model_type=? "
+                    "AND status NOT IN ("
+                    "'rejected','succeeded','rolled_back','ineffective',"
+                    "'partial_improvement'"
+                    ") ORDER BY updated_at_ns DESC LIMIT 1",
+                    (
+                        task["subject_id"],
+                        task["problem_type"],
+                        task["model_type"],
+                    ),
+                ).fetchone()
+            if row is not None:
+                return _decode(dict(row)), False
+            connection.execute(
+                f"INSERT INTO model_update_task ({','.join(columns)}) "
+                f"VALUES ({','.join('?' for _ in values)})",
+                values,
+            )
+        return self.get(task["update_id"]), True
+
     def get(self, update_id: str) -> dict[str, Any] | None:
         with connect(self.database_path) as connection:
             row = connection.execute(
