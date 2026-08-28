@@ -75,6 +75,7 @@ class EdgeBearingResult:
     created_at_ns: int
     diagnosis_label: str | None = None
     class_probabilities: Mapping[str, float] | None = None
+    run_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_identity(self)
@@ -84,6 +85,8 @@ class EdgeBearingResult:
             raise ValueError("action_grade must be in [0, 4]")
         if not self.contributing_packet_ids:
             raise ValueError("contributing_packet_ids must not be empty")
+        if self.run_id is not None and not self.run_id.strip():
+            raise ValueError("run_id must be a non-empty string when present")
 
 
 @dataclass(frozen=True)

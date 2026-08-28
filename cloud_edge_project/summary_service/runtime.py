@@ -14,10 +14,10 @@ import paho.mqtt.client as mqtt
 
 from .outbox import ArbitrationOutbox, PermanentDeliveryError
 from .repository import SummaryRepository
-from .contracts import EXPECTED_BEARING_IDS
+from .contracts import EXPECTED_BEARING_IDS, EXPECTED_EDGE_NODE_IDS
 from .service import SummaryService
 from .suggestion_llm import SuggestionClient
-from .suggestions import action_grade_for, build_final_suggestion
+from .suggestions import build_final_suggestion
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,19 @@ class SummarySettings:
     suggestion_llm_base_url: str
     suggestion_llm_timeout_seconds: float
     suggestion_fallback_text: str
+    suggestion_worker_interval_seconds: float
+    suggestion_max_attempts: int
+    suggestion_retry_delay_seconds: float
     expected_bearing_ids: tuple[str, ...]
+    expected_edge_node_ids: tuple[str, ...]
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        item.strip()
+        for item in os.getenv(name, ",".join(default)).split(",")
+        if item.strip()
+    )
 
 
 def load_summary_settings() -> SummarySettings:
@@ -83,12 +95,20 @@ def load_summary_settings() -> SummarySettings:
         suggestion_fallback_text=os.getenv(
             "SUMMARY_SUGGESTION_FALLBACK_TEXT", ""
         ).strip(),
-        expected_bearing_ids=tuple(
-            item.strip()
-            for item in os.getenv(
-                "SUMMARY_EXPECTED_BEARING_IDS", ",".join(EXPECTED_BEARING_IDS)
-            ).split(",")
-            if item.strip()
+        suggestion_worker_interval_seconds=float(
+            os.getenv("SUMMARY_SUGGESTION_WORKER_INTERVAL_SECONDS", "0.2")
+        ),
+        suggestion_max_attempts=int(
+            os.getenv("SUMMARY_SUGGESTION_MAX_ATTEMPTS", "5")
+        ),
+        suggestion_retry_delay_seconds=float(
+            os.getenv("SUMMARY_SUGGESTION_RETRY_DELAY_SECONDS", "2.0")
+        ),
+        expected_bearing_ids=_csv_env(
+            "SUMMARY_EXPECTED_BEARING_IDS", EXPECTED_BEARING_IDS
+        ),
+        expected_edge_node_ids=_csv_env(
+            "SUMMARY_EXPECTED_EDGE_NODE_IDS", EXPECTED_EDGE_NODE_IDS
         ),
     )
 
@@ -116,8 +136,8 @@ class SummaryRuntime:
         )
         self.service = SummaryService(
             self.repository,
-            build_suggestion=self._build_suggestion,
             expected_bearing_ids=settings.expected_bearing_ids,
+            expected_edge_node_ids=settings.expected_edge_node_ids,
         )
         self.arbitration_outbox = ArbitrationOutbox(
             self.repository, self._post_arbitration
@@ -140,6 +160,7 @@ class SummaryRuntime:
         self._connected = threading.Event()
         self._stop = threading.Event()
         self._maintenance: threading.Thread | None = None
+        self._suggestion_worker: threading.Thread | None = None
         self.last_error: str | None = None
 
     def start(self) -> None:
@@ -153,11 +174,19 @@ class SummaryRuntime:
             daemon=True,
         )
         self._maintenance.start()
+        self._suggestion_worker = threading.Thread(
+            target=self._run_suggestion_worker,
+            name="summary-suggestion-worker",
+            daemon=True,
+        )
+        self._suggestion_worker.start()
 
     def stop(self) -> None:
         self._stop.set()
         if self._maintenance is not None:
             self._maintenance.join(timeout=5.0)
+        if self._suggestion_worker is not None:
+            self._suggestion_worker.join(timeout=5.0)
         self.client.disconnect()
         self.client.loop_stop()
 
@@ -220,25 +249,9 @@ class SummaryRuntime:
 
     def _post_arbitration(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         response = self._post_json(self.settings.cloud_arbitration_url, payload)
-        if str(response.get("status", "")).lower() != "resolved":
-            return response
-        final_action = response.get("final_action")
-        if not final_action:
-            return response
-        summary_result_id = str(payload["summary_result_id"])
-        if self.repository.get_suggestion(summary_result_id) is not None:
-            return response
-        window_result = self.repository.get_window_result_by_id(summary_result_id)
-        if window_result is None:
-            raise RuntimeError("arbitrated summary window is missing locally")
-        final_source = {
-            **window_result,
-            "result_status": "FINAL",
-            "final_action_grade": action_grade_for(str(final_action)),
-            "recommended_action": str(final_action),
-            "confidence": float(response["confidence"]),
-        }
-        self.repository.enqueue_suggestion(self._build_suggestion(final_source))
+        self.repository.apply_arbitration_result(
+            str(payload["summary_result_id"]), response, now_ns=time.time_ns()
+        )
         return response
 
     def _post_window_sync(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -250,6 +263,35 @@ class SummaryRuntime:
             client=self.suggestion_client,
             fallback_override=self.settings.suggestion_fallback_text,
         )
+
+    def process_suggestion_tasks(self, *, limit: int = 5) -> int:
+        """Generate due suggestions off the MQTT path; publish via outbox."""
+
+        now = time.time_ns()
+        retry_delay_ns = int(
+            self.settings.suggestion_retry_delay_seconds * 1_000_000_000
+        )
+        processed = 0
+        for task in self.repository.due_suggestion_tasks(now_ns=now, limit=limit):
+            summary_result_id = str(task["summary_result_id"])
+            attempts = int(task["attempts"]) + 1
+            try:
+                suggestion = self._build_suggestion(task["source"])
+            except Exception as exc:
+                self.repository.defer_suggestion_task(
+                    summary_result_id,
+                    error=str(exc),
+                    attempts=attempts,
+                    next_attempt_at_ns=now + retry_delay_ns * attempts,
+                    dead_letter=attempts >= self.settings.suggestion_max_attempts,
+                    now_ns=now,
+                )
+            else:
+                self.repository.complete_suggestion_task(
+                    summary_result_id, suggestion, now_ns=now
+                )
+                processed += 1
+        return processed
 
     def _post_json(
         self, url: str, payload: Mapping[str, Any]
@@ -285,6 +327,13 @@ class SummaryRuntime:
                 self.publish_outbox.run_due()
                 self.window_sync_outbox.run_due()
                 self.arbitration_outbox.run_due()
+            except Exception as exc:
+                self.last_error = str(exc)
+
+    def _run_suggestion_worker(self) -> None:
+        while not self._stop.wait(self.settings.suggestion_worker_interval_seconds):
+            try:
+                self.process_suggestion_tasks()
                 self.suggestion_outbox.run_due()
             except Exception as exc:
                 self.last_error = str(exc)

@@ -14,6 +14,7 @@ from cloud_service.moment_review_repository import MomentReviewRepository
 from cloud_service.storage.database import initialize_database
 from cloud_service.task_results import TaskResultService
 from cloud_service.summary_windows import SummaryWindowRepository
+from core.diagnosis_identity import build_summary_window_id
 
 MOMENT_ROUND_MARKER = "DEVEL_E2E"
 
@@ -150,14 +151,33 @@ def test_phase_one_global_analysis_closes_the_loop(tmp_path: Path, monkeypatch) 
     SummaryWindowRepository(database_path).accept(
         {
             "summary_result_id": "summary_machine_01_1",
+            "summary_window_id": build_summary_window_id(
+                device_id="machine_01",
+                run_id="run_01",
+                window_start_sequence=1,
+                window_end_sequence=1,
+            ),
             "device_id": "machine_01",
+            "run_id": "run_01",
             "window_start_sequence": 1,
             "window_end_sequence": 1,
             "result_status": "PENDING_ARBITRATION",
+            "revision": 1,
             "has_conflict": True,
+            "conflict_semantics": "action_level_gap_v1",
+            "action_scorer_version": "action_scorer_v1",
+            "state_mismatch": True,
+            "state_mismatch_pair_count": 1,
+            "node_states": {"edge_01": "normal", "edge_02": "fault"},
+            "final_state": None,
+            "arbitration_status": "PENDING",
             "excluded_from_formal_metrics": False,
             "max_cross_edge_grade_gap": 3,
             "conflicting_pair_count": 1,
+            "action_levels_by_edge": {"edge_01": 0, "edge_02": 3},
+            "action_scores_by_edge": {"edge_01": 0.0, "edge_02": 1.0},
+            "max_action_level_gap": 3,
+            "max_action_score_gap": 1.0,
             "closed_at_ns": 1,
         }
     )

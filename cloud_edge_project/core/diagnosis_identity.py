@@ -59,6 +59,49 @@ def build_decision_round_id(
     )
 
 
+def build_run_id(*, device_id: str, batch_created_timestamp_ns: int) -> str:
+    """Build the shared identity for sender tasks started in the same batch."""
+
+    _validate_text("device_id", device_id)
+    if (
+        isinstance(batch_created_timestamp_ns, bool)
+        or not isinstance(batch_created_timestamp_ns, int)
+        or batch_created_timestamp_ns <= 0
+    ):
+        raise ValueError("batch_created_timestamp_ns must be a positive integer")
+    return _stable_id(
+        "run_",
+        {
+            "device_id": device_id,
+            "batch_created_timestamp_ns": batch_created_timestamp_ns,
+        },
+    )
+
+
+def build_summary_window_id(
+    *,
+    device_id: str,
+    run_id: str | None,
+    window_start_sequence: int,
+    window_end_sequence: int,
+) -> str:
+    """Build the cross-service identity for one shared summary window."""
+
+    _validate_text("device_id", device_id)
+    if run_id is not None:
+        _validate_text("run_id", run_id)
+    _validate_sequence_range(window_start_sequence, window_end_sequence)
+    return _stable_id(
+        "summary_window_",
+        {
+            "device_id": device_id,
+            "run_id": run_id or "",
+            "window_start_sequence": window_start_sequence,
+            "window_end_sequence": window_end_sequence,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class DiagnosisIdentity:
     device_id: str
