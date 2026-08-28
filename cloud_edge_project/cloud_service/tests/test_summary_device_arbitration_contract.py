@@ -152,8 +152,9 @@ def test_state_mismatch_with_small_level_gap_is_not_a_conflict() -> None:
     request["comparison"]["max_action_score_gap"] = 0.35
     request["comparison"]["conflicting_pair_count"] = 0
 
-    with pytest.raises(ArbitrationValidationError, match="NOT_A_CONFLICT"):
+    with pytest.raises(ArbitrationValidationError) as exc_info:
         adapt_summary_arbitration_request(request)
+    assert exc_info.value.code == "NOT_A_CONFLICT"
 
 
 def test_summary_contract_rejects_non_binary_bearing_state() -> None:

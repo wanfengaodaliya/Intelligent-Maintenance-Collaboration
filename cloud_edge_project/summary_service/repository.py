@@ -489,12 +489,19 @@ class SummaryRepository:
 
             status = str(arbitration.get("status", "")).strip().lower()
             raw_final_state = arbitration.get("final_state")
+            if raw_final_state is not None and not isinstance(raw_final_state, str):
+                raise ValueError("cloud final_state must be a string or null")
             cloud_final_state = (
                 str(raw_final_state).strip().lower()
                 if isinstance(raw_final_state, str)
                 else None
             )
-            final_action = arbitration.get("final_action")
+            raw_final_action = arbitration.get("final_action")
+            final_action = (
+                raw_final_action.strip()
+                if isinstance(raw_final_action, str) and raw_final_action.strip()
+                else None
+            )
             # The maintenance action is the sole authority.  final_state no
             # longer decides FINAL vs MANUAL_REVIEW.
             if status == "resolved" and final_action in ACTION_TO_LEVEL:
