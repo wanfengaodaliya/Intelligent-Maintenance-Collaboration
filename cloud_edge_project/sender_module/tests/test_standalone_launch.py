@@ -24,4 +24,4 @@ def test_documented_sender_module_launch_needs_no_pythonpath() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Replay three independent bearing senders" in result.stdout
+    assert "Replay configured independent bearing senders" in result.stdout

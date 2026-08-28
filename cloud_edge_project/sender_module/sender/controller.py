@@ -87,7 +87,16 @@ def _summary(
     error_code: str | None,
     error_message: str | None = None,
     target_edge_node_id: str | None = None,
+    delivery_mode: str | None = None,
+    delivery_interval_ms: int | None = None,
+    available_throughput_mbps: float | None = None,
 ) -> dict[str, Any]:
+    # estimated_delivery_duration_ms 由缓传间隔和包数推导；调度阶段直接失败时为 None。
+    estimated_delivery_duration_ms = (
+        delivery_interval_ms * config.expected_packet_count
+        if delivery_interval_ms is not None
+        else None
+    )
     record: dict[str, Any] = {
         "device_id": config.device_id,
         "sender_id": node.sender_id,
@@ -106,6 +115,10 @@ def _summary(
         "task_finished_timestamp_ns": time.time_ns(),
         "task_status": status,
         "replay_mode": "realtime" if realtime else "accelerated",
+        "delivery_mode": delivery_mode,
+        "delivery_interval_ms": delivery_interval_ms,
+        "available_throughput_mbps": available_throughput_mbps,
+        "estimated_delivery_duration_ms": estimated_delivery_duration_ms,
         "error_code": error_code,
     }
     if error_message is not None:
@@ -125,6 +138,7 @@ def run_sender_task(
     task_ids: TaskIdStore | None = None,
     source_mapping_store: object | None = None,
     input_adapter: SenderInputAdapter | None = None,
+    batch_created_timestamp_ns: int | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -135,6 +149,10 @@ def run_sender_task(
         url=node.scheduler_url,
         timeout_seconds=config.scheduler_timeout_seconds,
         max_retries=config.schedule_max_retries,
+        retry_delay_seconds=config.deferred_retry_initial_seconds,
+        retry_delay_max_seconds=config.deferred_retry_max_seconds,
+        retry_jitter_ratio=config.deferred_retry_jitter_ratio,
+        retry_window_seconds=config.deferred_retry_window_seconds,
     )
 
     task_id = id_store.next_task_id()
@@ -143,6 +161,7 @@ def run_sender_task(
         source_mapping_store,
     )
     started_ns = time.time_ns()
+    created_ns = batch_created_timestamp_ns or started_ns
     prepared_input = adapter.prepare(
         source_path,
         unit_id=node.unit_id,
@@ -168,7 +187,7 @@ def run_sender_task(
         "packet_size_bytes": len(adapter.serialize_packet(preview_packet)),
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
-        "created_timestamp_ns": started_ns,
+        "created_timestamp_ns": created_ns,
     }
 
     try:
@@ -192,6 +211,20 @@ def run_sender_task(
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
 
+    # Preserve compatibility with injected or older scheduler clients that
+    # predate the weak-network delivery fields.
+    delivery_mode = getattr(assignment, "delivery_mode", "realtime")
+    delivery_interval_ms = getattr(
+        assignment,
+        "delivery_interval_ms",
+        config.packet_interval_ms,
+    )
+    available_throughput_mbps = getattr(
+        assignment,
+        "available_throughput_mbps",
+        None,
+    )
+
     # 阶段 4：按 Scheduler 分配的目标 Edge 选择对应网络模拟代理端口，
     # 使 Sender→Edge 流量经过 per-link 的 Toxiproxy 链路。
     mqtt_port, target_edge_node_id = _mqtt_port_for_target(node, assignment.target_topic)
@@ -208,12 +241,17 @@ def run_sender_task(
         queue_max_packets=config.pending_queue_max_packets,
         recovery_retry_interval_ms=config.packet_interval_ms,
         log_sink=sink,
+        recovery_retry_initial_seconds=config.deferred_retry_initial_seconds,
+        recovery_retry_max_seconds=config.deferred_retry_max_seconds,
+        recovery_retry_jitter_ratio=config.deferred_retry_jitter_ratio,
     )
 
     try:
         mqtt_publisher.start()
         replay_started = time.monotonic()
-        interval_seconds = config.packet_interval_ms / 1000.0
+        # 缓传：墙钟发送节奏由 Scheduler 返回的 delivery_interval_ms 控制；
+        # 传感器时间戳仍按 config.packet_interval_ms 递增，不受此影响。
+        interval_seconds = delivery_interval_ms / 1000.0
         for sequence_number in range(1, config.expected_packet_count + 1):
             if realtime:
                 due = replay_started + (sequence_number - 1) * interval_seconds
@@ -274,6 +312,9 @@ def run_sender_task(
             error_code="MQTT_TASK_ERROR",
             error_message=str(exc),
             target_edge_node_id=target_edge_node_id,
+            delivery_mode=delivery_mode,
+            delivery_interval_ms=delivery_interval_ms,
+            available_throughput_mbps=available_throughput_mbps,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
@@ -296,6 +337,9 @@ def run_sender_task(
         realtime=realtime,
         error_code=_delivery_error_code(status),
         target_edge_node_id=target_edge_node_id,
+        delivery_mode=delivery_mode,
+        delivery_interval_ms=delivery_interval_ms,
+        available_throughput_mbps=available_throughput_mbps,
     )
     sink.write_task(summary)
     return summary
@@ -319,6 +363,7 @@ def run_all_senders(
         )
 
     sink = LocalLogSink(config.log_dir)
+    batch_created_timestamp_ns = time.time_ns()
     with ThreadPoolExecutor(max_workers=len(config.senders), thread_name_prefix="sender") as executor:
         jobs = [
             (
@@ -330,6 +375,7 @@ def run_all_senders(
                     source_files[node.sender_id],
                     realtime=realtime,
                     log_sink=sink,
+                    batch_created_timestamp_ns=batch_created_timestamp_ns,
                 ),
             )
             for node in config.senders
@@ -359,6 +405,10 @@ def run_all_senders(
                     "task_finished_timestamp_ns": now,
                     "task_status": "failed",
                     "replay_mode": "realtime" if realtime else "accelerated",
+                    "delivery_mode": None,
+                    "delivery_interval_ms": None,
+                    "available_throughput_mbps": None,
+                    "estimated_delivery_duration_ms": None,
                     "error_code": "SENDER_TASK_EXCEPTION",
                     "error_message": str(exc),
                 }

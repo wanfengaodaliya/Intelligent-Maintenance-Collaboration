@@ -3,8 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>设备仲裁 · 智能运维协作平台</title>
+<title>决策一致性与仲裁 · 智能运维协作平台</title>
 <link rel="stylesheet" href="css/main.css">
+<style>
+.consistency-rail { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:16px; }
+.consistency-rail .metric { position:relative; overflow:hidden; }
+.consistency-rail .metric::after { content:""; position:absolute; inset:auto 0 0; height:3px; background:var(--rail,var(--accent)); }
+.bearing-lane { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:9px; }
+.bearing-unit { padding:7px 9px; border:1px solid var(--border-soft); border-radius:7px; background:var(--bg-input); font-size:11px; }
+.bearing-unit b { display:block; color:var(--text); font-family:var(--mono); }
+.bearing-unit span { color:var(--text-muted); }
+.window-item { padding:11px; border-bottom:1px solid var(--border-soft); cursor:pointer; border-left:3px solid transparent; }
+.window-item:hover, .window-item:focus { background:var(--bg-hover); outline:none; }
+.window-item.conflict { border-left-color:var(--danger); background:linear-gradient(90deg,var(--danger-soft),transparent 55%); }
+.window-item.incomplete { border-left-color:var(--warn); }
+.window-head { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+.window-meta { color:var(--text-muted); font-size:11.5px; margin-top:5px; }
+@media (max-width:1200px) { .consistency-rail { grid-template-columns:repeat(3,1fr); } }
+@media (max-width:760px) { .consistency-rail,.bearing-lane { grid-template-columns:1fr; } }
+</style>
 </head>
 <body>
 <div class="layout">
@@ -12,122 +29,137 @@
   <main class="main">
     <div class="page-header">
       <div>
-        <h1>设备仲裁</h1>
-        <div class="desc">边缘与云端诊断结论冲突时，由 Scheduler 路由到 Cloud 进行仲裁复核</div>
+        <h1>决策一致性与云端仲裁</h1>
+        <div class="desc">以同一设备、同一窗口的预期轴承局部结果为统计单位；只比较不同 Edge 之间的动作等级</div>
       </div>
     </div>
 
-    <!-- 使用说明 -->
-    <div class="card usage-tip">
-      <div class="usage-title">💡 这个页面是干什么的？</div>
-      <div class="usage-grid">
-        <div><b>📊 页面用途</b><br>查看<b>诊断冲突的仲裁记录</b>：当边缘和云端结论不一致时，由Cloud给出最终裁定</div>
-        <div><b>🔧 怎么用</b><br>① 在总览大屏的诊断结果流中，如果有"存在冲突"标记，记下冲突ID<br>② 在此输入冲突ID查询仲裁详情<br>③ 查看边缘vs云端结论对比和最终裁定</div>
-        <div><b>📖 仲裁流程</b><br>① 边缘先出结论 → ② 云端复核 → ③ 发现冲突 → ④ Scheduler路由 → ⑤ Cloud裁定</div>
-        <div><b>⚠️ 什么时候用</b><br>通常系统自动处理冲突，此页面用于<b>查看历史仲裁记录</b>和调试仲裁逻辑</div>
-      </div>
-    </div>
-
-    <!-- 流程说明 -->
     <div class="card">
-      <div class="card-title">仲裁流程</div>
-      <div class="steps">
-        <div class="step"><div class="idx">①</div>边缘聚合出结论</div>
-        <div class="step"><div class="idx">②</div>云端复核结论</div>
-        <div class="step"><div class="idx">③</div>发现冲突（has_conflict）</div>
-        <div class="step"><div class="idx">④</div>Scheduler 路由仲裁</div>
-        <div class="step"><div class="idx">⑤</div>Cloud 出最终裁定</div>
-      </div>
-      <div style="font-size:11.5px;color:var(--text-dim);">
-        仲裁记录由系统自动产生。发生冲突时诊断结果中 has_conflict=true，并在总览大屏的实时流中标记。
-        此处可按冲突 ID 查询仲裁详情。
-      </div>
-    </div>
-
-    <!-- 查询 -->
-    <div class="card">
-      <div class="card-title">查询仲裁记录</div>
+      <div class="card-title">实验筛选 <span class="hint" id="refreshMeta">等待刷新…</span></div>
       <div class="form-row">
-        <label class="field">冲突 ID（conflict_id）
-          <input type="text" id="conflictId" placeholder="例如 arb_20260820_0001" style="width:280px;">
+        <label class="field">设备 ID
+          <input type="text" id="deviceFilter" placeholder="留空显示本次实验全部设备" style="width:260px;">
         </label>
-        <button class="btn" id="queryBtn">查询仲裁详情</button>
+        <button class="btn" id="refreshBtn">刷新统计</button>
       </div>
     </div>
 
-    <!-- 详情 -->
-    <div class="card" id="arbCard" style="display:none;">
-      <div class="card-title">仲裁详情 <span class="hint" id="arbTitle"></span></div>
-      <div id="arbDetail"></div>
+    <div class="consistency-rail" aria-label="决策一致性核心指标">
+      <div class="metric accent"><div class="label">完整窗口</div><div class="value" id="mEligible">0</div><div class="sub">正式统计分母</div></div>
+      <div class="metric danger" style="--rail:var(--danger)"><div class="label">冲突窗口</div><div class="value" id="mConflict">0</div><div class="sub">每个窗口最多一次</div></div>
+      <div class="metric warn" style="--rail:var(--warn)"><div class="label">冲突率</div><div class="value" id="mConflictRate">0.0%</div><div class="sub">冲突 / 完整</div></div>
+      <div class="metric ok" style="--rail:var(--ok)"><div class="label">一致性达成率</div><div class="value" id="mConsistency">0.0%</div><div class="sub">无冲突 / 完整</div></div>
+      <div class="metric accent"><div class="label">仲裁上传成功率</div><div class="value" id="mUpload">0.0%</div><div class="sub">Cloud 已确认保存</div></div>
+      <div class="metric ok" style="--rail:var(--ok)"><div class="label">仲裁成功率</div><div class="value" id="mResolved">0.0%</div><div class="sub" id="mIncomplete">不完整窗口 0</div></div>
+    </div>
+
+    <div class="grid grid-2" id="recordsGrid">
+      <div class="card">
+        <div class="card-title">窗口一致性明细 <span class="hint">预期轴承 · 来源 Edge · 动作等级</span></div>
+        <div id="windowList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
+      </div>
+      <div class="card" id="arbitrationCard">
+        <div class="card-title">Cloud 仲裁记录 <span class="hint">只有冲突窗口会出现</span></div>
+        <div id="arbitrationList" style="max-height:620px;overflow:auto;"><div class="empty">加载中…</div></div>
+      </div>
+    </div>
+
+    <div class="card" id="conflictQueryCard">
+      <div class="card-title">按冲突 ID 精确查询 <span class="hint">可选</span></div>
+      <div class="form-row">
+        <label class="field">conflict_id
+          <input type="text" id="conflictId" placeholder="已有 conflict_id 时可直接定位" style="width:300px;">
+        </label>
+        <button class="btn ghost" id="queryBtn">查询</button>
+      </div>
+    </div>
+
+    <div class="card" id="detailCard" style="display:none;">
+      <div class="card-title">记录详情 <span class="hint" id="detailTitle"></span></div>
+      <div id="detailBox"></div>
     </div>
   </main>
 </div>
 <script src="js/common.js"></script>
 <script>
 "use strict";
-
-function kvRows(pairs) {
-  return '<div class="kv">' + pairs.map(
-    ([k, v]) => '<div class="k">' + k + '</div><div class="v wrap">' + (v === null || v === undefined ? "-" : v) + "</div>"
-  ).join("") + "</div>";
+let windowItems = [];
+let arbitrationItems = [];
+function fmtNs(value) { const ns=Number(value); return !Number.isFinite(ns)||ns<=0 ? "-" : new Date(ns/1e6).toLocaleString("zh-CN",{hour12:false}); }
+function pct(value) { return ((Number(value)||0)*100).toFixed(1)+"%"; }
+function kvRows(pairs) { return '<div class="kv">'+pairs.map(([k,v])=>'<div class="k">'+k+'</div><div class="v wrap">'+(v===null||v===undefined||v===""?"-":v)+'</div>').join("")+'</div>'; }
+function bearingLane(item) {
+  return '<div class="bearing-lane">'+(item.source_results||[]).map((r)=>
+    '<div class="bearing-unit"><b>'+fmt.escape(r.bearing_id||"-")+'</b><span>'+fmt.escape(r.edge_node_id||"-")+
+    ' · 等级 '+fmt.escape(r.action_grade)+' · 置信度 '+pct(r.confidence)+'</span></div>').join("")+'</div>';
 }
-
-async function queryArbitration() {
-  const id = el("conflictId").value.trim();
-  if (!id) { toast("请输入冲突 ID", "warn"); return; }
+function renderWindows(items) {
+  if (!items.length) { el("windowList").innerHTML='<div class="empty">尚未收齐任何三轴承窗口</div>'; return; }
+  el("windowList").innerHTML=items.map((item,index)=>{
+    const incomplete=!!item.excluded_from_formal_metrics;
+    const status=incomplete?badge("不完整","warn"):item.has_conflict?badge("跨 Edge 冲突","danger"):badge("决策一致","ok");
+    const cls=incomplete?" incomplete":item.has_conflict?" conflict":"";
+    return '<div class="window-item'+cls+'" role="button" tabindex="0" onclick="showWindow('+index+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();showWindow('+index+');}"><div class="window-head">'+status+
+      '设备 <b>'+fmt.escape(item.device_id||"-")+'</b><span class="badge muted">窗口 '+fmt.escape(item.window_start_sequence)+'</span></div>'+
+      '<div class="window-meta">最大跨 Edge 偏差 '+fmt.escape(item.max_grade_gap)+' · 冲突对 '+fmt.escape(item.conflict_pair_count)+
+      ' · '+fmt.escape(fmtNs(item.closed_at_ns))+'</div>'+bearingLane(item)+'</div>';
+  }).join("");
+}
+function renderArbitrations(items) {
+  if (!items.length) { el("arbitrationList").innerHTML='<div class="empty">当前筛选范围内没有冲突仲裁</div>'; return; }
+  el("arbitrationList").innerHTML=items.map((item,index)=>'<div class="window-item" role="button" tabindex="0" onclick="showArbitration('+index+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();showArbitration('+index+');}">'+
+    '<div class="window-head">'+badge(item.status==="resolved"?"已解决":"需人工复核",item.status==="resolved"?"ok":"warn")+
+    '设备 <b>'+fmt.escape(item.device_id||item.subject_id||"-")+'</b></div><div class="window-meta">动作 '+fmt.escape(item.final_action||"-")+
+    ' · 置信度 '+pct(item.confidence)+' · '+fmt.escape(item.resolution_method||"-")+'</div></div>').join("");
+}
+function showWindow(index) {
+  const item=windowItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.summary_result_id||"";
+  el("detailBox").innerHTML=kvRows([["设备 / 窗口",fmt.escape(item.device_id)+" / "+fmt.escape(item.window_start_sequence)],
+    ["正式统计",item.excluded_from_formal_metrics?badge("排除","warn"):badge("计入","ok")],["是否冲突",item.has_conflict?badge("是","danger"):badge("否","ok")],
+    ["最大跨 Edge 偏差",fmt.escape(item.max_grade_gap)],["最终动作等级",fmt.escape(item.final_action_grade)],["数据质量",pct(item.data_quality_score)]])+bearingLane(item)+jsonDetails(item,"查看完整 JSON");
+}
+function showArbitration(index) {
+  const item=arbitrationItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.arbitration_id||"";
+  el("detailBox").innerHTML=kvRows([["冲突 ID",fmt.escape(item.conflict_id||"-")],["Summary 结果",fmt.escape(item.summary_result_id||"-")],
+    ["状态",fmt.escape(item.status||"-")],["最终动作",fmt.escape(item.final_action||"-")],["仲裁方式",fmt.escape(item.resolution_method||"-")],["置信度",pct(item.confidence)]])+jsonDetails(item,"查看完整 JSON");
+}
+async function refreshRecords() {
+  const deviceId=el("deviceFilter").value.trim(); const suffix=deviceId?"?device_id="+encodeURIComponent(deviceId)+"&limit=200":"?limit=200";
   try {
-    const data = await Api.get("cloud/cloud/device-arbitration/" + encodeURIComponent(id));
-    const a = data.result || data.arbitration || data;
-    el("arbCard").style.display = "";
-    el("arbTitle").textContent = "conflict_id = " + id;
-
-    const finalState = a.final_state || a.final_result || a.verdict;
-    const edgeState = a.edge_state || (a.edge_result && a.edge_result.final_state);
-    const cloudState = a.cloud_state || (a.cloud_result && a.cloud_result.final_state);
-
-    let html = "";
-
-    // 边缘 vs 云端对比
-    html += '<div class="grid grid-2" style="margin-bottom:12px;">';
-    html += '<div class="card" style="margin-bottom:0;"><div class="card-title">边缘结论</div>' +
-      '<div style="font-size:18px;font-weight:700;">' + badge(fmt.stateText(edgeState), fmt.stateClass(edgeState)) + "</div>" +
-      '<div class="sub" style="font-size:11.5px;color:var(--text-dim);margin-top:6px;">置信度 ' +
-      fmt.pct(a.edge_confidence ?? (a.edge_result && a.edge_result.confidence)) + "</div></div>";
-    html += '<div class="card" style="margin-bottom:0;"><div class="card-title">云端复核结论</div>' +
-      '<div style="font-size:18px;font-weight:700;">' + badge(fmt.stateText(cloudState), fmt.stateClass(cloudState)) + "</div>" +
-      '<div class="sub" style="font-size:11.5px;color:var(--text-dim);margin-top:6px;">置信度 ' +
-      fmt.pct(a.cloud_confidence ?? (a.cloud_result && a.cloud_result.confidence)) + "</div></div>";
-    html += "</div>";
-
-    // 最终裁定
-    html += '<div class="card" style="margin-bottom:12px;border-left:3px solid var(--accent);"><div class="card-title">最终裁定</div>' +
-      '<div style="display:flex;align-items:center;gap:12px;">' +
-      badge(fmt.stateText(finalState), fmt.stateClass(finalState)) +
-      '<span style="font-size:12.5px;color:var(--text-muted);">' +
-      fmt.escape(String(a.arbitration_reason || a.reason || "依据云端复核与置信度综合裁定")) + "</span></div></div>";
-
-    // 元数据
-    html += kvRows([
-      ["设备 ID", fmt.escape(String(a.device_id ?? "-"))],
-      ["任务 ID", fmt.escape(String(a.task_id ?? "-"))],
-      ["轮次 ID", fmt.escape(String(a.decision_round_id ?? "-"))],
-      ["仲裁状态", fmt.escape(String(a.status ?? "-"))],
-      ["创建时间", a.created_at ? fmt.escape(String(a.created_at).replace("T", " ").slice(0, 19)) : "-"],
-    ]);
-
-    html += jsonDetails(data, "查看仲裁完整 JSON");
-    el("arbDetail").innerHTML = html;
-  } catch (e) {
-    if (e.status === 404) {
-      toast("未找到该冲突 ID 的仲裁记录", "warn");
-    } else {
-      toast("查询失败：" + e.message, "danger");
-    }
+    const [metrics,windows,arbitrations]=await Promise.all([Api.get("summary/summary/metrics"+(deviceId?"?device_id="+encodeURIComponent(deviceId):"")),
+      Api.get("summary/summary/window-results"+suffix),Api.get("cloud/cloud/device-arbitration/recent"+suffix)]);
+    windowItems=windows.items||[]; arbitrationItems=arbitrations.items||[]; const resolved=arbitrationItems.filter((item)=>item.status==="resolved").length;
+    el("mEligible").textContent=metrics.eligible_windows||0; el("mConflict").textContent=metrics.conflict_windows||0;
+    el("mConflictRate").textContent=pct(metrics.conflict_rate); el("mConsistency").textContent=pct(metrics.consistency_rate);
+    el("mUpload").textContent=pct(metrics.arbitration_upload_success_rate); el("mResolved").textContent=pct(arbitrationItems.length?resolved/arbitrationItems.length:0);
+    el("mIncomplete").textContent="不完整窗口 "+(metrics.incomplete_windows||0); renderWindows(windowItems); renderArbitrations(arbitrationItems);
+    const hasArbitrations=arbitrationItems.length>0;
+    el("arbitrationCard").hidden=!hasArbitrations;
+    el("conflictQueryCard").hidden=!hasArbitrations;
+    el("recordsGrid").className=hasArbitrations?"grid grid-2":"grid";
+    el("refreshMeta").textContent="刷新于 "+new Date().toLocaleTimeString("zh-CN",{hour12:false});
+  } catch(error) { el("windowList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; el("arbitrationList").innerHTML='<div class="empty">读取失败：'+fmt.escape(error.message)+'</div>'; }
+}
+async function queryArbitration() {
+  const id=el("conflictId").value.trim();
+  if(!id){toast("请输入冲突 ID","warn");return;}
+  try {
+    const item=await Api.get("cloud/cloud/device-arbitration/"+encodeURIComponent(id));
+    arbitrationItems=[item];
+    el("arbitrationCard").hidden=false;
+    el("conflictQueryCard").hidden=false;
+    el("recordsGrid").className="grid grid-2";
+    renderArbitrations(arbitrationItems);
+    showArbitration(0);
+  } catch(error) {
+    toast(error.status===404?"未找到该冲突 ID 的仲裁记录":"查询失败："+error.message,"warn");
   }
 }
-
-el("queryBtn").addEventListener("click", queryArbitration);
-el("conflictId").addEventListener("keydown", (ev) => { if (ev.key === "Enter") queryArbitration(); });
+el("refreshBtn").addEventListener("click",refreshRecords);
+el("deviceFilter").addEventListener("keydown",(event)=>{if(event.key==="Enter")refreshRecords();});
+el("queryBtn").addEventListener("click",queryArbitration);
+el("conflictId").addEventListener("keydown",(event)=>{if(event.key==="Enter")queryArbitration();});
+startPolling(refreshRecords,5000);
 </script>
 </body>
 </html>

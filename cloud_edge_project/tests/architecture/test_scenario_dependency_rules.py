@@ -80,6 +80,19 @@ LEGACY_DIAGNOSIS_MODULES = (
     "diagnosis_contracts.py",
     "diagnosis_identity.py",
 )
+SUMMARY_SCENARIO_MODULES = {
+    "action_scorer.py": {"score_bearing_action"},
+    "aggregation.py": {
+        "build_window_result",
+        "build_arbitration_request",
+        "build_incomplete_window_result",
+    },
+    "contracts.py": {
+        "build_summary_window_id",
+        "normalize_bearing_result",
+    },
+    "service.py": {"SummaryService"},
+}
 
 
 def _imports_bearing_plugin(path: Path) -> bool:
@@ -777,3 +790,27 @@ def test_legacy_diagnosis_contracts_have_one_physical_owner(filename: str) -> No
     assert compatibility_path.is_file()
     assert _defined_names(compatibility_path)
     assert _defined_names(core_path) == set()
+
+
+@pytest.mark.parametrize(("filename", "business_names"), SUMMARY_SCENARIO_MODULES.items())
+def test_bearing_summary_business_has_one_scenario_owner(
+    filename: str,
+    business_names: set[str],
+) -> None:
+    scenario_path = PROJECT_ROOT / "scenarios" / "bearing" / "summary_service" / filename
+    legacy_path = PROJECT_ROOT / "summary_service" / filename
+
+    assert business_names.issubset(_defined_names(scenario_path))
+    assert _defined_names(legacy_path).isdisjoint(business_names)
+
+
+def test_new_bearing_summary_boundaries_use_compatibility_exports() -> None:
+    cloud_contract = (
+        PROJECT_ROOT / "cloud_service" / "device_arbitration" / "summary_contract.py"
+    )
+    edge_publisher = PROJECT_ROOT / "edge_service" / "src" / "edge_runtime" / "bearing_publisher.py"
+
+    assert "compatibility.bearing_v12.summary_arbitration_exports" in _imported_modules(cloud_contract)
+    assert "compatibility.bearing_v12.edge_publisher_exports" in _imported_modules(edge_publisher)
+    assert not _imports_bearing_plugin(cloud_contract)
+    assert not _imports_bearing_plugin(edge_publisher)

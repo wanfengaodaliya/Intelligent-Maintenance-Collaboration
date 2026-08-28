@@ -6,6 +6,7 @@ from typing import Iterator
 
 import numpy as np
 from scipy.io import loadmat
+from scipy.io.matlab import MatReadError
 
 
 class MatDataError(ValueError):
@@ -135,7 +136,7 @@ def load_mat_record(path: Path | str) -> MatRecord:
 
     try:
         raw = loadmat(source_path, squeeze_me=True, struct_as_record=False)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, IndexError, MatReadError) as exc:
         raise MatDataError(f"cannot read MAT file: {exc}") from exc
 
     root = _root_struct(raw)

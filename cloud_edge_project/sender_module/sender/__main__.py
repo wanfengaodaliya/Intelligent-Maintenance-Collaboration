@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from sender.config import load_config
+from sender.config import SenderConfig, load_config
 from sender.controller import run_all_senders
+from sender.scheduler_client import SchedulerClient
 
 
 def _default_config_path() -> Path:
@@ -34,8 +36,24 @@ def positive_int(raw: str) -> int:
     return value
 
 
+def allocate_batch_config(config: SenderConfig) -> SenderConfig:
+    scheduler = SchedulerClient(
+        url=config.senders[0].scheduler_url,
+        timeout_seconds=config.scheduler_timeout_seconds,
+        max_retries=config.schedule_max_retries,
+        retry_delay_seconds=config.deferred_retry_initial_seconds,
+        retry_delay_max_seconds=config.deferred_retry_max_seconds,
+        retry_jitter_ratio=config.deferred_retry_jitter_ratio,
+        retry_window_seconds=config.deferred_retry_window_seconds,
+    )
+    return replace(
+        config,
+        device_id=scheduler.allocate_device_id(config.device_id),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Replay three independent bearing senders")
+    parser = argparse.ArgumentParser(description="Replay configured independent bearing senders")
     parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument(
         "--source",
@@ -53,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rounds",
         type=positive_int,
         default=1,
-        help="run this many 3-Sender rounds (15 rounds = 3,600 windows)",
+        help="run this many configured-Sender rounds",
     )
     return parser
 
@@ -65,11 +83,16 @@ def main() -> int:
         source_files = parse_source_files(args.source)
         summaries = []
         for _round_number in range(1, args.rounds + 1):
-            # run_all_senders starts the three configured Senders concurrently;
+            # run_all_senders starts all configured Senders concurrently;
             # rounds stay sequential so one formal run has a deterministic size.
+            round_config = (
+                allocate_batch_config(config)
+                if isinstance(config, SenderConfig)
+                else config
+            )
             summaries.extend(
                 run_all_senders(
-                    config,
+                    round_config,
                     source_files,
                     realtime=not args.accelerated,
                 )

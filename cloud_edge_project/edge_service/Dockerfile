@@ -14,24 +14,21 @@ COPY requirements-moment.txt ./requirements-moment.txt
 # PIP_INDEX_URL / PIP_EXTRA_INDEX_URL 可在构建时覆盖为镜像源（如国内网络环境）。
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=""
-ARG EDGE_BUILD_REVISION=unknown
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' \
-        /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git \
+RUN apt-get -o Acquire::Retries=10 update \
+    && apt-get -o Acquire::Retries=10 install -y --no-install-recommends git curl \
     && git config --system http.version HTTP/1.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 先缓存 PyPI 依赖（包括 Torch/CUDA）；MOMENT 的 GitHub 安装失败时可复用此层。
 RUN sed '/^momentfm[[:space:]]*@/d' requirements-moment.txt > /tmp/requirements-pypi.txt \
-    && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
+    && pip install --no-cache-dir --retries 5 --timeout 120 --index-url ${PIP_INDEX_URL} \
         $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
         --requirement /tmp/requirements-pypi.txt \
     && rm /tmp/requirements-pypi.txt
 
 # 固定提交的 MOMENT 单独成层，GitHub 短暂失败后重试不会重新下载 Torch/CUDA。
 RUN sed -n '/^momentfm[[:space:]]*@/p' requirements-moment.txt > /tmp/requirements-moment-git.txt \
-    && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} \
+    && pip install --no-cache-dir --retries 5 --timeout 120 --index-url ${PIP_INDEX_URL} \
         $(if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then echo "--extra-index-url ${PIP_EXTRA_INDEX_URL}"; fi) \
         --requirement /tmp/requirements-moment-git.txt \
     && rm /tmp/requirements-moment-git.txt
@@ -46,6 +43,8 @@ COPY contracts ./contracts
 COPY edge_service ./edge_service
 
 # 节点身份、端口与数据目录全部由环境变量决定，镜像本身保持中立。
+# EDGE_BUILD_REVISION 放在所有依赖层之后，避免 git hash 变化触发 torch 重新下载。
+ARG EDGE_BUILD_REVISION=unknown
 ENV EDGE_SERVICE_HOST=0.0.0.0 \
     EDGE_SERVICE_PORT=8001 \
     EDGE_CONTROL_HOST=0.0.0.0 \

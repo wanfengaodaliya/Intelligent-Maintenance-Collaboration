@@ -89,6 +89,14 @@ def test_application_status_reporter_emits_runtime_model_gpu_queue_and_activity(
     assert captured[0]["last_task_activity_ns"] == 123
 
 
+def test_health_payload_identifies_reference_model(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_moment_runner", lambda _: _LoadedRunner())
+    payload = app_module._health_payload(settings, "ok")
+    assert payload["model_version"] == "moment_candidate_v2"
+    assert payload["model_device"] == "auto"
+
+
 def test_cloud_infer_tracks_inflight_work_until_handler_returns(
     tmp_path: Path, monkeypatch
 ) -> None:

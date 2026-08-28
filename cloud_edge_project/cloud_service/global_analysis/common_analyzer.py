@@ -71,17 +71,6 @@ def analyze_edge_cloud_agreement(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def analyze_conflict_rate(task_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """计算任务级冲突比例。"""
-
-    count = len(task_results)
-    conflict_count = sum(bool(row.get("has_conflict")) for row in task_results)
-    return {
-        "conflict_count": conflict_count,
-        "conflict_rate": conflict_count / count if count else 0.0,
-    }
-
-
 def analyze_arbitration_success(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """按仲裁记录的 resolved 状态计算成功比例。"""
 

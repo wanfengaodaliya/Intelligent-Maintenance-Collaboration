@@ -327,13 +327,17 @@ html, body {
 .hero .kpi.c-teal   { --kpi-color: #0d9488; --kpi-border: rgba(13, 148, 136, 0.2); --kpi-shadow: rgba(13, 148, 136, 0.12); --kpi-grad: linear-gradient(160deg, #f0fdfa, #ffffff 70%); }
 .hero .kpi.c-violet { --kpi-color: #7c3aed; --kpi-border: rgba(124, 58, 237, 0.2); --kpi-shadow: rgba(124, 58, 237, 0.12); --kpi-grad: linear-gradient(160deg, #f5f3ff, #ffffff 70%); }
 
-/* 6 列网格适配 */
+/* 5/6 列网格适配 */
+.hero.hero-5 { grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.hero.hero-5 .kpi { padding: 14px 14px 10px; }
+.hero.hero-5 .kpi .value { font-size: 28px; }
+.hero.hero-5 .kpi .label { font-size: 11px; }
 .hero.hero-6 { grid-template-columns: repeat(6, 1fr); gap: 10px; }
 .hero.hero-6 .kpi { padding: 14px 14px 10px; }
 .hero.hero-6 .kpi .value { font-size: 28px; }
 .hero.hero-6 .kpi .label { font-size: 11px; }
-@media (max-width: 1400px) { .hero.hero-6 { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 760px)  { .hero.hero-6 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1400px) { .hero.hero-5, .hero.hero-6 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 760px)  { .hero.hero-5, .hero.hero-6 { grid-template-columns: repeat(2, 1fr); } }
 
 /* 流卡片说明文字 */
 .stream-hint {
@@ -348,6 +352,52 @@ html, body {
 
 @media (max-width: 1200px) { .hero { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
+
+/* ---------- Sender 九链路折叠视图 ---------- */
+
+.sender-link-list {
+  display: grid;
+  gap: 9px;
+}
+
+.sender-link {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.sender-link[open] {
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 4px 14px rgba(30, 42, 59, 0.06);
+}
+
+.sender-link.unused {
+  background: rgba(245, 247, 251, 0.72);
+}
+
+.sender-link summary {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 15px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sender-link summary::-webkit-details-marker { display: none; }
+.sender-link summary::after { content: "展开 ▾"; color: var(--text-dim); font-size: 11px; }
+.sender-link[open] summary::after { content: "收起 ▴"; }
+.sender-link-name { font-weight: 700; }
+.sender-link-detail { padding: 0 15px 14px; }
+.sender-link-note { color: var(--text-dim); font-size: 12px; padding-top: 4px; }
+
+@media (max-width: 760px) {
+  .sender-link summary { grid-template-columns: 1fr auto; }
+  .sender-link summary::after { display: none; }
+}
 
 /* ---------- 指标（次级卡片） ---------- */
 
@@ -783,6 +833,177 @@ details.json pre {
 
 .grid-main { grid-template-columns: 1.9fr 1fr; }
 @media (max-width: 1100px) { .grid-main { grid-template-columns: 1fr; } }
+
+/* ---------- 设备最终处置 & 云端模型更新建议书（评委汇总输出） ---------- */
+
+.verdict-list,
+.mu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.verdict-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, rgba(37,99,235,.06), rgba(13,148,136,.05));
+  border: 1px solid rgba(37,99,235,.15);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.verdict-summary-bar b { color: var(--accent-deep); font-size: 15px; }
+.verdict-summary-bar .dot-summary { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; background:rgba(22,163,74,.1); color:var(--ok); border:1px solid rgba(22,163,74,.25); }
+.verdict-summary-bar .dot-summary.warn { background:rgba(217,119,6,.1); color:#b45309; border-color:rgba(217,119,6,.28); }
+.verdict-summary-bar .dot-summary.danger { background:rgba(220,38,38,.1); color:var(--danger); border-color:rgba(220,38,38,.28); }
+
+.verdict-item {
+  display: grid;
+  grid-template-columns: 152px 1fr auto;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+.verdict-item.fault { border-color: rgba(220,38,38,.35); background: rgba(220,38,38,.04); }
+.verdict-item.warning { border-color: rgba(217,119,6,.32); background: rgba(217,119,6,.04); }
+
+.verdict-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.verdict-status.ok { background: rgba(22,163,74,.12); color: var(--ok); }
+.verdict-status.warn { background: rgba(217,119,6,.14); color: #b45309; }
+.verdict-status.danger { background: rgba(220,38,38,.14); color: var(--danger); }
+
+.verdict-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.verdict-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.verdict-device .device-id { font-family: var(--font-mono); }
+.verdict-device .badge-muted { font-weight: 500; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: rgba(31,41,55,.05); color: var(--text-muted); border: 1px solid var(--border-card); }
+.verdict-detail { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; }
+.verdict-detail .k { color: var(--text-muted); margin-right: 4px; }
+.verdict-suggest {
+  margin-top: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(124,58,237,.07);
+  border: 1px dashed rgba(124,58,237,.28);
+  color: #5b21b6;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.verdict-suggest b { color: #4c1d95; }
+
+.verdict-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.verdict-meta .ts { color: var(--text-secondary); }
+
+/* 云端模型更新建议列表 */
+.mu-item {
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mu-item.running { border-color: rgba(37,99,235,.32); background: rgba(37,99,235,.04); }
+.mu-item.good { border-color: rgba(22,163,74,.32); background: rgba(22,163,74,.04); }
+.mu-item.bad { border-color: rgba(220,38,38,.32); background: rgba(220,38,38,.04); }
+
+.mu-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.mu-head .mu-id { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.mu-head .mu-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-card);
+  background: rgba(31,41,55,.05);
+  color: var(--text-primary);
+}
+.mu-head .mu-status.llm { background: rgba(124,58,237,.1); color: #5b21b6; border-color: rgba(124,58,237,.28); }
+.mu-head .mu-status.template { background: rgba(31,41,55,.05); color: var(--text-secondary); border-color: var(--border-card); }
+
+.mu-problem { font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+.mu-problem b { color: var(--accent-deep); }
+
+.mu-suggestion {
+  background: rgba(124,58,237,.06);
+  border: 1px solid rgba(124,58,237,.2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #4c1d95;
+  white-space: pre-wrap;
+}
+.mu-suggestion .src-tag {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  background: rgba(124,58,237,.2);
+  color: #4c1d95;
+  font-weight: 700;
+}
+.mu-suggestion .src-tag.template { background: rgba(31,41,55,.15); color: var(--text-secondary); }
+
+.mu-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.mu-foot .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.mu-foot .tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(31,41,55,.05);
+  border: 1px solid var(--border-card);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 
 /* ---------- 滚动条 ---------- */
 

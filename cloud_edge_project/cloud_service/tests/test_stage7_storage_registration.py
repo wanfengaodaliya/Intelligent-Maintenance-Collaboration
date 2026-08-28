@@ -78,7 +78,7 @@ def test_initialize_database_executes_explicit_storage_provider(tmp_path) -> Non
     initialize_database(database_path, storage_providers=(provider,))
 
     assert provider.calls == 1
-    assert _object_counts(database_path) == (21, 14, 5)
+    assert _object_counts(database_path) == (22, 15, 6)
 
 
 def test_initialize_database_keeps_legacy_no_provider_behavior(tmp_path) -> None:
@@ -86,7 +86,7 @@ def test_initialize_database_keeps_legacy_no_provider_behavior(tmp_path) -> None
 
     initialize_database(database_path)
 
-    assert _object_counts(database_path) == (21, 14, 5)
+    assert _object_counts(database_path) == (22, 15, 6)
 
 
 def test_bearing_provider_produces_the_exact_legacy_schema(tmp_path) -> None:
@@ -167,4 +167,4 @@ def test_provider_initialization_preserves_history_writes_and_idempotency(
             "SELECT COUNT(*), COUNT(DISTINCT version) FROM schema_migrations"
         ).fetchone()
     assert arbitration_count == 2
-    assert migration_counts == (5, 5)
+    assert migration_counts == (6, 6)

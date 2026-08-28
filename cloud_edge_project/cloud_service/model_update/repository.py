@@ -120,6 +120,19 @@ class ModelUpdateRepository:
             ).fetchall()
         return [_decode(dict(row)) for row in rows]
 
+    def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Most recently updated tasks (newest first), for frontend overview."""
+
+        if not isinstance(limit, int) or limit <= 0:
+            limit = 20
+        with connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM model_update_task "
+                "ORDER BY updated_at_ns DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_decode(dict(row)) for row in rows]
+
 
 def _encode_value(key: str, value: Any) -> Any:
     if key in JSON_FIELDS and value is not None:

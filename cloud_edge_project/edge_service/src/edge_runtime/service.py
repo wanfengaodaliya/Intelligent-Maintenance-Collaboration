@@ -57,8 +57,8 @@ class EdgeRuntimeService:
         self.cache.start()
         try:
             self.pipeline.start()
-            # H1/H3：完成分发线程与建议线程在数据面(推理)之后、接入(MQTT)之前启动，
-            # 保证所有完成事件与设备级结果都经后台线程异步处理。
+            # 完成分发线程在数据面(推理)之后、接入(MQTT)之前启动，
+            # 保证所有完成事件都经后台线程异步处理。
             if self.coordinator is not None:
                 self.coordinator.start_background()
             self._server = make_control_server(
@@ -106,11 +106,13 @@ class EdgeRuntimeService:
             thread.join(timeout=2.0)
         self._server = None
         self._server_thread = None
-        # H1：dispatcher 在 pipeline 之前停，先排空在途完成事件，再停数据面。
-        if self.coordinator is not None:
-            self.coordinator.stop_background()
+        # H2：先停数据面（推理 worker 不再产生新完成事件），再由
+        # coordinator 按 dispatcher 首次 drain → routing pool 排空停止 →
+        # dispatcher 二次 drain/stop 的顺序排空在途完成与回放事件。
         if self.pipeline.started:
             self.pipeline.stop()
+        if self.coordinator is not None:
+            self.coordinator.stop_background()
         self.cache.stop()
         self._started = False
 

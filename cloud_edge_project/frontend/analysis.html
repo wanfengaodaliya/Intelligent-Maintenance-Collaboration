@@ -17,17 +17,6 @@
       </div>
     </div>
 
-    <!-- 使用说明 -->
-    <div class="card usage-tip">
-      <div class="usage-title">💡 这个页面是干什么的？</div>
-      <div class="usage-grid">
-        <div><b>📊 页面用途</b><br>对<b>历史诊断数据</b>进行汇总分析，生成设备健康趋势和异常统计报告</div>
-        <div><b>🔧 怎么用</b><br>① 选择分析场景（如"轴承健康分析"）<br>② 填写设备ID（可选）和任务数上限<br>③ 点"执行分析"生成报告</div>
-        <div><b>📖 结果说明</b><br>分析完成后会显示：<br>• 关键指标卡片<br>• 摘要信息<br>• 完整JSON数据</div>
-        <div><b>💡 小贴士</b><br>• "读取最近一次结果"可以查看上次分析<br>• 需要有历史数据才能得到有意义的分析结果</div>
-      </div>
-    </div>
-
     <!-- 触发分析 -->
     <div class="card">
       <div class="card-title">执行全局分析 <span class="hint">POST /cloud/global-analysis</span></div>
@@ -48,6 +37,11 @@
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-title">最近保存的分析 <span class="hint" id="recentMeta">每 5 秒刷新</span></div>
+      <div id="recentList" style="max-height:480px;overflow:auto;"><div class="empty">加载中…</div></div>
+    </div>
+
     <!-- 结果 -->
     <div id="resultWrap" style="display:none;">
       <div class="grid grid-4" id="summaryMetrics"></div>
@@ -65,6 +59,14 @@
 <script src="js/common.js"></script>
 <script>
 "use strict";
+
+let recentAnalyses = [];
+
+function fmtNs(value) {
+  const ns = Number(value);
+  if (!Number.isFinite(ns) || ns <= 0) return "-";
+  return new Date(ns / 1e6).toLocaleString("zh-CN", { hour12: false });
+}
 
 function kvRows(pairs) {
   return '<div class="kv">' + pairs.map(
@@ -127,6 +129,48 @@ function renderResult(data, metaText) {
   el("detailBox").innerHTML = renderTree(r);
 }
 
+function renderRecentAnalyses(items) {
+  if (!items.length) {
+    el("recentList").innerHTML = '<div class="empty">数据库中暂无全局分析记录</div>';
+    return;
+  }
+  el("recentList").innerHTML = items.map((item, index) => {
+    const health = item.device_health_analysis || {};
+    const count = item.analysis_window && item.analysis_window.actual_task_count;
+    const trend = { stable: "稳定", improving: "改善", degrading: "恶化" }[health.trend] || health.trend || "-";
+    return '<div class="item" role="button" tabindex="0" onclick="showRecentAnalysis(' + index + ')">' +
+      '<span class="time">' + fmt.escape(fmtNs(item.created_at_ns)) + '</span>' +
+      '<div class="body"><div class="row1">' +
+      badge(fmt.stateText(health.latest_state), fmt.stateClass(health.latest_state)) +
+      '设备 <b>' + fmt.escape(item.subject_id || "-") + '</b></div>' +
+      '<div class="row2">趋势 ' + fmt.escape(trend) +
+      ' · 任务数 ' + fmt.escape(String(count ?? "-")) +
+      ' · ' + fmt.escape(item.analysis_id || "-") + '</div></div></div>';
+  }).join("");
+}
+
+function showRecentAnalysis(index) {
+  const item = recentAnalyses[index];
+  if (!item) return;
+  el("subjectId").value = item.subject_id || "";
+  renderResult({ result: item }, "数据库记录 · " + fmtNs(item.created_at_ns));
+}
+
+async function loadRecentAnalyses() {
+  const scenario = el("scenarioType").value;
+  const subjectId = el("subjectId").value.trim();
+  const query = "?scenario_type=" + encodeURIComponent(scenario) + "&limit=50" +
+    (subjectId ? "&subject_id=" + encodeURIComponent(subjectId) : "");
+  try {
+    const data = await Api.get("cloud/cloud/global-analysis/recent" + query);
+    recentAnalyses = data.items || [];
+    renderRecentAnalyses(recentAnalyses);
+    el("recentMeta").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  } catch (error) {
+    el("recentList").innerHTML = '<div class="empty">读取失败：' + fmt.escape(error.message) + '</div>';
+  }
+}
+
 async function runAnalysis() {
   const body = {
     scenario_type: el("scenarioType").value,
@@ -141,6 +185,7 @@ async function runAnalysis() {
   try {
     const data = await Api.post("cloud/cloud/global-analysis", body);
     renderResult(data, "本次执行 · " + new Date().toLocaleString("zh-CN"));
+    loadRecentAnalyses();
     toast("分析完成", "ok");
   } catch (e) {
     toast("分析失败：" + e.message, "danger");
@@ -157,7 +202,7 @@ async function loadLatest() {
   try {
     const data = await Api.get("cloud/cloud/global-analysis/" + st + "/" + encodeURIComponent(sid) + "/latest");
     const r = data.result || data;
-    renderResult(data, "最近一次 · " + (r.created_at ? String(r.created_at).replace("T", " ").slice(0, 19) : ""));
+    renderResult(data, "最近一次 · " + fmtNs(r.created_at_ns));
   } catch (e) {
     toast(e.status === 404 ? "该对象暂无已保存的分析结果，请先执行分析" : "读取失败：" + e.message, "warn");
   }
@@ -165,6 +210,8 @@ async function loadLatest() {
 
 el("runBtn").addEventListener("click", runAnalysis);
 el("latestBtn").addEventListener("click", loadLatest);
+el("subjectId").addEventListener("keydown", (event) => { if (event.key === "Enter") loadRecentAnalyses(); });
+startPolling(loadRecentAnalyses, 5000);
 </script>
 </body>
 </html>

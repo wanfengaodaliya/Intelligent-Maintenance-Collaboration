@@ -1,6 +1,6 @@
 """阶段 4：Sender 配置兼容与双 Edge MQTT 代理端口映射校验。
 
-加载真实 sender_module/config/local.json，校验三个 Sender 的六条
+加载真实 sender_module/config/local.json，校验两个 Sender 的四条
 Sender→Edge MQTT 链路端口（*31 → edge_01，*32 → edge_02）与
 network_simulator/config/entities.yaml 的链路拓扑一致。
 """
@@ -13,15 +13,12 @@ import pytest
 
 from sender.config import ConfigError, SenderNodeConfig, load_config
 
+
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "local.json"
-TWO_SENDER_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "local.two-senders.json"
-)
 
 EXPECTED_PROXY_PORTS = {
     "sender_01": {"edge_01": 18831, "edge_02": 18832},
     "sender_02": {"edge_01": 18931, "edge_02": 18932},
-    "sender_03": {"edge_01": 19031, "edge_02": 19032},
 }
 
 
@@ -29,17 +26,20 @@ def _load_local_config():
     return load_config(CONFIG_PATH)
 
 
-def test_local_config_defines_three_senders():
+def test_local_config_defines_two_senders():
     config = _load_local_config()
+
     assert [node.sender_id for node in config.senders] == [
         "sender_01",
         "sender_02",
-        "sender_03",
+    ]
+    assert [node.bearing_id for node in config.senders] == [
+        "bearing_01",
+        "bearing_02",
     ]
     assert [node.unit_id for node in config.senders] == [
         "bearing_01",
         "bearing_02",
-        "bearing_03",
     ]
 
 
@@ -130,8 +130,8 @@ def test_blank_identity_fields_are_rejected(tmp_path: Path, field: str):
         load_config(_write_config(tmp_path, blank_identity))
 
 
-def test_two_sender_config_loads_the_two_configured_senders():
-    config = load_config(TWO_SENDER_CONFIG_PATH)
+def test_default_config_loads_the_two_configured_senders():
+    config = load_config(CONFIG_PATH)
 
     assert [node.sender_id for node in config.senders] == [
         "sender_01",
@@ -156,12 +156,26 @@ def test_default_mqtt_port_is_the_edge_01_proxy_port():
         assert node.mqtt_port == EXPECTED_PROXY_PORTS[node.sender_id]["edge_01"]
 
 
-def test_all_six_proxy_ports_are_distinct():
+def test_all_proxy_ports_are_distinct():
     config = _load_local_config()
     ports = [
         port
         for node in config.senders
         for port in node.edge_mqtt_proxy_ports.values()
     ]
-    assert len(ports) == 6
-    assert len(set(ports)) == 6
+    # 每个 sender 有 2 个代理端口（edge_01, edge_02），所以端口数 = sender 数 * 2
+    expected_count = len(config.senders) * 2
+    assert len(ports) == expected_count
+    assert len(set(ports)) == expected_count
+
+
+def test_all_proxy_ports_match_entities_yaml_distinct_set():
+    """双 sender 配置一共生成 4 个互不相同的代理端口。"""
+    config = _load_local_config()
+    ports = [
+        port
+        for node in config.senders
+        for port in node.edge_mqtt_proxy_ports.values()
+    ]
+    assert len(ports) == 4
+    assert len(set(ports)) == 4

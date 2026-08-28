@@ -27,7 +27,11 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from dashboard_state import BinaryAccuracyEvaluator, DashboardSession
+from mqtt_payload import decode_dashboard_payload
+
 FRONTEND_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = FRONTEND_ROOT.parent
 
 # 后端服务映射（与 start_project.ps1 / README.md 的端口约定一致）
 BACKENDS: dict[str, str] = {
@@ -35,6 +39,7 @@ BACKENDS: dict[str, str] = {
     "edge02": "http://127.0.0.1:8002",
     "scheduler": "http://127.0.0.1:8003",
     "cloud": "http://127.0.0.1:8004",
+    "summary": "http://127.0.0.1:8006",
     "network": "http://127.0.0.1:8090",
 }
 
@@ -68,20 +73,22 @@ def classify_topic(topic: str) -> str:
 class MqttBridge:
     """后台 MQTT 订阅者：把消息广播给所有 SSE 客户端队列。"""
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, dashboard: DashboardSession) -> None:
         self._host = host
         self._port = port
+        self._dashboard = dashboard
         self._lock = threading.Lock()
         self._subscribers: list[queue.Queue[dict]] = []
         self.connected = False
         self._client = None
         threading.Thread(target=self._run, name="mqtt-bridge", daemon=True).start()
 
-    def subscribe(self) -> queue.Queue[dict]:
+    def subscribe(self) -> tuple[queue.Queue[dict], dict]:
         q: queue.Queue[dict] = queue.Queue(maxsize=1000)
         with self._lock:
             self._subscribers.append(q)
-        return q
+            snapshot = self._dashboard.snapshot()
+        return q, snapshot
 
     def unsubscribe(self, q: queue.Queue[dict]) -> None:
         with self._lock:
@@ -90,11 +97,29 @@ class MqttBridge:
 
     def _broadcast(self, event: dict) -> None:
         with self._lock:
+            packet_disposition = self._dashboard.record(event)
+            outbound_event = (
+                {**event, "packet_disposition": packet_disposition}
+                if packet_disposition
+                else event
+            )
             for q in self._subscribers:
                 try:
-                    q.put_nowait(event)
+                    q.put_nowait(outbound_event)
                 except queue.Full:
-                    pass  # 慢客户端丢消息，保证实时性
+                    # 慢客户端直接恢复到当前权威快照，避免累计 KPI 永久少算。
+                    while True:
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            break
+                    q.put_nowait(
+                        {
+                            "type": "session-snapshot",
+                            "payload": self._dashboard.snapshot(),
+                            "ts": time.time(),
+                        }
+                    )
 
     def _run(self) -> None:
         try:
@@ -132,8 +157,8 @@ class MqttBridge:
 
     def _on_message(self, client, userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = decode_dashboard_payload(msg.payload)
+        except (UnicodeDecodeError, ValueError):
             payload = msg.payload.decode("utf-8", errors="replace")
         self._broadcast(
             {
@@ -145,7 +170,69 @@ class MqttBridge:
         )
 
 
-BRIDGE = MqttBridge(MQTT_HOST, MQTT_PORT)
+def _resolve_latest_experiment_cloud_db(project_root: Path) -> Path | None:
+    """在 ``{project_root}/data/experiments/*/`` 下找到最近一次写入的 cloud_review.db。
+
+    目录名形如 ``YYYYMMDD_HHMMSS_<hash>``，所以直接按名称倒序取第一个
+    含有 ``cloud_review.db`` 且文件非空的目录即可，不用读 mtime。
+    """
+    experiments_dir = project_root / "data" / "experiments"
+    if not experiments_dir.is_dir():
+        return None
+    candidates = sorted(
+        (d for d in experiments_dir.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    for folder in candidates:
+        candidate = folder / "cloud_review.db"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _build_accuracy(args: argparse.Namespace) -> BinaryAccuracyEvaluator:
+    project_root = PROJECT_ROOT
+    sender_db = Path(args.sender_db).resolve() if args.sender_db else (
+        project_root / "sender_module" / "runtime" / "state" / "packet_source_mapping.db"
+    )
+
+    if args.cloud_db:
+        cloud_db = Path(args.cloud_db).resolve()
+        cloud_source = "cli"
+    else:
+        latest = _resolve_latest_experiment_cloud_db(project_root)
+        fallback = project_root / "data" / "cloud_review.db"
+        cloud_db = latest if latest is not None else fallback
+        cloud_source = "latest_experiment" if latest is not None else "fallback_global"
+
+    evaluator = BinaryAccuracyEvaluator(
+        sender_db,
+        cloud_db,
+        started_at_ns=DASHBOARD.started_at_ns,
+    )
+    print(
+        "[accuracy] sender_db=%s (%s)"
+        % (sender_db, "exists" if sender_db.is_file() else "MISSING")
+    )
+    print(
+        "[accuracy] cloud_db =%s (%s, source=%s)"
+        % (
+            cloud_db,
+            "exists" if cloud_db.is_file() else "MISSING",
+            cloud_source,
+        )
+    )
+    return evaluator
+
+
+DASHBOARD = DashboardSession()
+BRIDGE = MqttBridge(MQTT_HOST, MQTT_PORT, DASHBOARD)
+# 注意：真正的 ACCURACY 实例在 main() 里 parse_args 之后构建；
+# 这里占位是为了 GatewayHandler 中能按名称引用，避免 NameError。
+# 如果有任何路由在 server 启动前访问 ACCURACY，会触发 AttributeError，
+# 等价于直接报错告诉调用方还没初始化完成。
+ACCURACY: BinaryAccuracyEvaluator  # type: ignore[assignment]
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -174,6 +261,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/events":
             self._handle_sse()
+        elif path == "/api/dashboard/accuracy":
+            result = ACCURACY.evaluate()
+            # 附加当前使用的 DB 路径，前端调试与展示透明
+            try:
+                result["sender_database"] = str(Path(ACCURACY.sender_database).resolve())
+                result["cloud_database"] = str(Path(ACCURACY.cloud_database).resolve())
+            except Exception:  # noqa: BLE001 - 字段不影响准确率本身
+                pass
+            self._send_json(200, result)
         elif path.startswith("/api/"):
             self._handle_proxy()
         else:
@@ -191,7 +287,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     # ---------- SSE 实时流 ----------
 
     def _handle_sse(self) -> None:
-        q = BRIDGE.subscribe()
+        q, snapshot = BRIDGE.subscribe()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -203,6 +299,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.wfile.write(
                 b"event: mqtt-status\ndata: {\"connected\": %s}\n\n"
                 % (b"true" if BRIDGE.connected else b"false")
+            )
+            snapshot_event = {
+                "type": "session-snapshot",
+                "payload": snapshot,
+                "ts": time.time(),
+            }
+            self.wfile.write(
+                (
+                    "event: session-snapshot\ndata: %s\n\n"
+                    % json.dumps(snapshot_event, ensure_ascii=False)
+                ).encode("utf-8")
             )
             self.wfile.flush()
             while True:
@@ -299,10 +406,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global ACCURACY  # noqa: PLW0603 - 单例，启动时一次性构建完成
+
     parser = argparse.ArgumentParser(description="智能运维协作平台 前端网关")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8088)
+    parser.add_argument(
+        "--sender-db",
+        help="packet_source_mapping.db 真实标签数据库路径（默认 sender_module/runtime/state 下）",
+    )
+    parser.add_argument(
+        "--cloud-db",
+        help="cloud_review.db 云端轴承诊断结果库路径（默认自动取 data/experiments 最新一次）",
+    )
     args = parser.parse_args()
+    ACCURACY = _build_accuracy(args)
+
     server = ThreadingHTTPServer((args.host, args.port), GatewayHandler)
     print("=" * 60)
     print("  智能运维协作平台 前端已启动")

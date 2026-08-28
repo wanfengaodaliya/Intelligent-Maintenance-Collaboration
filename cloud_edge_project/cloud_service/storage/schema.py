@@ -1,6 +1,6 @@
 """SQLite DDL for sender-keyed cloud review persistence."""
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 26
 
 MODEL_UPDATE_TASK_DDL = """
 CREATE TABLE IF NOT EXISTS model_update_task (
@@ -221,10 +221,41 @@ CREATE TABLE IF NOT EXISTS device_arbitration_record (
     request_json TEXT NOT NULL,
     result_json TEXT,
     error_code TEXT,
+    summary_result_id TEXT,
+    window_start_sequence INTEGER,
+    window_end_sequence INTEGER,
+    request_payload_hash TEXT,
     created_at_ns INTEGER NOT NULL,
     CHECK (json_valid(request_json)),
     CHECK (result_json IS NULL OR json_valid(result_json))
 );
+CREATE TABLE IF NOT EXISTS summary_window_record (
+    summary_result_id TEXT PRIMARY KEY,
+    summary_window_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    window_start_sequence INTEGER NOT NULL,
+    window_end_sequence INTEGER NOT NULL,
+    result_status TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    has_conflict INTEGER NOT NULL,
+    state_mismatch INTEGER NOT NULL DEFAULT 0,
+    node_states_json TEXT,
+    final_state TEXT,
+    arbitration_status TEXT,
+    conflict_semantics TEXT NOT NULL DEFAULT 'binary_state',
+    excluded_from_formal_metrics INTEGER NOT NULL,
+    max_cross_edge_grade_gap INTEGER NOT NULL,
+    conflicting_pair_count INTEGER NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    CHECK (json_valid(payload_json)),
+    CHECK (node_states_json IS NULL OR json_valid(node_states_json)),
+    CHECK (conflict_semantics IN ('binary_state', 'legacy_grade_gap', 'action_level_gap_v1'))
+);
+CREATE INDEX IF NOT EXISTS idx_summary_window_record_device
+ON summary_window_record(device_id, created_at_ns DESC);
 CREATE TABLE IF NOT EXISTS global_analysis_result (
     analysis_id TEXT PRIMARY KEY,
     scenario_type TEXT NOT NULL,
@@ -306,6 +337,8 @@ CREATE TABLE IF NOT EXISTS cloud_moment_review_record (
     window_end_ns INTEGER,
     bearing_state TEXT NOT NULL,
     edge_label TEXT,
+    diagnosis_label TEXT,
+    class_probabilities_json TEXT,
     confidence REAL,
     data_quality_score REAL,
     risk_level TEXT,

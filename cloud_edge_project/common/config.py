@@ -14,7 +14,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "local",
     "services": {
         "edge": {"host": "127.0.0.1", "port": 8001},
-        "scheduler": {"host": "127.0.0.1", "port": 8003},
+        "scheduler": {
+            "host": "127.0.0.1",
+            "port": 8003,
+            "device_id_base": "machine_01",
+        },
         "cloud": {"host": "127.0.0.1", "port": 8004},
     },
     # 边缘诊断默认后端为蒸馏模型 H5 三通道并行；official 供对照与故障演练。

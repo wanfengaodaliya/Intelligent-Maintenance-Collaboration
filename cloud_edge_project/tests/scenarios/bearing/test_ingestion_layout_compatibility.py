@@ -30,6 +30,7 @@ INGESTION_MODULES = (
             "PacketValidationError",
             "ARRAY_SIGNALS",
             "TEMPERATURE_SIGNAL",
+            "WIRE_MAGIC",
             "TASK_ID_PATTERN",
             "SENDER_ID_PATTERN",
             "BEARING_ID_PATTERN",
@@ -220,9 +221,9 @@ def test_mat_reader_preserves_fixed_errors(tmp_path: Path) -> None:
 
     malformed_path = tmp_path / "malformed.mat"
     malformed_path.write_bytes(b"not a MAT file")
-    with pytest.raises(IndexError) as malformed_error:
+    with pytest.raises(MatDataError) as malformed_error:
         load_mat_record(malformed_path)
-    assert str(malformed_error.value) == "index out of range"
+    assert str(malformed_error.value).startswith("cannot read MAT file:")
 
 
 def test_legacy_pickle_globals_resolve_through_sender_shims() -> None:
@@ -289,7 +290,7 @@ def _fixed_packet_arguments() -> dict[str, object]:
     }
 
 
-def test_packet_builder_preserves_dictionary_and_serialized_bytes() -> None:
+def test_packet_builder_preserves_dictionary_and_binary_wire_bytes() -> None:
     from sender.packet import build_sensor_packet as legacy_build
     from sender.packet import serialize_packet as legacy_serialize
     from scenarios.bearing.ingestion.packet import (
@@ -311,23 +312,8 @@ def test_packet_builder_preserves_dictionary_and_serialized_bytes() -> None:
         "end_generate_timestamp_ns": 123,
         "data": _fixed_packet_data(),
     }
-    expected_bytes = (
-        b'{"device_id":"machine_01","task_id":"sd_01_tk_0001",'
-        b'"bearing_id":"bearing_01","packet_id":'
-        b'"sd_01_tk_0001_bearing_01_pkt_007","sender_id":"sender_01",'
-        b'"sequence_number":7,"end_generate_timestamp_ns":123,"data":{'
-        b'"vibration":{"sample_rate_hz":64000,"sample_count":1,'
-        b'"values":[1.0],"unit":"mm/s"},"phase_current_1_A":{'
-        b'"sample_rate_hz":64000,"sample_count":1,"values":[2.0],'
-        b'"unit":"A"},"phase_current_2_A":{"sample_rate_hz":64000,'
-        b'"sample_count":1,"values":[3.0],"unit":"A"},'
-        b'"shaft_speed_rpm":{"sample_rate_hz":4000,"sample_count":1,'
-        b'"values":[4.0]},"load_torque_nm":{"sample_rate_hz":4000,'
-        b'"sample_count":1,"values":[5.0]},"bearing_radial_load_n":{'
-        b'"sample_rate_hz":4000,"sample_count":1,"values":[6.0]},'
-        b'"bearing_module_temperature_c":25.0}}'
-    )
-    assert serialize_packet(packet) == expected_bytes
+    expected_bytes = serialize_packet(packet)
+    assert expected_bytes.startswith(b"IMC1")
     assert legacy_serialize(legacy_packet) == expected_bytes
 
 
@@ -372,16 +358,19 @@ def test_packet_serializer_preserves_validation_error() -> None:
     from sender.packet import serialize_packet as legacy_serialize
     from scenarios.bearing.ingestion.packet import (
         PacketValidationError,
+        build_sensor_packet,
         serialize_packet,
     )
 
+    invalid_packet = build_sensor_packet(**_fixed_packet_arguments())
+    invalid_packet["data"]["vibration"]["values"] = [float("nan")]
     for serializer in (serialize_packet, legacy_serialize):
         with pytest.raises(PacketValidationError) as error:
-            serializer({"invalid": float("nan")})
+            serializer(invalid_packet)
         assert isinstance(error.value, LegacyPacketValidationError)
         assert str(error.value) == (
             "packet cannot be serialized: "
-            "Out of range float values are not JSON compliant: nan"
+            "vibration.values must contain finite float32 values"
         )
 
 

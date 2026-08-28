@@ -4,10 +4,8 @@
 
 const NAV_PAGES = [
   { href: "index.html", icon: "◉", label: "总览大屏" },
-  { href: "edge-health.html", icon: "▤", label: "边缘节点" },
-  { href: "diagnosis-demo.html", icon: "⚡", label: "诊断演示" },
   { href: "topology.html", icon: "⬡", label: "调度拓扑" },
-  { href: "arbitration.html", icon: "⚖", label: "设备仲裁" },
+  { href: "arbitration.html", icon: "⚖", label: "一致性与仲裁" },
   { href: "analysis.html", icon: "▣", label: "全局分析" },
 ];
 
@@ -25,7 +23,7 @@ function injectNav() {
         '<span class="icon">' + p.icon + "</span>" + p.label + "</a>"
     ).join("") +
     "</nav>" +
-    '<div class="footer">Edge 8001/8002 · Sch 8003<br>Cloud 8004 · MQTT 1883</div>';
+    '<div class="footer">Edge 8001/8002 · Sch 8003<br>Cloud 8004 · Summary 8006<br>MQTT 1883</div>';
 }
 
 // ---------- API 客户端（经网关代理，无跨域问题） ----------

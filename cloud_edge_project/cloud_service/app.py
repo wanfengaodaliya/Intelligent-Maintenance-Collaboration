@@ -30,15 +30,20 @@ from cloud_service.model_update.dataset_repository import (
     LabelConfirmationRepository,
 )
 from cloud_service.task_results import TaskResultService
-from cloud_service.device_arbitration.v12_contract import (
-    adapt_v12_device_arbitration_request,
-    attach_v12_identity,
-    is_v12_device_arbitration_request,
+from cloud_service.device_arbitration.summary_contract import (
+    adapt_summary_arbitration_request,
+    attach_summary_identity,
 )
+from cloud_service.device_arbitration.errors import ArbitrationPayloadConflictError
+from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
+from cloud_service.summary_windows import SummaryWindowRepository
 from cloud_service.status_reporter import CloudNodeStatusReporter
 from cloud_service.runtime_status import CloudRuntimeState
 from cloud_service.errors import CloudServiceError
 from cloud_service.service import (
+    activate_moment_candidate,
+    activate_moment_version,
+    evaluate_cloud_window,
     get_moment_runner,
     preload_moment_runner,
 )
@@ -83,6 +88,7 @@ config = load_config()
 edge_status_registry = EdgeStatusRegistry()
 cloud_runtime_state = CloudRuntimeState()
 scenario_registry = build_cloud_scenario_registry()
+DEFAULT_SCENARIO_TYPE = BEARING_SCENARIO_TYPE
 
 
 def _scenario_provider(scenario_type: object, capability: str) -> object:
@@ -232,6 +238,7 @@ def _edge_summary_repository() -> EdgeFeatureRepository:
 
 
 def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
+    runner = get_moment_runner(settings)
     return {
         "service": "cloud_service",
         "node_id": CLOUD_NODE_ID,
@@ -243,6 +250,8 @@ def _health_payload(settings: CloudSettings, status: str) -> dict[str, object]:
             )
         ),
         "model_backend": settings.backend,
+        "model_version": runner.model_version,
+        "model_device": settings.moment_device,
     }
 
 
@@ -320,6 +329,29 @@ def cloud_infer(payload: Any = Body(default=None)) -> dict | JSONResponse:
         return JSONResponse(status_code=500, content=error_response(error))
 
 
+@app.post("/cloud/evaluate", response_model=None)
+def cloud_evaluate(payload: Any = Body(default=None)) -> dict | JSONResponse:
+    """State-free classifier endpoint used by run-scoped paired evaluation."""
+    try:
+        request = require_mapping(payload, "CloudEvaluationRequest")
+        cloud_runtime_state.begin_inference()
+        try:
+            return evaluate_cloud_window(request, load_cloud_settings())
+        finally:
+            cloud_runtime_state.finish_inference()
+    except ContractError as error:
+        return JSONResponse(status_code=400, content=error_response(error))
+    except CloudServiceError as error:
+        contract_error = ContractError(error.code, error.message, None)
+        return JSONResponse(
+            status_code=error.status_code,
+            content=error_response(contract_error),
+        )
+    except Exception as exc:
+        error = ContractError("MODEL_INFER_FAILED", str(exc), None)
+        return JSONResponse(status_code=500, content=error_response(error))
+
+
 @app.post("/cloud/bearing-diagnosis-results", response_model=None)
 def bearing_diagnosis_results(payload: dict) -> dict | JSONResponse:
     try:
@@ -339,6 +371,42 @@ def device_decision_results(payload: dict) -> dict | JSONResponse:
         return JSONResponse(
             status_code=409 if str(error) == "RESULT_ID_CONFLICT" else 400,
             content={"error_code": str(error)},
+        )
+
+
+def _recent_limit(limit: int | str) -> int:
+    if isinstance(limit, bool):
+        raise ValueError("INVALID_RECENT_LIMIT")
+    raw_limit = str(limit).strip()
+    if not raw_limit.isdigit():
+        raise ValueError("INVALID_RECENT_LIMIT")
+    parsed_limit = int(raw_limit)
+    if not 1 <= parsed_limit <= 200:
+        raise ValueError("INVALID_RECENT_LIMIT")
+    return parsed_limit
+
+
+@app.get("/cloud/device-decision-results/recent", response_model=None)
+def list_recent_device_decisions(
+    device_id: str | None = None, limit: str = "50"
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = TaskResultService(
+            load_cloud_settings().database_path
+        ).list_recent_device_decisions(
+            device_id.strip() if device_id and device_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
         )
 
 
@@ -370,22 +438,22 @@ def get_physical_evidence(sample_id: str) -> dict | JSONResponse:
 @app.post("/cloud/device-arbitration", response_model=None)
 def device_arbitration(payload: dict) -> dict | JSONResponse:
     try:
-        adapted = (
-            adapt_v12_device_arbitration_request(payload)
-            if is_v12_device_arbitration_request(payload)
-            else None
-        )
+        adapted = adapt_summary_arbitration_request(payload)
         settings = load_cloud_settings()
-        request = adapted or payload
         policy = _scenario_provider(
-            normalize_legacy_scenario_type(request.get("scenario_type")),
+            normalize_legacy_scenario_type(adapted.get("scenario_type")),
             ARBITRATION_POLICY,
         )
         result = DeviceArbitrationService(
             settings.database_path,
             policy,
-        ).arbitrate(request)
-        return attach_v12_identity(result, adapted) if adapted is not None else result
+        ).arbitrate(adapted)
+        return attach_summary_identity(result, adapted)
+    except ArbitrationPayloadConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content={"error_code": "ARBITRATION_IDENTITY_CONFLICT", "message": str(error)},
+        )
     except UnsupportedScenarioError as error:
         return JSONResponse(
             status_code=400,
@@ -399,6 +467,58 @@ def device_arbitration(payload: dict) -> dict | JSONResponse:
     except Exception as exc:
         LOGGER.exception("device arbitration failed: %s", exc)
         return JSONResponse(status_code=500, content={"error_code": "ARBITRATION_FAILED"})
+
+
+@app.post("/cloud/summary-window-results", response_model=None)
+def accept_summary_window(payload: dict) -> dict | JSONResponse:
+    try:
+        return SummaryWindowRepository(load_cloud_settings().database_path).accept(payload)
+    except ArbitrationPayloadConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content={"error_code": "SUMMARY_IDENTITY_CONFLICT", "message": str(error)},
+        )
+    except ValueError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"error_code": "INVALID_SUMMARY_WINDOW", "message": str(error)},
+        )
+
+
+@app.get("/cloud/summary-window-results/recent", response_model=None)
+def list_recent_summary_windows(
+    device_id: str | None = None, limit: int = 100
+) -> dict:
+    parsed_limit = min(max(int(limit), 1), 1000)
+    return {
+        "items": SummaryWindowRepository(
+            load_cloud_settings().database_path
+        ).list_recent(device_id=device_id, limit=parsed_limit)
+    }
+
+
+@app.get("/cloud/device-arbitration/recent", response_model=None)
+def list_recent_device_arbitrations(
+    device_id: str | None = None, limit: str = "50"
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = DeviceArbitrationRepository(
+            load_cloud_settings().database_path
+        ).list_recent(
+            device_id.strip() if device_id and device_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
+        )
 
 
 @app.get("/cloud/device-arbitration/{conflict_id}", response_model=None)
@@ -456,6 +576,33 @@ def global_analysis(payload: dict) -> dict | JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"error_code": "SERVICE_UNAVAILABLE"},
+        )
+
+
+@app.get("/cloud/global-analysis/recent", response_model=None)
+def list_recent_global_analyses(
+    scenario_type: str = DEFAULT_SCENARIO_TYPE,
+    subject_id: str | None = None,
+    limit: str = "50",
+) -> dict | JSONResponse:
+    try:
+        parsed_limit = _recent_limit(limit)
+    except ValueError:
+        return JSONResponse(
+            status_code=400, content={"error_code": "INVALID_RECENT_LIMIT"}
+        )
+    try:
+        items = GlobalAnalysisService(
+            load_cloud_settings().database_path
+        ).repository.list_recent(
+            scenario_type,
+            subject_id.strip() if subject_id and subject_id.strip() else None,
+            parsed_limit,
+        )
+        return {"success": True, "items": items, "count": len(items)}
+    except (sqlite3.Error, json.JSONDecodeError):
+        return JSONResponse(
+            status_code=503, content={"error_code": "SERVICE_UNAVAILABLE"}
         )
 
 
@@ -573,6 +720,17 @@ def list_pending_model_distribution(
         )
     except ModelUpdateError as error:
         return _model_update_error_response(error)
+
+
+@app.get("/cloud/model-update/recent", response_model=None)
+def list_recent_model_updates(limit: int = 20) -> list:
+    """Frontend overview: latest model updates with the LLM suggestion text."""
+
+    if not isinstance(limit, int) or limit <= 0:
+        limit = 20
+    if limit > 100:
+        limit = 100
+    return _model_update_service().list_recent(limit)
 
 
 @app.get("/cloud/model-update/{update_id}", response_model=None)

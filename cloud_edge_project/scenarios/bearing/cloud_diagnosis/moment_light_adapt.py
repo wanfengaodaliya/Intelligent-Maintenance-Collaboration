@@ -65,7 +65,7 @@ def deployment_workspace_root(pretrained_path: Path) -> Path:
     """Locate the deployment root that owns the ``experiments`` package."""
 
     for candidate in (pretrained_path, *pretrained_path.parents):
-        if (candidate / "experiments").is_dir():
+        if (candidate / "experiments").is_dir() and (candidate / "models").is_dir():
             return candidate
     return Path(__file__).resolve().parents[3]
 

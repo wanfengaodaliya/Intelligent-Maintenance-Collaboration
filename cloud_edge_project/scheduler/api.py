@@ -101,6 +101,10 @@ def route_device_arbitration(request: Mapping[str, Any]) -> dict[str, Any]:
     return default_runtime.route_device_arbitration(request)
 
 
+def allocate_device_id(request: Mapping[str, Any]) -> dict[str, str]:
+    return default_runtime.allocate_device_id(request)
+
+
 def save_device_arbitration_result(request: Mapping[str, Any]) -> dict[str, Any]:
     return default_runtime.save_device_arbitration_result(request)
 
@@ -424,6 +428,12 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
             status_code, payload = _error_payload(error)
             return JSONResponse(status_code=status_code, content=payload)
 
+    @router.post("/device-id/next", response_model=None)
+    def device_id_endpoint(
+        request: Any = Body(default=None),
+    ) -> dict[str, str] | JSONResponse:
+        return endpoint("allocate_device_id", request)
+
     @router.post("/edge-nodes/status", response_model=None)
     def edge_status_endpoint(request: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         return endpoint("update_edge_node_status", request)
@@ -489,6 +499,10 @@ def create_app(runtime: SchedulerRuntime | Any | None = None) -> Any:
 
         return policy_status()
 
+    @router.get("/assignments/recent-batch", response_model=None)
+    def recent_batch_assignments_endpoint() -> dict[str, Any]:
+        return selected.recent_batch_assignments()
+
     application = FastAPI(
         title="Edge Node Assignment Scheduler",
         lifespan=lifespan,
@@ -520,12 +534,20 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json(500, {"error_code": "ROUTING_POLICY_ERROR", "message": str(error)})
             return
+        if self.path == "/scheduler/assignments/recent-batch":
+            try:
+                self._send_json(200, default_runtime.recent_batch_assignments())
+            except Exception as error:
+                status_code, payload = _error_payload(error)
+                self._send_json(status_code, payload)
+            return
         self._send_json(404, {"detail": "not found"})
 
     def do_POST(self) -> None:
         parsed = urlsplit(self.path)
         handlers: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
             "/scheduler/decide": decide,
+            "/scheduler/device-id/next": allocate_device_id,
             "/scheduler/edge-nodes/status": update_edge_node_status,
             "/scheduler/cloud-nodes/status": update_cloud_node_status,
             "/scheduler/link-snapshots": update_link_snapshot,

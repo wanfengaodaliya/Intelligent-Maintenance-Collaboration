@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import re
+from collections import OrderedDict
 from pathlib import Path
+from threading import Lock
 from typing import Any, Mapping
 
 from common.config import load_config, service_url
+from common.schemas import ContractError
 
 from .assignment_scheduler import AssignmentScheduler
 from .cloud_registry import CloudNodeRegistry
@@ -86,6 +90,18 @@ class SchedulerRuntime:
             edge_url_lookup=self.node_registry.control_url,
             eligibility_check=self.device_router.cloud_delivery_eligibility,
         )
+        device_id_base = str(
+            self.config["services"]["scheduler"].get(
+                "device_id_base", "machine_01"
+            )
+        ).strip()
+        device_id_match = re.fullmatch(r"(.*?)(\d+)", device_id_base)
+        if device_id_match is None:
+            raise ValueError("scheduler device_id_base must end with a numeric suffix")
+        self._device_id_lock = Lock()
+        self._device_id_base = device_id_base
+        self._next_device_number = int(device_id_match.group(2))
+        self._allocated_device_ids: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._started = False
 
     def start(self) -> None:
@@ -109,6 +125,58 @@ class SchedulerRuntime:
             return decide_schedule_v01(request)
         return self.assignment_scheduler.decide(request).to_dict()
 
+    def allocate_device_id(self, request: Mapping[str, Any]) -> dict[str, str]:
+        if not isinstance(request, Mapping):
+            raise ContractError(
+                "INVALID_DEVICE_ID_REQUEST", "request must be an object"
+            )
+        base_device_id = request.get("base_device_id")
+        if not isinstance(base_device_id, str):
+            raise ContractError(
+                "INVALID_DEVICE_ID", "base_device_id must end with a numeric suffix"
+            )
+        base_device_id = base_device_id.strip()
+        request_id = request.get("request_id")
+        if (
+            not isinstance(request_id, str)
+            or not request_id.strip()
+            or len(request_id.strip()) > 128
+        ):
+            raise ContractError(
+                "INVALID_DEVICE_ID_REQUEST",
+                "request_id must contain between 1 and 128 characters",
+            )
+        request_id = request_id.strip()
+        match = re.fullmatch(r"(.*?)(\d+)", base_device_id)
+        if match is None:
+            raise ContractError(
+                "INVALID_DEVICE_ID", "base_device_id must end with a numeric suffix"
+            )
+        prefix, suffix = match.groups()
+        with self._device_id_lock:
+            previous = self._allocated_device_ids.get(request_id)
+            if previous is not None:
+                previous_base, previous_device_id = previous
+                if previous_base != base_device_id:
+                    raise ContractError(
+                        "DEVICE_ID_REQUEST_CONFLICT",
+                        "request_id was already used with another base_device_id",
+                    )
+                self._allocated_device_ids.move_to_end(request_id)
+                return {"device_id": previous_device_id}
+            if self._device_id_base != base_device_id:
+                raise ContractError(
+                    "DEVICE_ID_BASE_CONFLICT",
+                    "base_device_id does not match the Scheduler configuration",
+                )
+            number = self._next_device_number
+            self._next_device_number += 1
+            device_id = prefix + str(number).zfill(len(suffix))
+            self._allocated_device_ids[request_id] = (base_device_id, device_id)
+            if len(self._allocated_device_ids) > 4096:
+                self._allocated_device_ids.popitem(last=False)
+        return {"device_id": device_id}
+
     def update_edge_node_status(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.node_registry.update_status(request)
 
@@ -122,6 +190,9 @@ class SchedulerRuntime:
 
     def save_task_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.assignment_scheduler.save_result(request)
+
+    def recent_batch_assignments(self) -> dict[str, Any]:
+        return self.task_repository.recent_batch_assignments()
 
     def route_packet(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.packet_service.route(request)

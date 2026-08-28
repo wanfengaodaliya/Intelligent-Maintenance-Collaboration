@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -76,10 +77,18 @@ class SenderConfig:
     expected_packet_count: int
     log_dir: Path
     state_dir: Path
-    recovery_window_seconds: float = 5.0
+    recovery_window_seconds: float = 60.0
+    deferred_retry_window_seconds: float = 60.0
+    deferred_retry_initial_seconds: float = 2.0
+    deferred_retry_max_seconds: float = 16.0
+    deferred_retry_jitter_ratio: float = 0.2
 
 
-REQUIRED_FIELDS = tuple(SenderConfig.__dataclass_fields__)
+REQUIRED_FIELDS = tuple(
+    name
+    for name, member in SenderConfig.__dataclass_fields__.items()
+    if member.default is MISSING and member.default_factory is MISSING
+)
 SENDER_REQUIRED_FIELDS = tuple(
     name
     for name, member in SenderNodeConfig.__dataclass_fields__.items()
@@ -187,7 +196,19 @@ def load_config(path: Path | str) -> SenderConfig:
             puback_warning_timeout_ms=int(raw["puback_warning_timeout_ms"]),
             packet_delivery_timeout_ms=int(raw["packet_delivery_timeout_ms"]),
             max_publish_retries=int(raw["max_publish_retries"]),
-            recovery_window_seconds=float(raw["recovery_window_seconds"]),
+            recovery_window_seconds=float(raw.get("recovery_window_seconds", 60.0)),
+            deferred_retry_window_seconds=float(
+                raw.get("deferred_retry_window_seconds", 60.0)
+            ),
+            deferred_retry_initial_seconds=float(
+                raw.get("deferred_retry_initial_seconds", 2.0)
+            ),
+            deferred_retry_max_seconds=float(
+                raw.get("deferred_retry_max_seconds", 16.0)
+            ),
+            deferred_retry_jitter_ratio=float(
+                raw.get("deferred_retry_jitter_ratio", 0.2)
+            ),
             pending_queue_max_packets=int(raw["pending_queue_max_packets"]),
             task_duration_ms=int(raw["task_duration_ms"]),
             packet_interval_ms=int(raw["packet_interval_ms"]),
@@ -198,6 +219,8 @@ def load_config(path: Path | str) -> SenderConfig:
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid config value: {exc}") from exc
 
+    if re.fullmatch(r".*\d+", config.device_id) is None:
+        raise ConfigError("device_id must end with a numeric suffix")
     if config.qos != 1 or config.retain:
         raise ConfigError("current contract requires qos=1 and retain=false")
     if config.schedule_max_retries < 0 or config.max_publish_retries < 0:
@@ -210,6 +233,14 @@ def load_config(path: Path | str) -> SenderConfig:
         raise ConfigError("delivery timeout must exceed PUBACK warning timeout")
     if config.recovery_window_seconds <= 0:
         raise ConfigError("recovery window must be positive")
+    if config.deferred_retry_window_seconds <= 0:
+        raise ConfigError("deferred retry window must be positive")
+    if config.deferred_retry_initial_seconds <= 0:
+        raise ConfigError("deferred retry initial delay must be positive")
+    if config.deferred_retry_max_seconds < config.deferred_retry_initial_seconds:
+        raise ConfigError("deferred retry max delay must not be shorter than initial delay")
+    if not 0 <= config.deferred_retry_jitter_ratio < 1:
+        raise ConfigError("deferred retry jitter ratio must be between 0 and 1")
     if config.packet_interval_ms <= 0 or config.task_duration_ms <= 0:
         raise ConfigError("task and packet durations must be positive")
     if (

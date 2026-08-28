@@ -207,6 +207,39 @@ class ModelUpdateService:
             raise ModelUpdateError("ARTIFACT_NOT_READY")
         return artifact
 
+    def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest-first public summary (includes the LLM suggestion text if present).
+
+        Safe for the frontend overview. Fields intentionally kept verbose so
+        the UI can render update status, suggestion source (llm / template),
+        and human-facing explanation text without an extra per-item fetch.
+        """
+
+        raw = self.repository.list_recent(limit)
+        result: list[dict[str, Any]] = []
+        for task in raw:
+            suggestion = task.get("suggestion_json") or {}
+            result.append(
+                {
+                    "update_id": task.get("update_id"),
+                    "status": task.get("status"),
+                    "problem_type": task.get("problem_type"),
+                    "model_type": task.get("model_type"),
+                    "baseline_version": task.get("baseline_version"),
+                    "candidate_version": task.get("candidate_version"),
+                    "evidence_snapshot": task.get("evidence_snapshot"),
+                    "problem_context": task.get("problem_context"),
+                    "suggestion_text": suggestion.get("text") if isinstance(suggestion, dict) else None,
+                    "suggestion_source": suggestion.get("source") if isinstance(suggestion, dict) else None,
+                    "suggestion_generated_at_ns": suggestion.get("generated_at_ns") if isinstance(suggestion, dict) else None,
+                    "validation": task.get("validation"),
+                    "post_validation": task.get("post_validation"),
+                    "created_at_ns": task.get("created_at_ns"),
+                    "updated_at_ns": task.get("updated_at_ns"),
+                }
+            )
+        return result
+
     def list_pending_distribution(
         self, edge_node_id: str | None = None
     ) -> dict[str, Any]:

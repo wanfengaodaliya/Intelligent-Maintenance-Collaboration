@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 此历史计划中的“Edge 调用建议 LLM”设计已废止；当前实现由 Summary 独占调用 `8005`，Edge 不包含建议 LLM 客户端或配置。
+
 **Goal:** Start and register both local edge nodes while moving the optional LLM service to port 8005.
 
 **Architecture:** `start_project.ps1` remains the only launch entry point. It starts one Scheduler, one Cloud service, two independently configured Edge processes, and optionally one LLM process. The scheduler receives both registered nodes through one JSON environment variable; each Edge receives its own node identity, proxies, MQTT identity, and writable state paths.

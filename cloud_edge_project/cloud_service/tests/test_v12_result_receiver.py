@@ -37,6 +37,16 @@ def test_v12_result_receiver_is_idempotent_by_result_id_and_rejects_conflicts(tm
 
     assert service.ingest_bearing_decision(bearing) == {"status": "accepted", "duplicate": False}
     assert service.ingest_bearing_decision(bearing) == {"status": "accepted", "duplicate": True}
+
+    with_diagnosis = _bearing()
+    with_diagnosis["result_id"] = "bearing_round_01_bearing_a_r2"
+    with_diagnosis["diagnosis_label"] = "inner_ring_damage"
+    with_diagnosis["class_probabilities"] = {
+        "healthy": 0.05,
+        "outer_ring_damage": 0.05,
+        "inner_ring_damage": 0.9,
+    }
+    assert service.ingest_bearing_decision(with_diagnosis)["duplicate"] is False
     bearing["confidence"] = .8
     try:
         service.ingest_bearing_decision(bearing)

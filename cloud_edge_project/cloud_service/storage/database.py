@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -9,6 +11,8 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from core.scenario_plugin import StorageProvider
+
+from core.diagnosis_identity import build_summary_window_id
 
 from .schema import DDL, EDGE_PACKET_SUMMARY_DDL, MODEL_UPDATE_TASK_DDL, SCHEMA_VERSION
 
@@ -60,12 +64,17 @@ def initialize_database(
             registrar = _SQLiteStorageRegistrar(connection)
             for provider in providers:
                 provider.initialize(registrar)
+        _migrate_v21_to_v22_device_arbitration_identity(connection)
+        _migrate_v23_to_v24_summary_window_binary(connection)
+        _migrate_v24_to_v25_summary_window_identity(connection)
+        _migrate_v25_to_v26_summary_window_action_level(connection)
         _migrate_v5_to_v6(connection)
         _migrate_v10_to_v11_identity_fields(connection)
         if legacy_summary_table:
             _copy_legacy_summaries(connection, legacy_summary_table)
         _migrate_v16_to_v17_fault_labels(connection)
         _migrate_v17_to_v18_moment_edge_label(connection)
+        _migrate_v22_to_v23_moment_diagnosis_output(connection)
         _migrate_v18_to_v19_label_confirmation_risk_level(connection)
         _migrate_v19_to_v20_dual_model_support(connection)
         _migrate_v20_to_v21_model_update_columns(connection)
@@ -110,11 +119,310 @@ def initialize_database(
             "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
             "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
             (
-                SCHEMA_VERSION,
+                21,
                 time.time_ns(),
                 "unify abnormal labels to fault",
             ),
         )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at_ns, description) VALUES (?, ?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET description=excluded.description",
+            (
+                SCHEMA_VERSION,
+                time.time_ns(),
+                "scope binary summary windows by shared sender run identity",
+            ),
+        )
+
+
+def _migrate_v21_to_v22_device_arbitration_identity(
+    connection: sqlite3.Connection,
+) -> None:
+    if not _table_exists(connection, "device_arbitration_record"):
+        return
+    columns = _columns(connection, "device_arbitration_record")
+    additions = {
+        "summary_result_id": "TEXT",
+        "window_start_sequence": "INTEGER",
+        "window_end_sequence": "INTEGER",
+        "request_payload_hash": "TEXT",
+    }
+    for name, sql_type in additions.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE device_arbitration_record ADD COLUMN {name} {sql_type}"
+            )
+
+
+def _migrate_v23_to_v24_summary_window_binary(connection: sqlite3.Connection) -> None:
+    """Add binary-state conflict fields to summary_window_record (idempotent)."""
+
+    if not _table_exists(connection, "summary_window_record"):
+        return
+    additions = {
+        "revision": "INTEGER NOT NULL DEFAULT 1",
+        "state_mismatch": "INTEGER NOT NULL DEFAULT 0",
+        "node_states_json": "TEXT",
+        "final_state": "TEXT",
+        "arbitration_status": "TEXT",
+    }
+    columns = _columns(connection, "summary_window_record")
+    for name, definition in additions.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE summary_window_record ADD COLUMN {name} {definition}"
+            )
+    connection.execute(
+        """
+        UPDATE summary_window_record
+        SET node_states_json = json_extract(payload_json, '$.node_states'),
+            final_state = json_extract(payload_json, '$.final_state'),
+            arbitration_status = json_extract(payload_json, '$.arbitration_status'),
+            revision = COALESCE(json_extract(payload_json, '$.revision'), 1)
+        WHERE node_states_json IS NULL
+        """
+    )
+
+
+def _migrate_v24_to_v25_summary_window_identity(
+    connection: sqlite3.Connection,
+) -> None:
+    """Scope cloud windows by run and quarantine unverifiable legacy conflicts."""
+
+    if not _table_exists(connection, "summary_window_record"):
+        return
+    columns = _columns(connection, "summary_window_record")
+    if {"summary_window_id", "run_id", "conflict_semantics"}.issubset(columns):
+        return
+
+    legacy_table = "summary_window_record_legacy_v24"
+    connection.commit()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP INDEX IF EXISTS idx_summary_window_record_device")
+        connection.execute(
+            f"ALTER TABLE summary_window_record RENAME TO {legacy_table}"
+        )
+        _create_summary_window_schema(connection)
+        rows = connection.execute(f"SELECT * FROM {legacy_table}").fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            raw_run_id = payload.get("run_id")
+            run_id = (
+                raw_run_id.strip()
+                if isinstance(raw_run_id, str) and raw_run_id.strip()
+                else f"legacy_{int(row['created_at_ns'])}"
+            )
+            raw_window_id = payload.get("summary_window_id")
+            summary_window_id = (
+                raw_window_id.strip()
+                if isinstance(raw_window_id, str) and raw_window_id.strip()
+                else build_summary_window_id(
+                    device_id=str(row["device_id"]),
+                    run_id=run_id,
+                    window_start_sequence=int(row["window_start_sequence"]),
+                    window_end_sequence=int(row["window_end_sequence"]),
+                )
+            )
+
+            node_states = payload.get("node_states")
+            valid_states = (
+                isinstance(node_states, dict)
+                and len(node_states) == 2
+                and set(node_states.values()).issubset({"normal", "fault"})
+            )
+            computed_mismatch = bool(
+                valid_states and len(set(node_states.values())) > 1
+            )
+            binary_semantics = (
+                valid_states
+                and isinstance(payload.get("state_mismatch"), bool)
+                and payload["state_mismatch"] == computed_mismatch
+                and payload.get("has_conflict") == computed_mismatch
+            )
+            conflict_semantics = (
+                "binary_state" if binary_semantics else "legacy_grade_gap"
+            )
+            has_conflict = (
+                int(computed_mismatch)
+                if binary_semantics
+                else int(bool(row["has_conflict"]))
+            )
+            state_mismatch = int(computed_mismatch) if binary_semantics else 0
+            excluded = (
+                int(bool(row["excluded_from_formal_metrics"]))
+                if binary_semantics
+                else 1
+            )
+            conflicting_pair_count = (
+                int(computed_mismatch)
+                if binary_semantics
+                else int(row["conflicting_pair_count"])
+            )
+
+            payload.update(
+                {
+                    "summary_window_id": summary_window_id,
+                    "run_id": run_id,
+                    "state_mismatch": bool(state_mismatch),
+                    "conflict_semantics": conflict_semantics,
+                    "excluded_from_formal_metrics": bool(excluded),
+                }
+            )
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+            node_states_json = (
+                json.dumps(node_states, ensure_ascii=False, sort_keys=True)
+                if valid_states
+                else None
+            )
+            connection.execute(
+                """
+                INSERT INTO summary_window_record (
+                    summary_result_id, summary_window_id, device_id, run_id,
+                    window_start_sequence, window_end_sequence, result_status,
+                    revision, has_conflict, state_mismatch, node_states_json,
+                    final_state, arbitration_status, conflict_semantics,
+                    excluded_from_formal_metrics, max_cross_edge_grade_gap,
+                    conflicting_pair_count, payload_hash, payload_json, created_at_ns
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["summary_result_id"],
+                    summary_window_id,
+                    row["device_id"],
+                    run_id,
+                    row["window_start_sequence"],
+                    row["window_end_sequence"],
+                    row["result_status"],
+                    int(row["revision"] or 1),
+                    has_conflict,
+                    state_mismatch,
+                    node_states_json,
+                    row["final_state"],
+                    row["arbitration_status"],
+                    conflict_semantics,
+                    excluded,
+                    row["max_cross_edge_grade_gap"],
+                    conflicting_pair_count,
+                    payload_hash,
+                    payload_json,
+                    row["created_at_ns"],
+                ),
+            )
+        connection.execute(f"DROP TABLE {legacy_table}")
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+def _create_summary_window_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE summary_window_record (
+            summary_result_id TEXT PRIMARY KEY,
+            summary_window_id TEXT NOT NULL UNIQUE,
+            device_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            window_start_sequence INTEGER NOT NULL,
+            window_end_sequence INTEGER NOT NULL,
+            result_status TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1,
+            has_conflict INTEGER NOT NULL,
+            state_mismatch INTEGER NOT NULL DEFAULT 0,
+            node_states_json TEXT,
+            final_state TEXT,
+            arbitration_status TEXT,
+            conflict_semantics TEXT NOT NULL DEFAULT 'binary_state',
+            excluded_from_formal_metrics INTEGER NOT NULL,
+            max_cross_edge_grade_gap INTEGER NOT NULL,
+            conflicting_pair_count INTEGER NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at_ns INTEGER NOT NULL,
+            CHECK (json_valid(payload_json)),
+            CHECK (node_states_json IS NULL OR json_valid(node_states_json)),
+            CHECK (conflict_semantics IN ('binary_state', 'legacy_grade_gap', 'action_level_gap_v1'))
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX idx_summary_window_record_device "
+        "ON summary_window_record(device_id, created_at_ns DESC)"
+    )
+
+
+def _migrate_v25_to_v26_summary_window_action_level(
+    connection: sqlite3.Connection,
+) -> None:
+    """Allow the action_level_gap_v1 conflict semantics (idempotent)."""
+
+    if not _table_exists(connection, "summary_window_record"):
+        return
+    create_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='summary_window_record'"
+    ).fetchone()[0]
+    if create_sql and "'action_level_gap_v1'" in create_sql:
+        return
+
+    legacy_table = "summary_window_record_legacy_v25"
+    connection.commit()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP INDEX IF EXISTS idx_summary_window_record_device")
+        connection.execute(
+            f"ALTER TABLE summary_window_record RENAME TO {legacy_table}"
+        )
+        _create_summary_window_schema(connection)
+        rows = connection.execute(f"SELECT * FROM {legacy_table}").fetchall()
+        for row in rows:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO summary_window_record (
+                    summary_result_id, summary_window_id, device_id, run_id,
+                    window_start_sequence, window_end_sequence, result_status,
+                    revision, has_conflict, state_mismatch, node_states_json,
+                    final_state, arbitration_status, conflict_semantics,
+                    excluded_from_formal_metrics, max_cross_edge_grade_gap,
+                    conflicting_pair_count, payload_hash, payload_json, created_at_ns
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["summary_result_id"],
+                    row["summary_window_id"],
+                    row["device_id"],
+                    row["run_id"],
+                    row["window_start_sequence"],
+                    row["window_end_sequence"],
+                    row["result_status"],
+                    row["revision"],
+                    row["has_conflict"],
+                    row["state_mismatch"],
+                    row["node_states_json"],
+                    row["final_state"],
+                    row["arbitration_status"],
+                    row["conflict_semantics"],
+                    row["excluded_from_formal_metrics"],
+                    row["max_cross_edge_grade_gap"],
+                    row["conflicting_pair_count"],
+                    row["payload_hash"],
+                    row["payload_json"],
+                    row["created_at_ns"],
+                ),
+            )
+        connection.execute(f"DROP TABLE {legacy_table}")
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
 
 
 def _migrate_v15_model_update_table(connection: sqlite3.Connection) -> None:
@@ -299,6 +607,25 @@ def _migrate_v17_to_v18_moment_edge_label(connection: sqlite3.Connection) -> Non
     if "edge_label" in _columns(connection, "cloud_moment_review_record"):
         return
     connection.execute("ALTER TABLE cloud_moment_review_record ADD COLUMN edge_label TEXT")
+
+
+def _migrate_v22_to_v23_moment_diagnosis_output(
+    connection: sqlite3.Connection,
+) -> None:
+    """Preserve the raw three-class MOMENT output for paired evaluation."""
+
+    if not _table_exists(connection, "cloud_moment_review_record"):
+        return
+    columns = _columns(connection, "cloud_moment_review_record")
+    if "diagnosis_label" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record ADD COLUMN diagnosis_label TEXT"
+        )
+    if "class_probabilities_json" not in columns:
+        connection.execute(
+            "ALTER TABLE cloud_moment_review_record "
+            "ADD COLUMN class_probabilities_json TEXT"
+        )
 
 
 def _migrate_v18_to_v19_label_confirmation_risk_level(

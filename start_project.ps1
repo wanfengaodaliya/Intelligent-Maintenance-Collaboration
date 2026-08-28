@@ -3,6 +3,16 @@
     [string]$EnvFile,
     [switch]$CheckConfig,
     [switch]$SkipLLM,
+    [switch]$SkipCloudUpdateLLM,
+    [int]$EdgeModelInferenceWorkers = 2,
+    [int]$EdgeModelQueueCapacity = 160,
+    [int]$EdgeModelQueueWaitMs = 15000,
+    [int]$EdgeModelTotalTimeoutMs = 20000,
+    [int]$SummaryWindowTimeoutSeconds = 40,
+    [int]$ExpectedPacketCount = 80,
+    # 当前 bearing Summary 合同固定等待 bearing_01/02。
+    [ValidateSet(2)]
+    [int]$SenderCount = 2,
     # 每个健康门的统一总超时（秒），每 2 秒轮询一次。
     [int]$HealthTimeoutSeconds = 180
 )
@@ -10,10 +20,11 @@
 # 正式启动编排（唯一模式：容器 Edge）：
 #   Stage 1  网络模拟器（toxiproxy + mqtt-broker + network-controller，project name
 #            固定为 network_simulator）全部 healthy 且所需代理已创建。
-#   Stage 2  宿主机 Scheduler 8003 + Cloud 8004（HTTP ready，Cloud 模型已加载）。
-#   Stage 3  LLM 服务：边缘建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
-#            （3B @ 6006）；-SkipLLM 时跳过并显式禁用 Edge LLM 调用。
-#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，--no-build），
+#   Stage 2  宿主机 Scheduler 8003 + Cloud 8004 + Summary 8006
+#            （HTTP ready，Cloud 模型已加载，Summary 已连接 MQTT）。
+#   Stage 3  LLM 服务：Summary 建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
+#            （3B @ 6006）；-SkipLLM 时跳过并禁用 Summary LLM 调用。
+#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，自动构建当前源码），
 #            轮询 /health/ready（Docker HEALTHCHECK 仅代表 liveness）。
 #   全部通过后才允许 Sender 开始发送。
 # 任一健康门失败：打印对应容器/进程状态与最近日志并终止，不依赖 restart 策略排序。
@@ -79,6 +90,8 @@ $SchedulerHost = Get-EnvValue "SCHEDULER_SERVICE_HOST" "127.0.0.1"
 $SchedulerPort = [int](Get-EnvValue "SCHEDULER_SERVICE_PORT" "8003")
 $CloudHost = Get-EnvValue "CLOUD_SERVICE_HOST" "127.0.0.1"
 $CloudPort = [int](Get-EnvValue "CLOUD_SERVICE_PORT" "8004")
+$SummaryHost = Get-EnvValue "SUMMARY_SERVICE_HOST" "127.0.0.1"
+$SummaryPort = [int](Get-EnvValue "SUMMARY_SERVICE_PORT" "8006")
 $Edge01Port = [int](Get-EnvValue "EDGE_01_HOST_PORT" "8001")
 $Edge02Port = [int](Get-EnvValue "EDGE_02_HOST_PORT" "8002")
 $Edge01NodeId = Get-EnvValue "EDGE_01_NODE_ID" "edge_01"
@@ -89,19 +102,47 @@ $MqttHost = Get-EnvValue "MQTT_BROKER_HOST" $HealthHost
 $MqttPort = [int](Get-EnvValue "MQTT_BROKER_PORT" "1883")
 $NetworkApiHost = Get-EnvValue "NETWORK_API_HOST" $HealthHost
 $NetworkApiPort = [int](Get-EnvValue "NETWORK_API_HOST_PORT" "8090")
-$EdgeLlmHost = Get-EnvValue "EDGE_SUGGESTION_LLM_HOST" $HealthHost
-$EdgeLlmPort = [int](Get-EnvValue "EDGE_SUGGESTION_LLM_PORT" "8005")
+$SummaryLlmHost = Get-EnvValue "SUMMARY_SUGGESTION_LLM_HOST" $HealthHost
+$SummaryLlmPort = [int](Get-EnvValue "SUMMARY_SUGGESTION_LLM_PORT" "8005")
 $CloudLlmHost = Get-EnvValue "CLOUD_MODEL_UPDATE_LLM_HOST" $HealthHost
 $CloudLlmPort = [int](Get-EnvValue "CLOUD_MODEL_UPDATE_LLM_PORT" "6006")
 $LlmBindHost = Get-EnvValue "LLM_SERVICE_BIND_HOST" "127.0.0.1"
 $CloudSchedulerUrl = Get-EnvValue "CLOUD_SCHEDULER_SERVICE_BASE_URL" "http://$HealthHost`:18045"
-$EdgeLlmBaseUrl = Get-EnvValue "EDGE_SUGGESTION_LLM_BASE_URL" "http://host.docker.internal:8005"
+$SummaryLlmBaseUrl = Get-EnvValue "SUMMARY_SUGGESTION_LLM_BASE_URL" "http://$SummaryLlmHost`:$SummaryLlmPort"
 $VllmUrl = Get-EnvValue "VLLM_URL" "http://127.0.0.1:6006/v1/chat/completions"
-$EdgeLlmModelPath = Resolve-DeploymentPath (Get-EnvValue "EDGE_SUGGESTION_LLM_MODEL_PATH" "models\qwen2.5-0.5b-instruct-q3_k_m.gguf") $LLM_DIR
+$SummaryLlmModelPath = Resolve-DeploymentPath (Get-EnvValue "SUMMARY_SUGGESTION_LLM_MODEL_PATH" "models\qwen2.5-0.5b-instruct-q3_k_m.gguf") $LLM_DIR
 $CloudLlmModelPath = Resolve-DeploymentPath (Get-EnvValue "CLOUD_MODEL_UPDATE_LLM_MODEL_PATH" "models\qwen2.5-3b-instruct-q4_k_m.gguf") $LLM_DIR
 $PollIntervalSeconds = 2
+$ExperimentId = (Get-Date -Format "yyyyMMdd_HHmmss") + "_" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
+$ExperimentData = Join-Path $CloudEdge "data\experiments\$ExperimentId"
+$env:EXPERIMENT_ID = $ExperimentId
+$env:EDGE_MODEL_INFERENCE_WORKERS = [string]$EdgeModelInferenceWorkers
+$env:EDGE_MODEL_QUEUE_CAPACITY = [string]$EdgeModelQueueCapacity
+$env:EDGE_MODEL_QUEUE_WAIT_MS = [string]$EdgeModelQueueWaitMs
+$env:EDGE_MODEL_TOTAL_TIMEOUT_MS = [string]$EdgeModelTotalTimeoutMs
+$env:EDGE_EXPECTED_PACKET_COUNT = [string]$ExpectedPacketCount
+$gitRevision = (& git -C $ProjectRoot rev-parse --short=12 HEAD 2>$null)
+if (-not $gitRevision) { $gitRevision = "unknown" }
+$gitRevision = $gitRevision.Trim()
+$gitDirty = [bool](& git -C $ProjectRoot status --porcelain 2>$null)
+$env:EDGE_BUILD_REVISION = if ($gitDirty) { "$gitRevision-dirty" } else { $gitRevision }
+if (-not $CheckConfig) {
+    New-Item -ItemType Directory -Path $ExperimentData -Force | Out-Null
+    @{
+        experiment_id = $ExperimentId
+        git_revision = $gitRevision
+        git_dirty = $gitDirty
+        edge_model_inference_workers = $EdgeModelInferenceWorkers
+        edge_model_queue_capacity = $EdgeModelQueueCapacity
+        edge_model_queue_wait_ms = $EdgeModelQueueWaitMs
+        edge_model_total_timeout_ms = $EdgeModelTotalTimeoutMs
+        summary_window_timeout_seconds = $SummaryWindowTimeoutSeconds
+        expected_packet_count = $ExpectedPacketCount
+        created_at = [DateTimeOffset]::Now.ToString("o")
+    } | ConvertTo-Json | Set-Content -Path (Join-Path $ExperimentData "run_config.json") -Encoding UTF8
+}
 
-Assert-UrlPort "EDGE_SUGGESTION_LLM_BASE_URL" $EdgeLlmBaseUrl $EdgeLlmPort
+Assert-UrlPort "SUMMARY_SUGGESTION_LLM_BASE_URL" $SummaryLlmBaseUrl $SummaryLlmPort
 Assert-UrlPort "VLLM_URL" $VllmUrl $CloudLlmPort
 
 # 通用 conda 激活引导：不依赖用户是否执行过 conda init powershell，
@@ -125,6 +166,7 @@ if ($CheckConfig) {
     }
     Write-Host "Scheduler=http://$SchedulerHost`:$SchedulerPort"
     Write-Host "Cloud=http://$CloudHost`:$CloudPort"
+    Write-Host "Summary=http://$SummaryHost`:$SummaryPort"
     Write-Host "Edges=$Edge01NodeId`:$Edge01Port,$Edge02NodeId`:$Edge02Port"
     Write-Host "NetworkApi=http://$NetworkApiHost`:$NetworkApiPort"
     Write-Host "LlamaCpp=$LLM_DIR"
@@ -159,7 +201,9 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
 }
 
 Write-Host "=== Project Root: $ProjectRoot ==="
-Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --no-build) ==="
+Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --build) ==="
+Write-Host "=== Sender mode: $SenderCount senders ==="
+Write-Host "=== Experiment: $ExperimentId ==="
 
 function Get-Json {
     param([string]$Url, [string]$UserAgent)
@@ -351,13 +395,20 @@ Write-Host "  Ports free"
 
 if (-not $SkipLLM) {
     $lb = Join-Path $LLM_DIR "llama-server.exe"
-    $lm = $EdgeLlmModelPath
+    $lm = $SummaryLlmModelPath
     $cm = $CloudLlmModelPath
-    if (-not (Test-Path $lb) -or -not (Test-Path $lm) -or -not (Test-Path $cm)) {
-        Write-Host "  LLM not fully deployed (need llama-server.exe + 0.5B + 3B models), use -SkipLLM to skip"
+    if (-not (Test-Path $lb) -or -not (Test-Path $lm)) {
+        Write-Host "  Summary suggestion LLM not deployed (need llama-server.exe + 0.5B model), use -SkipLLM to skip"
         exit 1
     }
-    Write-Host "[Check] LLM OK (0.5B suggestion + 3B cloud model-update)"
+    if (-not $SkipCloudUpdateLLM -and -not (Test-Path $cm)) {
+        Write-Host "  Cloud model-update LLM not deployed (need 3B model), use -SkipCloudUpdateLLM to skip only it"
+        exit 1
+    }
+    Write-Host "[Check] Summary suggestion LLM OK (0.5B)"
+    if (-not $SkipCloudUpdateLLM) {
+        Write-Host "[Check] Cloud model-update LLM OK (3B)"
+    }
 }
 
 if ($CheckConfig) {
@@ -425,13 +476,26 @@ if ($stage1 -and -not (Wait-Gate "Network controller ($NetworkApiPort) reachable
 })) { $stage1 = $false }
 if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
-# ---------- Stage 2: host Scheduler + Cloud ----------
-Write-Host "`n========== Stage 2/4: Host Scheduler ($SchedulerPort) + Cloud ($CloudPort) =========="
-$schCmd = "Set-Location '$CloudEdge'; $PythonLaunchPrefix -m uvicorn scheduler.api:app --host $SchedulerHost --port $SchedulerPort"
+# ---------- Stage 2: host Scheduler + Cloud + Summary ----------
+Write-Host "`n========== Stage 2/4: Scheduler ($SchedulerPort) + Cloud ($CloudPort) + Summary ($SummaryPort) =========="
+# Scheduler 使用实验独立的 SQLite：持久 scheduler.db 会跨实验残留 task_id/device_id，
+# 造成 TASK_ID_CONFLICT 且污染 stability_score（其读取历史执行记录）。每次实验指向
+# 实验 data 子目录，与 Cloud/Summary 的隔离策略一致。
+$schedulerDb = Join-Path $ExperimentData "scheduler.db"
+$schCmd = "Set-Location '$CloudEdge'; `$env:SCHEDULER_EXPECTED_PACKET_COUNT='$ExpectedPacketCount'; `$env:SCHEDULER_DB_PATH='$schedulerDb'; $PythonLaunchPrefix -m uvicorn scheduler.api:app --host $SchedulerHost --port $SchedulerPort"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
 
-$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='$(Get-EnvValue "CLOUD_BACKEND" "moment_light_adapt")'; `$env:SCHEDULER_SERVICE_BASE_URL='$CloudSchedulerUrl'; $PythonLaunchPrefix -m uvicorn cloud_service.app:app --host $CloudHost --port $CloudPort"
+$cloudDb = Join-Path $ExperimentData "cloud_review.db"
+$cloudBackend = Get-EnvValue "CLOUD_BACKEND" "moment_light_adapt"
+$cloudMomentDevice = Get-EnvValue "CLOUD_MOMENT_DEVICE" "auto"
+$cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='$cloudBackend'; `$env:CLOUD_MOMENT_DEVICE='$cloudMomentDevice'; `$env:CLOUD_REVIEW_DB_PATH='$cloudDb'; `$env:SCHEDULER_SERVICE_BASE_URL='$CloudSchedulerUrl'; $PythonLaunchPrefix -m uvicorn cloud_service.app:app --host $CloudHost --port $CloudPort"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
+
+$summaryDb = Join-Path $ExperimentData "summary_service.db"
+$summaryLlmEnabled = if ($SkipLLM) { "false" } else { "true" }
+$summaryExpectedBearingIds = "bearing_01,bearing_02"
+$summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_WINDOW_TIMEOUT_SECONDS='$SummaryWindowTimeoutSeconds'; `$env:SUMMARY_EXPECTED_BEARING_IDS='$summaryExpectedBearingIds'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='$SummaryLlmBaseUrl'; $PythonLaunchPrefix -m uvicorn summary_service.app:app --host $SummaryHost --port $SummaryPort"
+Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
 
 $stage2 = $true
 if (-not (Wait-Gate "Scheduler /health ($SchedulerPort)" {
@@ -443,46 +507,63 @@ if ($stage2 -and -not (Wait-Gate "Cloud /health ($CloudPort, backend loaded)" {
     $cloud = Get-Json "http://$HealthHost`:$CloudPort/health"
     $null -ne $cloud -and $cloud.status -eq "ok"
 })) { $stage2 = $false }
+if ($stage2 -and -not (Wait-Gate "Summary /health ($SummaryPort, MQTT connected)" {
+    $summary = Get-Json "http://$HealthHost`:$SummaryPort/health"
+    $null -ne $summary -and $summary.status -eq "ok" -and $summary.mqtt_connected -eq $true
+})) { $stage2 = $false }
 if (-not $stage2) {
-    Write-Host "  Check the Scheduler / Cloud PowerShell windows above."
+    Write-Host "  Check the Scheduler / Cloud / Summary PowerShell windows above."
     exit 1
 }
 
 # ---------- Stage 3: LLM services ----------
 if (-not $SkipLLM) {
-    Write-Host "`n========== Stage 3/4: LLM services (edge $EdgeLlmPort + cloud $CloudLlmPort) =========="
-    # 边缘建议 LLM（0.5B）：Edge 容器经 host.docker.internal:8005 调用。
-    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model '$EdgeLlmModelPath' --host $LlmBindHost --port $EdgeLlmPort --ctx-size 2048 --n-gpu-layers 99"
+    Write-Host "`n========== Stage 3/4: LLM services (summary $SummaryLlmPort + cloud $CloudLlmPort) =========="
+    # Summary 建议 LLM（0.5B）。
+    $llmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model '$SummaryLlmModelPath' --host $LlmBindHost --port $SummaryLlmPort --ctx-size 2048 --n-gpu-layers 99"
     Start-Process powershell -ArgumentList "-NoExit","-Command",$llmCmd
-    # 云端模型更新 LLM（3B）：Cloud 模型更新建议书使用（VLLM_URL 默认 6006）。
-    $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model '$CloudLlmModelPath' --host $LlmBindHost --port $CloudLlmPort --ctx-size 4096 --n-gpu-layers 99"
-    Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudLlmCmd
     $stage3 = $true
-    if (-not (Wait-Gate "Edge suggestion LLM /v1/models ($EdgeLlmPort)" {
-        $models = Get-Json "http://$EdgeLlmHost`:$EdgeLlmPort/v1/models"
+    if (-not (Wait-Gate "Summary suggestion LLM /v1/models ($SummaryLlmPort)" {
+        $models = Get-Json "http://$SummaryLlmHost`:$SummaryLlmPort/v1/models"
         $null -ne $models -and $models.data.Count -gt 0
     })) { $stage3 = $false }
-    if ($stage3 -and -not (Wait-Gate "Cloud model-update LLM /v1/models ($CloudLlmPort)" {
-        $models = Get-Json "http://$CloudLlmHost`:$CloudLlmPort/v1/models"
-        $null -ne $models -and $models.data.Count -gt 0
-    })) { $stage3 = $false }
+    if (-not $SkipCloudUpdateLLM) {
+        # 云端模型更新 LLM（3B）：Cloud 模型更新建议书使用（VLLM_URL 默认 6006）。
+        $cloudLlmCmd = "Set-Location '$LLM_DIR'; .\llama-server.exe --model '$CloudLlmModelPath' --host $LlmBindHost --port $CloudLlmPort --ctx-size 4096 --n-gpu-layers 99"
+        Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudLlmCmd
+        if ($stage3 -and -not (Wait-Gate "Cloud model-update LLM /v1/models ($CloudLlmPort)" {
+            $models = Get-Json "http://$CloudLlmHost`:$CloudLlmPort/v1/models"
+            $null -ne $models -and $models.data.Count -gt 0
+        })) { $stage3 = $false }
+    } else {
+        Write-Host "  Cloud model-update LLM skipped; Summary suggestion LLM remains enabled."
+    }
     if (-not $stage3) {
         Write-Host "  Check the LLM PowerShell windows above."
         exit 1
     }
-    $env:EDGE_SUGGESTION_LLM_ENABLED = "true"
 } else {
     Write-Host "`n========== Stage 3/4: LLM skipped =========="
-    Write-Host "  EDGE_SUGGESTION_LLM_ENABLED=false - Edge suggestion LLM calls are disabled in both containers."
-    Write-Host "  Cloud model-update LLM (6006) not started; suggestions fall back to templates."
-    $env:EDGE_SUGGESTION_LLM_ENABLED = "false"
+    Write-Host "  SUMMARY_SUGGESTION_LLM_ENABLED=false - Summary suggestions fall back to templates."
+    Write-Host "  Cloud model-update LLM (6006) is not started."
 }
 
 # ---------- Stage 4: Edge containers ----------
 Write-Host "`n========== Stage 4/4: Edge containers (edge_01 + edge_02) =========="
 Push-Location $EdgeService
 try {
-    docker compose -f compose.multi-edge.yml up -d --no-build
+    # 每次实验使用新的 SQLite 子目录。让正式 UID/GID 10001 自己创建目录，
+    # 避免 Docker Desktop 命名卷中 root 创建的目录无法再 chown 给 Edge 用户。
+    docker compose -f compose.multi-edge.yml stop edge_01 edge_02 | Out-Null
+    $edgeDbInitCode = "import os; from pathlib import Path; p=Path(os.environ['EDGE_EXPERIMENT_DATABASE_PATH']).parent; p.mkdir(parents=True, exist_ok=True)"
+    foreach ($edgeServiceName in "edge_01", "edge_02") {
+        docker compose -f compose.multi-edge.yml run --rm --no-deps --entrypoint python $edgeServiceName -c $edgeDbInitCode
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  Failed to initialize experiment database directory for $edgeServiceName"
+            exit 1
+        }
+    }
+    docker compose -f compose.multi-edge.yml up -d --build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  Edge compose failed to start"
         Show-EdgeDiagnostics
@@ -513,10 +594,21 @@ if ($edge01Health.node_id -ne $Edge01NodeId -or $edge02Health.node_id -ne $Edge0
     Show-EdgeDiagnostics
     exit 1
 }
+foreach ($edgeHealth in @($edge01Health, $edge02Health)) {
+    if ($edgeHealth.model_queue.consumer_count -ne $EdgeModelInferenceWorkers -or
+        $edgeHealth.model_queue.capacity -ne $EdgeModelQueueCapacity -or
+        $edgeHealth.routing_pool.alive -ne $true -or
+        $edgeHealth.bearing_publisher.alive -ne $true) {
+        Write-Host "  Edge benchmark runtime configuration mismatch"
+        Show-EdgeDiagnostics
+        exit 1
+    }
+}
 
 Write-Host "`n========== All health gates passed =========="
-if ($SkipLLM) { Write-Host "(LLM skipped - EDGE_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
+if ($SkipLLM) { Write-Host "(LLM skipped - SUMMARY_SUGGESTION_LLM_ENABLED=false, cloud model-update LLM not started)" }
 Write-Host "Sender may start replaying MAT data now."
-Write-Host "Stop: close host windows (Scheduler/Cloud/LLM), then:"
+Write-Host "Experiment data: $ExperimentData"
+Write-Host "Stop: close host windows (Scheduler/Cloud/Summary/LLM), then:"
 Write-Host "  cd $EdgeService ; docker compose -f compose.multi-edge.yml down"
 Write-Host "  cd $NetSim ; docker compose -p $NetSimProject down"

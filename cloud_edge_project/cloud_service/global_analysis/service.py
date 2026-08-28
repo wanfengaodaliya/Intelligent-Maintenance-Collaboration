@@ -73,7 +73,9 @@ class GlobalAnalysisService:
             data["packet_review_pairs"], self.config,
             available=availability.get("packet_review_pairs", True),
         )
-        device_arbitration = analyze_device_arbitration(data["device_tasks"], data["arbitrations"], self.config)
+        device_arbitration = analyze_device_arbitration(
+            data.get("summary_windows", []), data["arbitrations"], self.config
+        )
         physical_evidence = analyze_physical_evidence(
             data.get("physical_evidence", []),
             edge_summary_count=len(data.get("edge_summaries", [])),

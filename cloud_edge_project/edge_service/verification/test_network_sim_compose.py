@@ -9,6 +9,7 @@ ENV_EXAMPLE_PATH = Path(__file__).resolve().parents[3] / ".env.example"
 DELETED_NETWORK_SIM_COMPOSE = EDGE_SERVICE_ROOT / "compose.network-sim.yml"
 MODEL_SERVICE_APP_PATH = EDGE_SERVICE_ROOT / "src" / "model_service" / "app.py"
 EDGE_APP_PATH = EDGE_SERVICE_ROOT / "app.py"
+START_PROJECT_PATH = EDGE_SERVICE_ROOT.parents[1] / "start_project.ps1"
 
 # 与 internet_service/network_simulator/config/links.yaml 对齐的链路代理端口。
 EXPECTED_EDGE_ROUTES = {
@@ -30,10 +31,7 @@ CONFIGURABLE_TOPOLOGY_ENV_VARS = (
     "EDGE_MQTT_PORT",
     "SCHEDULER_SERVICE_BASE_URL",
     "CLOUD_SERVICE_BASE_URL",
-    "EDGE_SUGGESTION_LLM_BASE_URL",
 )
-
-EXPECTED_LLM_BASE_URL = "http://host.docker.internal:8005"
 
 
 def _services_section(text: str) -> str:
@@ -119,11 +117,11 @@ def test_status_reporters_target_the_real_scheduler_and_cloud_routes() -> None:
         assert cloud_url.endswith("/cloud/edge-status"), name
 
 
-def test_suggestion_llm_targets_host_llama_service() -> None:
+def test_edge_nodes_do_not_receive_suggestion_llm_configuration() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
         env = _environment(block)
-        assert _compose_default(env["EDGE_SUGGESTION_LLM_BASE_URL"]) == EXPECTED_LLM_BASE_URL, name
+        assert not any("SUGGESTION_LLM" in key for key in env), name
 
 
 def test_both_edges_accept_deployment_timeout_overrides() -> None:
@@ -137,6 +135,48 @@ def test_both_edges_accept_inference_worker_override() -> None:
     for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
         env = _environment(block)
         assert env["EDGE_MODEL_INFERENCE_WORKERS"] == "${EDGE_MODEL_INFERENCE_WORKERS:-1}", name
+
+
+def test_both_edges_accept_queue_capacity_and_build_revision_overrides() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_QUEUE_CAPACITY"] == "${EDGE_MODEL_QUEUE_CAPACITY:-64}", name
+        assert env["EDGE_BUILD_REVISION"] == "${EDGE_BUILD_REVISION:-unknown}", name
+
+
+def test_both_edges_accept_expected_packet_count_override() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_EXPECTED_PACKET_COUNT"] == "${EDGE_EXPECTED_PACKET_COUNT:-80}", name
+
+
+def test_canonical_startup_pins_benchmark_runtime_and_records_it() -> None:
+    text = START_PROJECT_PATH.read_text(encoding="utf-8-sig")
+    assert "[int]$EdgeModelInferenceWorkers = 2" in text
+    assert "[int]$EdgeModelQueueCapacity = 160" in text
+    assert "[int]$EdgeModelQueueWaitMs = 15000" in text
+    assert "[int]$EdgeModelTotalTimeoutMs = 20000" in text
+    assert "[int]$SummaryWindowTimeoutSeconds = 40" in text
+    assert "[int]$ExpectedPacketCount = 80" in text
+    assert "$env:EDGE_EXPECTED_PACKET_COUNT = [string]$ExpectedPacketCount" in text
+    assert "SCHEDULER_EXPECTED_PACKET_COUNT" in text
+    assert '"run_config.json"' in text
+
+
+def test_startup_can_skip_cloud_update_llm_without_disabling_summary_llm() -> None:
+    text = START_PROJECT_PATH.read_text(encoding="utf-8-sig")
+    assert "[switch]$SkipCloudUpdateLLM" in text
+    assert "$summaryLlmEnabled = if ($SkipLLM)" in text
+    assert "if (-not $SkipCloudUpdateLLM)" in text
+
+
+def test_startup_initializes_only_the_current_edge_experiment_directory() -> None:
+    text = START_PROJECT_PATH.read_text(encoding="utf-8-sig")
+    assert "EDGE_EXPERIMENT_DATABASE_PATH" in text
+    assert "p.mkdir(parents=True, exist_ok=True)" in text
+    assert "--user 0:0" not in text
+    assert "os.chown" not in text
+    assert "foreach ($edgeServiceName in \"edge_01\", \"edge_02\")" in text
 
 
 def test_both_edges_limit_local_h5_torch_threads_by_default() -> None:

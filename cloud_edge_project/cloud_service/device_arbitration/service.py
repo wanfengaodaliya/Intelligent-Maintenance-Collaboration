@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from cloud_service.device_arbitration.fusion import calculate_fusion
+from cloud_service.device_arbitration.errors import ArbitrationPayloadConflictError
 from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
 from cloud_service.storage.database import initialize_database
 from core.arbitration_contracts import ScenarioArbitrationAdapter
@@ -24,6 +25,16 @@ class DeviceArbitrationService:
         if isinstance(conflict_id, str) and conflict_id.strip():
             existing = self.repository.get_by_conflict_id(conflict_id.strip())
             if existing is not None:
+                stored_hash = self.repository.get_request_payload_hash(conflict_id.strip())
+                incoming_hash = request.get("request_payload_hash")
+                if (
+                    stored_hash is not None
+                    and isinstance(incoming_hash, str)
+                    and stored_hash != incoming_hash
+                ):
+                    raise ArbitrationPayloadConflictError(
+                        "conflict_id already belongs to a different arbitration payload"
+                    )
                 return existing
 
         context = self.adapter.build_context(request)
@@ -58,6 +69,9 @@ class DeviceArbitrationService:
         }
         if decision["resolution_method"] == "weighted_fusion":
             result["decision_margin"] = decision["decision_margin"]
+        summary_identity = request.get("summary_identity")
+        if isinstance(summary_identity, dict):
+            result.update(summary_identity)
         persisted = self.repository.save(request=request, result=result)
         return persisted
 

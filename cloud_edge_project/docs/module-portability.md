@@ -236,6 +236,16 @@ python -m sender_module.sender
 - 默认 MQTT Broker 地址为 `127.0.0.1:1883`，Scheduler URL 为 `http://127.0.0.1:8003`。
 - 现有数据包字段、序列号和发送时序不变。
 
+## Summary 场景服务边界
+
+最新主分支加入的跨边缘汇总、动作评分、冲突请求和维护建议属于轴承场景能力，
+实现统一位于 `scenarios/bearing/summary_service`。原有 `summary_service.*` 启动和
+导入路径继续有效，但只作为兼容入口，不再拥有轴承算法和规则。云端汇总仲裁合同
+与 Edge 快速发布器也通过 `compatibility/bearing_v12` 转发到场景实现。
+
+因此新增其他场景时可以提供自己的汇总服务和合同，无需修改轴承实现；平台已有的
+MQTT、重试、Outbox、健康检查和启动编排行为保持不变。
+
 ## Scheduler 服务迁移
 
 ### 迁移方式

@@ -80,3 +80,23 @@ class GlobalAnalysisResultRepository:
                 (scenario_type, subject_id, limit),
             ).fetchall()
         return [json.loads(row["result_json"]) for row in reversed(rows)]
+
+    def list_recent(
+        self, scenario_type: str, subject_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        with connect(self.database_path) as connection:
+            if subject_id is None:
+                rows = connection.execute(
+                    """SELECT result_json FROM global_analysis_result
+                       WHERE scenario_type=?
+                       ORDER BY created_at_ns DESC, analysis_id DESC LIMIT ?""",
+                    (scenario_type, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT result_json FROM global_analysis_result
+                       WHERE scenario_type=? AND subject_id=?
+                       ORDER BY created_at_ns DESC, analysis_id DESC LIMIT ?""",
+                    (scenario_type, subject_id, limit),
+                ).fetchall()
+        return [json.loads(row["result_json"]) for row in rows]

@@ -122,7 +122,11 @@ def test_sender_task_saves_source_proof_when_it_creates_packet(
         realtime=False,
         scheduler=SimpleNamespace(
             assign=lambda request: SimpleNamespace(
-                target_topic="edge/packets", schedule_retry_count=0
+                target_topic="edge/packets",
+                schedule_retry_count=0,
+                delivery_mode="realtime",
+                delivery_interval_ms=50,
+                available_throughput_mbps=None,
             )
         ),
         publisher=Publisher(),
@@ -315,7 +319,11 @@ def test_sender_packet_timestamps_follow_the_sampling_interval(
         realtime=False,
         scheduler=SimpleNamespace(
             assign=lambda request: SimpleNamespace(
-                target_topic="edge/packets", schedule_retry_count=0
+                target_topic="edge/packets",
+                schedule_retry_count=0,
+                delivery_mode="realtime",
+                delivery_interval_ms=50,
+                available_throughput_mbps=None,
             )
         ),
         publisher=publisher,
