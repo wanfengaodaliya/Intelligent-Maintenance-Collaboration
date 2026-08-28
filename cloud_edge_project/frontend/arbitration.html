@@ -101,7 +101,7 @@ function renderWindows(items) {
     const cls=incomplete?" incomplete":item.has_conflict?" conflict":"";
     return '<div class="window-item'+cls+'" role="button" tabindex="0" onclick="showWindow('+index+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();showWindow('+index+');}"><div class="window-head">'+status+
       '设备 <b>'+fmt.escape(item.device_id||"-")+'</b><span class="badge muted">窗口 '+fmt.escape(item.window_start_sequence)+'</span></div>'+
-      '<div class="window-meta">最大跨 Edge 偏差 '+fmt.escape(item.max_grade_gap)+' · 冲突对 '+fmt.escape(item.conflict_pair_count)+
+      '<div class="window-meta">最大动作等级差 '+fmt.escape(item.max_action_level_gap)+' · 冲突对 '+fmt.escape(item.conflict_pair_count)+
       ' · '+fmt.escape(fmtNs(item.closed_at_ns))+'</div>'+bearingLane(item)+'</div>';
   }).join("");
 }
@@ -116,7 +116,7 @@ function showWindow(index) {
   const item=windowItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.summary_result_id||"";
   el("detailBox").innerHTML=kvRows([["设备 / 窗口",fmt.escape(item.device_id)+" / "+fmt.escape(item.window_start_sequence)],
     ["正式统计",item.excluded_from_formal_metrics?badge("排除","warn"):badge("计入","ok")],["是否冲突",item.has_conflict?badge("是","danger"):badge("否","ok")],
-    ["最大跨 Edge 偏差",fmt.escape(item.max_grade_gap)],["最终动作等级",fmt.escape(item.final_action_grade)],["数据质量",pct(item.data_quality_score)]])+bearingLane(item)+jsonDetails(item,"查看完整 JSON");
+    ["最大动作等级差",fmt.escape(item.max_action_level_gap)],["最终动作等级",fmt.escape(item.final_action_level)],["数据质量",pct(item.data_quality_score)]])+bearingLane(item)+jsonDetails(item,"查看完整 JSON");
 }
 function showArbitration(index) {
   const item=arbitrationItems[index]; if(!item)return; el("detailCard").style.display=""; el("detailTitle").textContent=item.arbitration_id||"";

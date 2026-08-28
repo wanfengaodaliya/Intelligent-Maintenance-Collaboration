@@ -10,24 +10,20 @@ from typing import Any
 from cloud_service.device_arbitration.errors import ArbitrationPayloadConflictError
 from cloud_service.storage.database import connect, initialize_database
 from core.action_level_contract import (
-    ACTION_LEVEL_TO_ACTION,
-    ACTION_LEVEL_TO_LEGACY_GRADE,
     ACTION_SCORER_VERSION,
     CONFLICT_LEVEL_GAP,
-    CONFLICT_SEMANTICS,
+    FINAL_DECISION_SEMANTICS,
     SCORE_GAP_ABS_TOLERANCE,
+    build_final_decision,
 )
 from core.diagnosis_identity import build_summary_window_id
 
 
 BINARY_BEARING_STATES = {"normal", "fault"}
+FINAL_BEARING_STATES = {"normal", "warning", "fault"}
 ARBITRATION_STATUSES = {"PENDING", "RESOLVED", "MANUAL_REVIEW"}
 WINDOW_STATUSES = {"FINAL", "PENDING_ARBITRATION", "INCOMPLETE", "MANUAL_REVIEW"}
-CONFLICT_SEMANTICS_VALUES = {
-    "binary_state",
-    "legacy_grade_gap",
-    "action_level_gap_v1",
-}
+CONFLICT_SEMANTICS_VALUES = {"action_level_gap_v1"}
 
 
 class SummaryWindowRepository:
@@ -60,7 +56,6 @@ class SummaryWindowRepository:
             normalized["arbitration_status"],
             normalized["conflict_semantics"],
             int(normalized["excluded_from_formal_metrics"]),
-            normalized["max_cross_edge_grade_gap"],
             normalized["conflicting_pair_count"],
             payload_hash,
             payload_json,
@@ -75,9 +70,9 @@ class SummaryWindowRepository:
                     window_end_sequence, result_status, revision, has_conflict,
                     state_mismatch, node_states_json, final_state,
                     arbitration_status, conflict_semantics, excluded_from_formal_metrics,
-                    max_cross_edge_grade_gap, conflicting_pair_count,
+                    conflicting_pair_count,
                     payload_hash, payload_json, created_at_ns
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """,
                 row_values,
@@ -117,7 +112,7 @@ class SummaryWindowRepository:
                         state_mismatch = ?, node_states_json = ?,
                         final_state = ?, arbitration_status = ?,
                         conflict_semantics = ?, excluded_from_formal_metrics = ?,
-                        max_cross_edge_grade_gap = ?, conflicting_pair_count = ?,
+                        conflicting_pair_count = ?,
                         payload_hash = ?,
                         payload_json = ?, created_at_ns = ?
                     WHERE summary_result_id = ?
@@ -169,11 +164,11 @@ def normalize_summary_window(payload: Mapping[str, Any]) -> dict[str, Any]:
         "final_state",
         "arbitration_status",
         "excluded_from_formal_metrics",
-        "max_cross_edge_grade_gap",
         "conflicting_pair_count",
         "closed_at_ns",
         "conflict_semantics",
         "action_scorer_version",
+        "final_decision_semantics",
         "action_levels_by_edge",
         "action_scores_by_edge",
         "max_action_level_gap",
@@ -194,6 +189,8 @@ def normalize_summary_window(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("conflict_semantics is not supported")
     if result["action_scorer_version"] != ACTION_SCORER_VERSION:
         raise ValueError("action_scorer_version is not supported")
+    if result["final_decision_semantics"] != FINAL_DECISION_SEMANTICS:
+        raise ValueError("final_decision_semantics is not supported")
     for field in ("has_conflict", "state_mismatch", "excluded_from_formal_metrics"):
         if not isinstance(result[field], bool):
             raise ValueError(f"{field} must be boolean")
@@ -201,7 +198,6 @@ def normalize_summary_window(payload: Mapping[str, Any]) -> dict[str, Any]:
         "window_start_sequence",
         "window_end_sequence",
         "revision",
-        "max_cross_edge_grade_gap",
         "conflicting_pair_count",
         "max_action_level_gap",
         "state_mismatch_pair_count",
@@ -280,8 +276,8 @@ def normalize_summary_window(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     final_state = result["final_state"]
     if final_state is not None:
-        if not isinstance(final_state, str) or final_state not in BINARY_BEARING_STATES:
-            raise ValueError("final_state must be normal or fault")
+        if not isinstance(final_state, str) or final_state not in FINAL_BEARING_STATES:
+            raise ValueError("final_state must be normal, warning, or fault")
 
     arbitration_status = result["arbitration_status"]
     if arbitration_status is not None:
@@ -291,21 +287,20 @@ def normalize_summary_window(payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("arbitration_status is not supported")
 
     final_action_level = _optional_action_level(payload.get("final_action_level"))
-    final_action_grade = _optional_int(payload.get("final_action_grade"), 0, 4)
     recommended_action = payload.get("recommended_action")
     if recommended_action is not None and (
         not isinstance(recommended_action, str) or not recommended_action.strip()
     ):
         raise ValueError("recommended_action must be a non-empty string when present")
     result["final_action_level"] = final_action_level
-    result["final_action_grade"] = final_action_grade
     result["recommended_action"] = recommended_action
 
     if final_action_level is not None:
-        if final_action_grade != ACTION_LEVEL_TO_LEGACY_GRADE[final_action_level]:
-            raise ValueError("final_action_grade does not match final_action_level")
-        if recommended_action != ACTION_LEVEL_TO_ACTION[final_action_level]:
+        decision = build_final_decision(final_action_level)
+        if recommended_action != decision["recommended_action"]:
             raise ValueError("recommended_action does not match final_action_level")
+        if final_state != decision["final_state"]:
+            raise ValueError("final_state does not match final_action_level")
 
     _validate_window_state(result)
 
@@ -317,18 +312,18 @@ def _validate_window_state(result: dict[str, Any]) -> None:
     has_conflict = result["has_conflict"]
     arbitration_status = result["arbitration_status"]
     final_complete = (
-        result["final_action_level"] is not None
-        and result["final_action_grade"] is not None
+        result["final_state"] is not None
+        and result["final_action_level"] is not None
         and result["recommended_action"] is not None
     )
     final_empty = (
-        result["final_action_level"] is None
-        and result["final_action_grade"] is None
+        result["final_state"] is None
+        and result["final_action_level"] is None
         and result["recommended_action"] is None
     )
     if not (final_complete or final_empty):
         raise ValueError(
-            "final_action_level, final_action_grade and recommended_action must be all set or all empty"
+            "final_state, final_action_level and recommended_action must be all set or all empty"
         )
 
     if status == "INCOMPLETE":
@@ -417,14 +412,6 @@ def _optional_action_level(value: Any) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value not in range(4):
         raise ValueError("final_action_level must be an integer from 0 to 3 or null")
-    return value
-
-
-def _optional_int(value: Any, low: int, high: int) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-        raise ValueError(f"value must be an integer from {low} to {high} or null")
     return value
 
 

@@ -6,7 +6,6 @@ import pytest
 
 from core.action_level_contract import (
     ACTION_LEVEL_TO_ACTION,
-    ACTION_LEVEL_TO_LEGACY_GRADE,
     action_level_for_score,
 )
 from summary_service.action_scorer import (
@@ -26,7 +25,6 @@ EXPECTED_FIELDS = {
     "action_score",
     "action_level",
     "scored_action",
-    "scored_action_grade",
 }
 
 
@@ -46,7 +44,7 @@ def _probs(healthy, outer, inner):
     }
 
 
-def test_returns_exactly_ten_fields() -> None:
+def test_returns_exactly_nine_fields() -> None:
     result = _score(_probs(1.0, 0.0, 0.0))
 
     assert set(result) == EXPECTED_FIELDS
@@ -62,7 +60,6 @@ def test_fully_confident_healthy() -> None:
     assert result["action_score"] == pytest.approx(0.0)
     assert result["action_level"] == 0
     assert result["scored_action"] == "continue_operation"
-    assert result["scored_action_grade"] == 0
 
 
 def test_fully_confident_fault() -> None:
@@ -74,7 +71,6 @@ def test_fully_confident_fault() -> None:
     assert result["action_score"] == pytest.approx(1.0)
     assert result["action_level"] == 3
     assert result["scored_action"] == "shutdown"
-    assert result["scored_action_grade"] == 4
 
 
 def test_uniform_low_risk() -> None:
@@ -85,7 +81,6 @@ def test_uniform_low_risk() -> None:
     assert result["action_score"] == pytest.approx(0.35)
     assert result["action_level"] == 1
     assert result["scored_action"] == "enhanced_monitoring"
-    assert result["scored_action_grade"] == 1
 
 
 def test_uniform_high_risk() -> None:
@@ -94,7 +89,6 @@ def test_uniform_high_risk() -> None:
     assert result["action_score"] == pytest.approx(0.55)
     assert result["action_level"] == 2
     assert result["scored_action"] == "scheduled_inspection"
-    assert result["scored_action_grade"] == 2
 
 
 @pytest.mark.parametrize(
@@ -171,11 +165,9 @@ def test_scored_fields_follow_level_mapping() -> None:
             "scheduled_inspection",
             "shutdown",
         }
-        assert ACTION_LEVEL_TO_LEGACY_GRADE[level] in {0, 1, 2, 4}
 
     result = _score(_probs(0.0, 0.5, 0.5), risk_level="high", data_quality_score=1.0)
     assert result["scored_action"] == ACTION_LEVEL_TO_ACTION[result["action_level"]]
-    assert result["scored_action_grade"] == ACTION_LEVEL_TO_LEGACY_GRADE[result["action_level"]]
 
 
 # ---------------------------------------------------------------------------

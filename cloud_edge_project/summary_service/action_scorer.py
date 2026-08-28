@@ -2,7 +2,7 @@
 
 No database or network dependencies.  The numeric validation of
 ``class_probabilities``, the entropy / uncertainty / risk-prior formula, and the
-10-field result structure all live here.  Shared thresholds and action mappings
+9-field result structure all live here.  Shared thresholds and action mappings
 come from :mod:`core.action_level_contract`.
 """
 
@@ -14,7 +14,6 @@ from typing import Any
 
 from core.action_level_contract import (
     ACTION_LEVEL_TO_ACTION,
-    ACTION_LEVEL_TO_LEGACY_GRADE,
     ACTION_SCORER_VERSION,
     action_level_for_score,
 )
@@ -52,7 +51,7 @@ def score_bearing_action(
     risk_level: str,
     data_quality_score: float,
 ) -> dict[str, Any]:
-    """Score one bearing result into the 10-field ``action_scorer_v1`` result."""
+    """Score one bearing result into the 9-field ``action_scorer_v1`` result."""
 
     if set(class_probabilities) != set(H5_CLASS_LABELS):
         raise ValueError(
@@ -122,5 +121,4 @@ def score_bearing_action(
         "action_score": action_score,
         "action_level": action_level,
         "scored_action": ACTION_LEVEL_TO_ACTION[action_level],
-        "scored_action_grade": ACTION_LEVEL_TO_LEGACY_GRADE[action_level],
     }

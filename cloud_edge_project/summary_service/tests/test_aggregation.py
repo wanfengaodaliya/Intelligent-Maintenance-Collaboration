@@ -10,22 +10,12 @@ from summary_service.aggregation import (
 from summary_service.contracts import normalize_bearing_result
 
 
-ACTIONS = {
-    0: "continue_operation",
-    1: "enhanced_monitoring",
-    2: "scheduled_inspection",
-    3: "urgent_intervention",
-    4: "shutdown",
-}
-
 LEVEL_PROBS = {
     0: ({"healthy": 1.0, "outer_ring_damage": 0.0, "inner_ring_damage": 0.0}, "low"),
     1: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "low"),
     2: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "high"),
     3: ({"healthy": 0.0, "outer_ring_damage": 1.0, "inner_ring_damage": 0.0}, "high"),
 }
-
-LEGACY_GRADE = {0: 0, 1: 1, 2: 2, 3: 4}
 
 
 def bearing(
@@ -38,7 +28,6 @@ def bearing(
 ) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level = LEVEL_PROBS[action_level]
-    grade = LEGACY_GRADE[action_level]
     return normalize_bearing_result(
         {
             "result_id": f"result_{suffix}",
@@ -52,8 +41,6 @@ def bearing(
             "window_end_sequence": 3,
             "bearing_state": state,
             "risk_level": risk_level,
-            "action_grade": grade,
-            "recommended_action": ACTIONS[grade],
             "confidence": 0.9,
             "data_quality_score": 1.0,
             "model_version": "model-test",
@@ -78,7 +65,6 @@ def test_normal_normal_is_final_with_final_state() -> None:
     assert result["final_state"] == "normal"
     assert result["arbitration_status"] is None
     assert result["final_action_level"] == 1
-    assert result["final_action_grade"] == 1
     assert result["recommended_action"] == "enhanced_monitoring"
 
 
@@ -93,8 +79,31 @@ def test_fault_fault_is_final_with_final_state() -> None:
     assert result["has_conflict"] is False
     assert result["final_state"] == "fault"
     assert result["final_action_level"] == 3
-    assert result["final_action_grade"] == 4
     assert result["recommended_action"] == "shutdown"
+
+
+@pytest.mark.parametrize(
+    ("level", "expected_state", "expected_action"),
+    [
+        (0, "normal", "continue_operation"),
+        (1, "normal", "enhanced_monitoring"),
+        (2, "warning", "scheduled_inspection"),
+        (3, "fault", "shutdown"),
+    ],
+)
+def test_final_state_derives_from_action_level(
+    level: int, expected_state: str, expected_action: str
+) -> None:
+    result = build_window_result(
+        [bearing("bearing_01", "edge_01", "normal", level),
+         bearing("bearing_02", "edge_02", "normal", level)],
+        closed_at_ns=1_000,
+    )
+
+    assert result["result_status"] == "FINAL"
+    assert result["final_action_level"] == level
+    assert result["recommended_action"] == expected_action
+    assert result["final_state"] == expected_state
 
 
 @pytest.mark.parametrize(
@@ -136,8 +145,9 @@ def test_state_mismatch_with_small_level_gap_is_not_a_conflict() -> None:
     assert result["has_conflict"] is False
     assert result["state_mismatch"] is True
     assert result["state_mismatch_pair_count"] == 1
-    # Conservative summary: any fault source makes the window fault.
-    assert result["final_state"] == "fault"
+    # The final state derives from the action level (2 -> warning), NOT from
+    # the raw bearing-state OR.
+    assert result["final_state"] == "warning"
     assert result["final_action_level"] == 2
     assert result["recommended_action"] == "scheduled_inspection"
 

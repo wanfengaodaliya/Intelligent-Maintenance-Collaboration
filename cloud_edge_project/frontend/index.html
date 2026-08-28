@@ -573,10 +573,10 @@ function prepend(container, html, dataKey, data) {
 function renderResult(ev, countStats) {
   if (countStats === undefined) countStats = true;
   const p = ev.payload || {};
-  const grade = Number(p.final_action_grade);
+  const grade = Number(p.final_action_level);
   const state = p.final_state || p.status || (
     Number.isFinite(grade)
-      ? (grade >= 4 ? "fault" : grade >= 2 ? "warning" : "normal")
+      ? (grade >= 3 ? "fault" : grade >= 2 ? "warning" : "normal")
       : (p.result_status || "-")
   );
   const isFault = String(state).toLowerCase() === "fault";
@@ -595,9 +595,9 @@ function renderResult(ev, countStats) {
     device_id: p.device_id,
     risk_level: p.risk_level,
     has_conflict: p.has_conflict,
-    final_action_grade: p.final_action_grade,
+    final_action_level: p.final_action_level,
     window_sequence: p.window_start_sequence,
-    max_grade_gap: p.max_grade_gap,
+    max_action_level_gap: p.max_action_level_gap,
     result_status: p.result_status,
   };
 
@@ -621,9 +621,9 @@ function renderResultItem(r) {
     "</div>" +
     '<div class="row2">' +
     (r.has_conflict ? '<span style="color:var(--danger)">⚠ 存在冲突</span> · ' : "") +
-    "动作 " + (r.final_action_grade !== undefined ? r.final_action_grade : "-") +
+    "动作 " + (r.final_action_level !== undefined ? r.final_action_level : "-") +
     " · 窗口 " + fmt.escape(r.window_sequence || "-") +
-    " · 跨 Edge 偏差 " + fmt.escape(r.max_grade_gap ?? "-") +
+    " · 动作等级差 " + fmt.escape(r.max_action_level_gap ?? "-") +
     "</div>" +
     "</div></div>"
   );
@@ -852,9 +852,9 @@ function renderDeviceVerdict() {
           '</div>' +
           '<div class="verdict-detail">' +
             (confHtml ? confHtml + '　' : '') +
-            '<span class="k">动作等级：</span>' + (d.final_action_grade ?? "-") +
+            '<span class="k">动作等级：</span>' + (d.final_action_level ?? "-") +
             '　<span class="k">窗口：</span>' + fmt.escape(d.window_sequence || "-") +
-            '　<span class="k">跨Edge偏差：</span>' + fmt.escape(d.max_grade_gap ?? "-") +
+            '　<span class="k">跨Edge偏差：</span>' + fmt.escape(d.max_action_level_gap ?? "-") +
           '</div>' +
           sugHtml +
         '</div>' +
@@ -873,10 +873,10 @@ function renderDeviceVerdict() {
   renderResult = function (ev, countStats) {
     _origResult(ev, countStats);
     const p = ev.payload || {};
-    const grade = Number(p.final_action_grade);
+    const grade = Number(p.final_action_level);
     const state = p.final_state || p.status || (
       Number.isFinite(grade)
-        ? (grade >= 4 ? "fault" : grade >= 2 ? "warning" : "normal")
+        ? (grade >= 3 ? "fault" : grade >= 2 ? "warning" : "normal")
         : (p.result_status || "-")
     );
     const isFault = String(state).toLowerCase() === "fault";
@@ -888,9 +888,9 @@ function renderDeviceVerdict() {
       device_id: p.device_id,
       risk_level: p.risk_level,
       has_conflict: p.has_conflict,
-      final_action_grade: p.final_action_grade,
+      final_action_level: p.final_action_level,
       window_sequence: p.window_start_sequence,
-      max_grade_gap: p.max_grade_gap,
+      max_action_level_gap: p.max_action_level_gap,
     });
     renderDeviceVerdict();
   };

@@ -16,22 +16,12 @@ from summary_service.repository import (
 )
 
 
-ACTIONS = {
-    0: "continue_operation",
-    1: "enhanced_monitoring",
-    2: "scheduled_inspection",
-    3: "urgent_intervention",
-    4: "shutdown",
-}
-
 LEVEL_PROBS = {
     0: ({"healthy": 1.0, "outer_ring_damage": 0.0, "inner_ring_damage": 0.0}, "low"),
     1: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "low"),
     2: ({"healthy": 1 / 3, "outer_ring_damage": 1 / 3, "inner_ring_damage": 1 / 3}, "high"),
     3: ({"healthy": 0.0, "outer_ring_damage": 1.0, "inner_ring_damage": 0.0}, "high"),
 }
-
-LEGACY_GRADE = {0: 0, 1: 1, 2: 2, 3: 4}
 
 
 def bearing(
@@ -44,7 +34,6 @@ def bearing(
 ) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level = LEVEL_PROBS[action_level]
-    grade = LEGACY_GRADE[action_level]
     return normalize_bearing_result(
         {
             "result_id": f"result_{seq}_{suffix}",
@@ -58,8 +47,6 @@ def bearing(
             "window_end_sequence": seq,
             "bearing_state": state,
             "risk_level": risk_level,
-            "action_grade": grade,
-            "recommended_action": ACTIONS[grade],
             "confidence": 0.9,
             "data_quality_score": 1.0,
             "model_version": "model-test",
@@ -277,11 +264,12 @@ def test_resolved_arbitration_marks_window_final_and_republishes(tmp_path):
     assert arbitrated["arbitration_status"] == "RESOLVED"
     assert arbitrated["final_state"] == "fault"
     assert arbitrated["final_action"] == "shutdown"
-    assert arbitrated["final_action_grade"] == 4
+    assert arbitrated["final_action_level"] == 3
     assert arbitrated["recommended_action"] == "shutdown"
     assert arbitrated["final_source"] == "cloud_arbitration"
     assert arbitrated["arbitration_confidence"] == 0.92
-    assert arbitrated["confidence"] == 0.92
+    # confidence is no longer overwritten by arbitration_confidence.
+    assert arbitrated["confidence"] == 0.9
     assert arbitrated["revision"] == 2
     assert arbitrated["has_conflict"] is True
 

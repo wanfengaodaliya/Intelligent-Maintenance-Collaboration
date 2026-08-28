@@ -18,7 +18,6 @@ def analyze_device_arbitration(
     complete_count = len(eligible_rows)
     incomplete_count = len(summary_rows) - complete_count
     conflict_count = sum(bool(row.get("has_conflict")) for row in eligible_rows)
-    gaps = [int(row.get("max_cross_edge_grade_gap", 0)) for row in eligible_rows]
     level_gaps = [
         float(row["max_action_level_gap"])
         for row in eligible_rows
@@ -51,8 +50,6 @@ def analyze_device_arbitration(
         "conflict_count": conflict_count,
         "conflict_rate": rate(conflict_count, complete_count),
         "consistency_rate": rate(complete_count - conflict_count, complete_count),
-        "average_decision_gap": (sum(gaps) / len(gaps)) if gaps else None,
-        "max_decision_gap": max(gaps) if gaps else None,
         "average_action_level_gap": (
             (sum(level_gaps) / len(level_gaps)) if level_gaps else None
         ),

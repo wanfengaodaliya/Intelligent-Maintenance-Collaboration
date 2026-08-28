@@ -12,12 +12,12 @@ from core.action_level_contract import (
     ACTION_SCORER_VERSION,
     ACTION_TO_LEVEL,
     CONFLICT_SEMANTICS,
+    FINAL_DECISION_SEMANTICS,
+    build_final_decision,
 )
 
 from .aggregation import build_arbitration_request
 from .contracts import (
-    BINARY_BEARING_STATES,
-    GRADE_BY_ACTION,
     build_summary_window_id,
     canonical_json,
     stable_id,
@@ -489,23 +489,25 @@ class SummaryRepository:
 
             status = str(arbitration.get("status", "")).strip().lower()
             raw_final_state = arbitration.get("final_state")
-            final_state = (
+            cloud_final_state = (
                 str(raw_final_state).strip().lower()
                 if isinstance(raw_final_state, str)
                 else None
             )
             final_action = arbitration.get("final_action")
-            if status == "resolved" and final_state in BINARY_BEARING_STATES:
+            # The maintenance action is the sole authority.  final_state no
+            # longer decides FINAL vs MANUAL_REVIEW.
+            if status == "resolved" and final_action in ACTION_TO_LEVEL:
                 new_status = "FINAL"
                 arbitration_status = "RESOLVED"
             elif status == "manual_review" or (
-                status == "resolved" and final_state in {"warning", "unknown"}
+                status == "resolved" and final_action not in ACTION_TO_LEVEL
             ):
                 new_status = "MANUAL_REVIEW"
                 arbitration_status = "MANUAL_REVIEW"
             else:
                 raise ValueError(
-                    f"unsupported arbitration outcome: status={status}, final_state={final_state}"
+                    f"unsupported arbitration outcome: status={status}, final_action={final_action}"
                 )
 
             revision = int(row["revision"]) + 1
@@ -515,7 +517,7 @@ class SummaryRepository:
                     "result_status": new_status,
                     "arbitration_status": arbitration_status,
                     "arbitration_id": arbitration_id,
-                    "final_state": final_state if new_status == "FINAL" else None,
+                    "final_state": None,
                     "final_action": str(final_action) if final_action else None,
                     "final_source": "cloud_arbitration",
                     "arbitration_confidence": (
@@ -529,12 +531,21 @@ class SummaryRepository:
                 }
             )
             if new_status == "FINAL":
-                if final_action in GRADE_BY_ACTION:
-                    payload["final_action_grade"] = GRADE_BY_ACTION[final_action]
-                    payload["recommended_action"] = final_action
-                    payload["final_action_level"] = ACTION_TO_LEVEL.get(final_action)
-                if payload["arbitration_confidence"] is not None:
-                    payload["confidence"] = payload["arbitration_confidence"]
+                decision = build_final_decision(ACTION_TO_LEVEL[final_action])
+                if (
+                    cloud_final_state is not None
+                    and cloud_final_state != decision["final_state"]
+                ):
+                    raise ValueError(
+                        f"cloud final_state {cloud_final_state!r} does not match final_action {final_action!r}"
+                    )
+                payload["final_action_level"] = decision["final_action_level"]
+                payload["recommended_action"] = decision["recommended_action"]
+                payload["final_state"] = decision["final_state"]
+            else:
+                payload["final_action_level"] = None
+                payload["recommended_action"] = None
+                payload["final_state"] = None
             payload_json = canonical_json(payload)
             connection.execute(
                 """
@@ -717,8 +728,6 @@ class SummaryRepository:
                         THEN 1 ELSE 0 END) AS same_edge_windows,
                     SUM(COALESCE(json_array_length(payload_json, '$.missing_bearing_ids'), 0)) AS missing_node_count,
                     SUM(CASE WHEN json_array_length(payload_json, '$.missing_bearing_ids') > 0 THEN 1 ELSE 0 END) AS missing_node_windows,
-                    AVG(CASE WHEN excluded_from_formal_metrics = 0 THEN json_extract(payload_json, '$.max_grade_gap') END) AS average_decision_gap,
-                    MAX(CASE WHEN excluded_from_formal_metrics = 0 THEN json_extract(payload_json, '$.max_grade_gap') END) AS maximum_decision_gap,
                     AVG(CASE WHEN excluded_from_formal_metrics = 0 THEN json_extract(payload_json, '$.max_action_level_gap') END) AS average_action_level_gap,
                     MAX(CASE WHEN excluded_from_formal_metrics = 0 THEN json_extract(payload_json, '$.max_action_level_gap') END) AS maximum_action_level_gap,
                     AVG(CASE WHEN excluded_from_formal_metrics = 0 THEN json_extract(payload_json, '$.max_action_score_gap') END) AS average_action_score_gap,
@@ -809,16 +818,6 @@ class SummaryRepository:
             "average_window_close_ns": (
                 float(window["average_window_close_ns"])
                 if window["average_window_close_ns"] is not None
-                else None
-            ),
-            "average_decision_gap": (
-                float(window["average_decision_gap"])
-                if window["average_decision_gap"] is not None
-                else None
-            ),
-            "maximum_decision_gap": (
-                int(window["maximum_decision_gap"])
-                if window["maximum_decision_gap"] is not None
                 else None
             ),
             "average_action_level_gap": (
@@ -951,13 +950,15 @@ def _sync_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
         "action_scorer_version": str(
             payload.get("action_scorer_version", ACTION_SCORER_VERSION)
         ),
+        "final_decision_semantics": str(
+            payload.get("final_decision_semantics", FINAL_DECISION_SEMANTICS)
+        ),
         "state_mismatch": bool(payload.get("state_mismatch", False)),
         "state_mismatch_pair_count": int(payload.get("state_mismatch_pair_count", 0)),
         "node_states": dict(payload.get("node_states", {})),
         "final_state": payload.get("final_state"),
         "arbitration_status": payload.get("arbitration_status"),
         "excluded_from_formal_metrics": bool(payload["excluded_from_formal_metrics"]),
-        "max_cross_edge_grade_gap": int(payload.get("max_grade_gap", 0)),
         "max_action_level_gap": int(payload.get("max_action_level_gap", 0)),
         "max_action_score_gap": float(payload.get("max_action_score_gap", 0.0)),
         "max_observed_action_level": payload.get("max_observed_action_level"),
@@ -965,7 +966,6 @@ def _sync_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
         "action_levels_by_edge": dict(payload.get("action_levels_by_edge", {})),
         "action_scores_by_edge": dict(payload.get("action_scores_by_edge", {})),
         "final_action_level": payload.get("final_action_level"),
-        "final_action_grade": payload.get("final_action_grade"),
         "recommended_action": payload.get("recommended_action"),
         "conflicting_pair_count": int(payload.get("conflict_pair_count", 0)),
         "closed_at_ns": int(payload["closed_at_ns"]),

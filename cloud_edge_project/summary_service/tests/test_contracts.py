@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from summary_service.contracts import (
-    ACTION_BY_GRADE,
     BINARY_BEARING_STATES,
     EXPECTED_BEARING_IDS,
     EXPECTED_EDGE_NODE_IDS,
@@ -11,9 +10,6 @@ from summary_service.contracts import (
     group_key,
     normalize_bearing_result,
 )
-
-
-ACTIONS = {grade: action for grade, action in ACTION_BY_GRADE.items()}
 
 
 def payload(**overrides) -> dict:
@@ -29,8 +25,6 @@ def payload(**overrides) -> dict:
         "window_end_sequence": 3,
         "bearing_state": "normal",
         "risk_level": "low",
-        "action_grade": 0,
-        "recommended_action": "continue_operation",
         "confidence": 0.9,
         "data_quality_score": 0.8,
         "model_version": "model-test",
@@ -72,37 +66,11 @@ def test_rejects_missing_bearing_state() -> None:
         normalize_bearing_result(raw)
 
 
-@pytest.mark.parametrize(
-    ("grade", "action"),
-    [(grade, action) for grade, action in ACTIONS.items()],
-)
-def test_action_grade_keeps_its_maintenance_mapping(grade: int, action: str) -> None:
-    result = normalize_bearing_result(
-        payload(action_grade=grade, recommended_action=action)
-    )
-
-    assert result["action_grade"] == grade
-    assert result["recommended_action"] == action
-
-
-def test_rejects_action_grade_that_does_not_match_action() -> None:
-    with pytest.raises(ValueError, match="does not match"):
-        normalize_bearing_result(
-            payload(action_grade=4, recommended_action="continue_operation")
-        )
-
-
-def test_rejects_state_derived_from_grade_transformation() -> None:
-    # The contract must never accept a grade-driven state conversion: a grade-4
-    # result still has to declare fault explicitly.
+def test_rejects_state_derived_from_action_transformation() -> None:
+    # The contract must never accept an action-string as a state: it must be
+    # declared explicitly as normal/fault.
     with pytest.raises(ValueError, match="normal or fault"):
-        normalize_bearing_result(
-            payload(
-                bearing_state="shutdown",
-                action_grade=4,
-                recommended_action="shutdown",
-            )
-        )
+        normalize_bearing_result(payload(bearing_state="shutdown"))
 
 
 def test_preserves_model_audit_fields_without_conflict_role() -> None:
@@ -180,8 +148,6 @@ def test_two_senders_of_one_window_share_group_key() -> None:
 def test_rejects_out_of_range_numeric_fields() -> None:
     with pytest.raises(ValueError, match="confidence"):
         normalize_bearing_result(payload(confidence=1.5))
-    with pytest.raises(ValueError, match="action_grade"):
-        normalize_bearing_result(payload(action_grade=5, recommended_action="x"))
     with pytest.raises(ValueError, match="window_end_sequence"):
         normalize_bearing_result(
             payload(window_start_sequence=5, window_end_sequence=4)
@@ -242,7 +208,6 @@ def test_scoring_fields_are_merged_into_normalized_result() -> None:
     assert result["action_scorer_version"] == "action_scorer_v1"
     assert result["action_level"] == 0
     assert result["scored_action"] == "continue_operation"
-    assert result["scored_action_grade"] == 0
     assert set(result["normalized_class_probabilities"]) == {
         "healthy",
         "outer_ring_damage",
