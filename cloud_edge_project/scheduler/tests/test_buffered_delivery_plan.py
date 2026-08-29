@@ -9,6 +9,7 @@
 重试等旁路不能绕过门槛；Sender 沿用调度重试机制等待网络恢复。
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,46 @@ def test_delivery_plan_rejects_link_below_buffered_minimum():
     assert captured.value.status_code == 503
     assert captured.value.details["retryable"] is True
     assert captured.value.details["available_mbps"] == 0.5
+
+
+def test_same_run_reservations_force_two_senders_onto_different_edges():
+    repository = SimpleNamespace(
+        assigned_edge_node_ids=lambda _run_id, *, exclude_task_id: set()
+    )
+    scheduler = AssignmentScheduler(
+        SimpleNamespace(),
+        repository,
+        edge_client=SimpleNamespace(),
+    )
+    nodes = {
+        edge_id: SimpleNamespace(config=SimpleNamespace(edge_node_id=edge_id))
+        for edge_id in ("edge_01", "edge_02")
+    }
+
+    def rank(_request, *, excluded_edge_node_ids, **_kwargs):
+        return [
+            SimpleNamespace(state=nodes[edge_id])
+            for edge_id in ("edge_01", "edge_02")
+            if edge_id not in excluded_edge_node_ids
+        ]
+
+    scheduler._rank_candidates = rank
+    common = {"run_id": "run_shared", "expected_duration_ms": 4_000}
+    first = scheduler._select_and_reserve(
+        common | {"task_id": "sd_01_tk_0001"},
+        deadline=time.monotonic() + 1,
+        excluded_edge_node_ids=frozenset(),
+        pinned_edge_node_id=None,
+    )
+    second = scheduler._select_and_reserve(
+        common | {"task_id": "sd_02_tk_0001"},
+        deadline=time.monotonic() + 1,
+        excluded_edge_node_ids=frozenset(),
+        pinned_edge_node_id=None,
+    )
+
+    assert first.config.edge_node_id == "edge_01"
+    assert second.config.edge_node_id == "edge_02"
 
 
 def test_assigned_task_retry_cannot_bypass_buffered_minimum():

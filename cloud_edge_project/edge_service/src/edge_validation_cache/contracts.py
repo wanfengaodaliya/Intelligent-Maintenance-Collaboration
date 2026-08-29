@@ -72,3 +72,4 @@ class ContextSlotSnapshot:
     received_at_ns: int
     cache_status: str
     raw_packet_ref: Optional[RawPacketRef]
+    run_id: Optional[str] = None

@@ -8,9 +8,8 @@
     [int]$EdgeModelTotalTimeoutMs = 20000,
     [int]$SummaryWindowTimeoutSeconds = 40,
     [int]$ExpectedPacketCount = 80,
-    # 2：正式默认（Summary 等待 bearing_01/02，云端仲裁合同只接受两轴承）；
-    # 3：旧三轴承模式，Summary 已不支持 bearing_03，仅保留参数兼容。
-    [ValidateSet(2, 3)]
+    # 当前正式合同固定为双 Sender / 双轴承；Summary 和云端仲裁均只接受 bearing_01/02。
+    [ValidateSet(2)]
     [int]$SenderCount = 2,
     # 每个健康门的统一总超时（秒），每 2 秒轮询一次。
     [int]$HealthTimeoutSeconds = 180
@@ -324,7 +323,7 @@ Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
 
 $summaryDb = Join-Path $ExperimentData "summary_service.db"
 $summaryLlmEnabled = if ($SkipLLM) { "false" } else { "true" }
-$summaryExpectedBearingIds = if ($SenderCount -eq 2) { "bearing_01,bearing_02" } else { "bearing_01,bearing_02,bearing_03" }
+$summaryExpectedBearingIds = "bearing_01,bearing_02"
 $summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_WINDOW_TIMEOUT_SECONDS='$SummaryWindowTimeoutSeconds'; `$env:SUMMARY_EXPECTED_BEARING_IDS='$summaryExpectedBearingIds'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='http://127.0.0.1:8005'; $CondaActivatePrefix python -m uvicorn summary_service.app:app --host 127.0.0.1 --port 8006"
 Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
 

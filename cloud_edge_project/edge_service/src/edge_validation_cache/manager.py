@@ -81,6 +81,7 @@ class _ContextSlot:
     end_generate_timestamp_ns: Optional[int]
     received_at_ns: int
     cache_status: str
+    run_id: Optional[str] = None
     raw_packet_ref: Optional[RawPacketRef] = None
 
     def snapshot(self) -> ContextSlotSnapshot:
@@ -509,6 +510,11 @@ class EdgeValidationCache:
                 INVALID_FIELD_TYPE, "sequence_number", _actual(sequence)
             )
         identity["sequence_number"] = sequence
+        run_id = packet.get("run_id")
+        if run_id is not None:
+            if not isinstance(run_id, str) or not run_id.strip():
+                raise _ValidationError(INVALID_FIELD_TYPE, "run_id", _actual(run_id))
+            identity["run_id"] = run_id.strip()
         return identity
 
     def _validate_data(

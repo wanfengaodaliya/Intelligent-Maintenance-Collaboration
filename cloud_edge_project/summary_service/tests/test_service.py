@@ -20,12 +20,10 @@ def bearing_result(
     state: str = "normal",
     action_level: int = 0,
     *,
-    run_id: str | None = None,
+    run_id: str = "run_01",
 ) -> dict:
     suffix = bearing_id[-2:]
-    result_id = (
-        f"result_{run_id}_{suffix}" if run_id else f"result_{suffix}"
-    )
+    result_id = f"result_{run_id}_{suffix}"
     probabilities, risk_level = LEVEL_PROBS[action_level]
     return {
         "result_id": result_id,
@@ -246,7 +244,12 @@ def test_different_runs_do_not_share_windows(tmp_path):
         bearing_result("bearing_01", "edge_01", "fault", 3, run_id="run_02")
     )
     assert second is None
+    second = service.ingest(
+        bearing_result("bearing_02", "edge_02", "fault", 3, run_id="run_02")
+    )
+    assert second is not None
 
     results = repository.list_window_results()
-    assert len(results) == 1
-    assert results[0]["run_id"] == "run_01"
+    assert len(results) == 2
+    assert {result["run_id"] for result in results} == {"run_01", "run_02"}
+    assert len({result["summary_window_id"] for result in results}) == 2

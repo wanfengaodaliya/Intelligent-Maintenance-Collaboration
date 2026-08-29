@@ -41,6 +41,7 @@ def _binary_packet() -> bytes:
         sequence_number=1,
         data=_signals(),
         end_generate_timestamp_ns=1,
+        run_id="run_01",
     )
     return serialize_packet(packet)
 

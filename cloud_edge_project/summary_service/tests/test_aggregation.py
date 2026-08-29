@@ -24,7 +24,7 @@ def bearing(
     state: str,
     action_level: int,
     *,
-    run_id: str | None = None,
+    run_id: str = "run_01",
 ) -> dict:
     suffix = bearing_id[-2:]
     probabilities, risk_level = LEVEL_PROBS[action_level]

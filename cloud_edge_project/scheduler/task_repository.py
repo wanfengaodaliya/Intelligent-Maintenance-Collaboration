@@ -63,7 +63,7 @@ class TaskRepository:
                     "items": [],
                 }
             rows = connection.execute(
-                """SELECT task_id,device_id,sender_id,bearing_id,
+                """SELECT task_id,device_id,run_id,sender_id,bearing_id,
                           assignment_status,edge_node_id,assigned_at_ns,failure_code
                    FROM task_assignment
                    WHERE created_timestamp_ns=?
@@ -77,6 +77,23 @@ class TaskRepository:
             "device_id": device_ids.pop() if len(device_ids) == 1 else None,
             "items": items,
         }
+
+    def assigned_edge_node_ids(
+        self,
+        run_id: str,
+        *,
+        exclude_task_id: str,
+    ) -> set[str]:
+        """Return edges already assigned to peer senders in the same run."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT edge_node_id FROM task_assignment "
+                "WHERE run_id=? AND task_id<>? AND assignment_status='ASSIGNED' "
+                "AND edge_node_id IS NOT NULL",
+                (run_id, exclude_task_id),
+            ).fetchall()
+        return {str(row["edge_node_id"]) for row in rows}
 
     def retry_constraints(self, task_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -124,13 +141,14 @@ class TaskRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "INSERT OR IGNORE INTO task_assignment("
-                "task_id,device_id,sender_id,bearing_id,bearings_json,packet_size_bytes,"
+                "task_id,device_id,run_id,sender_id,bearing_id,bearings_json,packet_size_bytes,"
                 "expected_packet_count,expected_duration_ms,created_timestamp_ns,"
                 "assignment_status,attempt_count,scheduling_owner,lease_expires_at_ns,updated_at_ns"
-                ") VALUES (?,?,?,?,?,?,?,?,?,'SCHEDULING',0,?,?,?)",
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,'SCHEDULING',0,?,?,?)",
                 (
                     request["task_id"],
                     request["device_id"],
+                    request["run_id"],
                     request["sender_id"],
                     request["bearing_id"],
                     bearings_json,
@@ -152,6 +170,7 @@ class TaskRepository:
             task = dict(row)
             expected_values = {
                 "device_id": request["device_id"],
+                "run_id": request["run_id"],
                 "sender_id": request["sender_id"],
                 "bearing_id": request["bearing_id"],
                 "bearings_json": bearings_json,
@@ -600,6 +619,7 @@ class TaskRepository:
                 CREATE TABLE IF NOT EXISTS task_assignment (
                     task_id TEXT PRIMARY KEY,
                     device_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     sender_id TEXT NOT NULL,
                     bearing_id TEXT,
                     bearings_json TEXT NOT NULL,
@@ -763,6 +783,7 @@ def _ensure_columns(connection: sqlite3.Connection) -> None:
     }
     required = {
         "device_id": "TEXT",
+        "run_id": "TEXT",
         "bearing_id": "TEXT",
         "bearings_json": "TEXT",
         "expected_packet_count": "INTEGER",

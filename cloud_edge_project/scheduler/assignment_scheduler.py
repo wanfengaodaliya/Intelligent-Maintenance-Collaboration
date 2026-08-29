@@ -21,6 +21,7 @@ from common.control_auth import (
     load_control_shared_secret,
     sign_control_request,
 )
+from core.diagnosis_identity import build_run_id
 
 try:
     from .node_registry import EdgeNodeState, LinkSnapshot, NodeRegistry
@@ -49,6 +50,7 @@ ASSIGNMENT_REQUEST_FIELDS = frozenset(
         "created_timestamp_ns",
     }
 )
+OPTIONAL_ASSIGNMENT_REQUEST_FIELDS = frozenset({"run_id"})
 SENDER_ID_PATTERN = re.compile(r"^sender_([0-9]+)$")
 TASK_ID_PATTERN = re.compile(r"^sd_([0-9]+)_tk_([0-9]{4})$")
 EDGE_ACK_TIMEOUT_SECONDS = 0.5
@@ -109,6 +111,7 @@ class RankedNode:
 @dataclass(frozen=True)
 class NodeReservation:
     edge_node_id: str
+    run_id: str
     expires_at: float
 
 
@@ -148,6 +151,8 @@ class EdgeAssignmentClient:
             },
             "dispatched_at_ns": request["created_timestamp_ns"],
         }
+        if request.get("run_id") is not None:
+            payload["input_ref"]["run_id"] = request["run_id"]
         body = encode_control_json(payload)
         secret = (
             load_control_shared_secret()
@@ -458,11 +463,23 @@ class AssignmentScheduler:
     ) -> EdgeNodeState | None:
         with self._allocation_lock:
             reservation_counts = self._active_reservation_counts()
+            peer_edge_node_ids = self.repository.assigned_edge_node_ids(
+                request["run_id"],
+                exclude_task_id=request["task_id"],
+            )
+            peer_edge_node_ids.update(
+                reservation.edge_node_id
+                for task_id, reservation in self._reservations.items()
+                if task_id != request["task_id"]
+                and reservation.run_id == request["run_id"]
+            )
             candidates = self._rank_candidates(
                 request,
                 deadline=deadline,
                 reservation_counts=reservation_counts,
-                excluded_edge_node_ids=excluded_edge_node_ids,
+                excluded_edge_node_ids=frozenset(
+                    set(excluded_edge_node_ids) | peer_edge_node_ids
+                ),
                 pinned_edge_node_id=pinned_edge_node_id,
                 rejection_sink=rejection_sink,
             )
@@ -476,6 +493,7 @@ class AssignmentScheduler:
             )
             self._reservations[request["task_id"]] = NodeReservation(
                 edge_node_id=node.config.edge_node_id,
+                run_id=str(request["run_id"]),
                 expires_at=time.monotonic() + ttl_seconds,
             )
             return node
@@ -538,10 +556,12 @@ class AssignmentScheduler:
         for node in self.registry.registered_nodes():
             if time.monotonic() >= deadline:
                 break
-            if pinned_edge_node_id is not None:
-                if node.config.edge_node_id != pinned_edge_node_id:
-                    continue
-            elif node.config.edge_node_id in excluded_edge_node_ids:
+            if node.config.edge_node_id in excluded_edge_node_ids:
+                continue
+            if (
+                pinned_edge_node_id is not None
+                and node.config.edge_node_id != pinned_edge_node_id
+            ):
                 continue
             if node.status != "ONLINE" or node.report is None:
                 _append_rejection(
@@ -705,9 +725,12 @@ def _append_rejection(
 def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise AssignmentError("INVALID_REQUEST", "request must be an object")
-    if set(payload) != ASSIGNMENT_REQUEST_FIELDS:
+    allowed_fields = ASSIGNMENT_REQUEST_FIELDS | OPTIONAL_ASSIGNMENT_REQUEST_FIELDS
+    if not ASSIGNMENT_REQUEST_FIELDS.issubset(payload) or not set(payload).issubset(
+        allowed_fields
+    ):
         missing = sorted(ASSIGNMENT_REQUEST_FIELDS - set(payload))
-        unexpected = sorted(set(payload) - ASSIGNMENT_REQUEST_FIELDS)
+        unexpected = sorted(set(payload) - allowed_fields)
         details: list[str] = []
         if missing:
             details.append(f"missing fields: {', '.join(missing)}")
@@ -743,6 +766,19 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             "INVALID_REQUEST",
             f"expected_packet_count must equal {configured_packet_count}",
         )
+    created_timestamp_ns = _positive_int(
+        payload.get("created_timestamp_ns"), "created_timestamp_ns"
+    )
+    expected_run_id = build_run_id(
+        device_id=device_id,
+        batch_created_timestamp_ns=created_timestamp_ns,
+    )
+    run_id = payload.get("run_id", expected_run_id)
+    if not isinstance(run_id, str) or run_id.strip() != expected_run_id:
+        raise AssignmentError(
+            "INVALID_REQUEST",
+            "run_id must match device_id and created_timestamp_ns",
+        )
     return {
         "device_id": device_id,
         "sender_id": sender_id,
@@ -755,9 +791,8 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         "expected_duration_ms": _positive_int(
             payload.get("expected_duration_ms"), "expected_duration_ms"
         ),
-        "created_timestamp_ns": _positive_int(
-            payload.get("created_timestamp_ns"), "created_timestamp_ns"
-        ),
+        "created_timestamp_ns": created_timestamp_ns,
+        "run_id": expected_run_id,
     }
 
 

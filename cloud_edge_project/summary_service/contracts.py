@@ -43,15 +43,13 @@ def build_summary_window_id(
     )
 
 
-def _normalize_run_id(payload: Mapping[str, Any]) -> str | None:
+def _normalize_run_id(payload: Mapping[str, Any]) -> str:
     value = payload.get("run_id")
-    if value is None:
-        return None
     if not isinstance(value, str):
-        raise ValueError("run_id must be a string when present")
+        raise ValueError("run_id must be a non-empty string")
     stripped = value.strip()
     if not stripped:
-        return None
+        raise ValueError("run_id must be a non-empty string")
     if len(stripped) > 128:
         raise ValueError("run_id must not exceed 128 characters")
     return stripped
@@ -86,6 +84,7 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "bearing_id",
         "sender_id",
         "edge_node_id",
+        "run_id",
         "decision_round_id",
         "window_start_sequence",
         "window_end_sequence",

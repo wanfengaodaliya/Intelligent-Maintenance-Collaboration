@@ -20,6 +20,7 @@ class DiagnosisWindow:
     task_id: str
     bearing_id: str
     sender_id: str
+    run_id: str | None
     window_start_sequence: int
     window_end_sequence: int
     window_start_ns: int
@@ -91,6 +92,7 @@ class DiagnosisWindowAssembler:
                 task_id=identity.task_id,
                 bearing_id=identity.bearing_id,
                 sender_id=identity.sender_id,
+                run_id=packets[0].get("run_id"),
                 window_start_sequence=identity.window_start_sequence,
                 window_end_sequence=identity.window_end_sequence,
                 window_start_ns=packets[0]["start_generate_timestamp_ns"],
@@ -159,6 +161,8 @@ def _normalize_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_compatible(first: Mapping[str, Any], current: Mapping[str, Any]) -> None:
+    if current.get("run_id") != first.get("run_id"):
+        raise DiagnosisWindowError("packet run_id does not match")
     if current["start_generate_timestamp_ns"] != first["end_generate_timestamp_ns"] + (current["sequence_number"] - first["sequence_number"] - 1) * (first["end_generate_timestamp_ns"] - first["start_generate_timestamp_ns"]):
         raise DiagnosisWindowError("packet timestamps are not contiguous")
     if set(current["data"]) != set(first["data"]):

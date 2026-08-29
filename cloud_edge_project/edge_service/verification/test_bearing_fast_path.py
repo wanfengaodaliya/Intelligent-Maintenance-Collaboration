@@ -49,6 +49,7 @@ def _window_pair():
     packet = {
         "device_id": "machine_01", "task_id": "task_001", "bearing_id": "bearing_a",
         "sender_id": "sender_a", "packet_id": "packet_001", "sequence_number": 1,
+        "run_id": "run_01",
         "start_generate_timestamp_ns": 0, "end_generate_timestamp_ns": 50_000_000,
         "data": {"vibration": {"sample_rate_hz": 64_000, "values": []}},
     }
@@ -93,6 +94,7 @@ def test_fast_path_publishes_from_active_window() -> None:
     assert result.window_start_sequence == 1
     assert result.window_end_sequence == 1
     assert result.bearing_state == "fault"
+    assert result.run_id == "run_01"
 
 
 def test_fast_path_skips_without_edge_output() -> None:

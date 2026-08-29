@@ -20,6 +20,7 @@ def payload(**overrides) -> dict:
         "bearing_id": "bearing_01",
         "sender_id": "sender_01",
         "edge_node_id": "edge_01",
+        "run_id": "run_01",
         "decision_round_id": "round_01",
         "window_start_sequence": 1,
         "window_end_sequence": 3,
@@ -100,12 +101,22 @@ def test_rejects_invalid_class_probabilities() -> None:
         )
 
 
-def test_run_id_is_optional_but_typed() -> None:
-    assert normalize_bearing_result(payload())["run_id"] is None
-    assert normalize_bearing_result(payload(run_id=""))["run_id"] is None
-    assert normalize_bearing_result(payload(run_id="run_01"))["run_id"] == "run_01"
+@pytest.mark.parametrize("run_id", [None, "", "   ", 123])
+def test_run_id_is_required_and_non_empty(run_id) -> None:
     with pytest.raises(ValueError, match="run_id"):
-        normalize_bearing_result(payload(run_id=123))
+        normalize_bearing_result(payload(run_id=run_id))
+
+
+def test_missing_run_id_is_rejected() -> None:
+    raw = payload()
+    del raw["run_id"]
+
+    with pytest.raises(ValueError, match="run_id"):
+        normalize_bearing_result(raw)
+
+
+def test_run_id_is_normalized() -> None:
+    assert normalize_bearing_result(payload(run_id=" run_01 "))["run_id"] == "run_01"
 
 
 def test_summary_window_id_is_stable_and_run_scoped() -> None:

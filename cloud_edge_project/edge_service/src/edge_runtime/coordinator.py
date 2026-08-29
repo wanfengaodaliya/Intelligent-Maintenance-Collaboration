@@ -961,6 +961,11 @@ def _edge_bearing_result(
         created_at_ns=completion.finished_at_ns,
         diagnosis_label=completion.edge.diagnosis_label,
         class_probabilities=completion.edge.class_probabilities,
+        run_id=(
+            diagnosis_window.run_id
+            if diagnosis_window is not None
+            else raw_packet.get("run_id")
+        ),
     )
 
 
@@ -987,6 +992,7 @@ def _merge_diagnosis_window(window: DiagnosisWindow) -> dict[str, Any]:
         "task_id": window.task_id,
         "bearing_id": window.bearing_id,
         "sender_id": window.sender_id,
+        "run_id": window.run_id,
         "packet_id": last["packet_id"],
         "sequence_number": window.window_end_sequence,
         "start_generate_timestamp_ns": window.window_start_ns,

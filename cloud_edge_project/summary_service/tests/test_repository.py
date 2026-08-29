@@ -42,6 +42,7 @@ def bearing(
             "bearing_id": bearing_id,
             "sender_id": f"sender_{suffix}",
             "edge_node_id": edge_node_id,
+            "run_id": "run_01",
             "decision_round_id": f"round_{suffix}",
             "window_start_sequence": seq,
             "window_end_sequence": seq,

@@ -44,6 +44,7 @@ def _packet() -> dict:
         sequence_number=1,
         data=_signals(),
         end_generate_timestamp_ns=1,
+        run_id="run_01",
     )
 
 
@@ -55,6 +56,7 @@ def test_sender_binary_packet_round_trips_through_edge_decoder() -> None:
 
     assert payload.startswith(b"IMC1")
     assert decoded["packet_id"] == packet["packet_id"]
+    assert decoded["run_id"] == "run_01"
     for signal_name, signal in packet["data"].items():
         if signal_name == "bearing_module_temperature_c":
             assert decoded["data"][signal_name] == signal
@@ -81,3 +83,18 @@ def test_sender_rejects_non_finite_float32_values() -> None:
 
     with pytest.raises(PacketValidationError, match="finite float32"):
         serialize_packet(packet)
+
+
+@pytest.mark.parametrize("run_id", [None, "", "   "])
+def test_sender_requires_a_non_empty_run_id(run_id) -> None:
+    with pytest.raises(PacketValidationError, match="run_id"):
+        build_sensor_packet(
+            device_id="machine_01",
+            task_id="sd_01_tk_0001",
+            bearing_id="bearing_01",
+            sender_id="sender_01",
+            sequence_number=1,
+            data=_signals(),
+            end_generate_timestamp_ns=1,
+            run_id=run_id,
+        )

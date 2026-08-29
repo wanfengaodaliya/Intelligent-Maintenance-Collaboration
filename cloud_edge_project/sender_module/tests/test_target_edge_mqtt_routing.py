@@ -7,15 +7,18 @@
   - 任务摘要正确记录 target_edge_node_id。
 """
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from core.diagnosis_identity import build_run_id
 from sender.config import load_config
 from sender.controller import (
     _mqtt_port_for_target,
     resolve_target_edge_node_id,
+    run_all_senders,
     run_sender_task,
 )
 from sender.mat_reader import SignalWindow
@@ -179,3 +182,31 @@ def test_scheduler_assignment_routes_task_to_matching_proxy_port(
     assert summary["target_topic"] == topic
     assert summary["target_edge_node_id"] == edge_id
     assert summary["task_status"] == "completed"
+
+
+def test_one_sender_batch_uses_one_shared_run_id(tmp_path):
+    config = replace(_local_config(), log_dir=tmp_path / "logs")
+    observed_batch_timestamps: list[int] = []
+
+    def runner(config, node, source_path, *, realtime, log_sink, batch_created_timestamp_ns):
+        observed_batch_timestamps.append(batch_created_timestamp_ns)
+        return {
+            "sender_id": node.sender_id,
+            "run_id": build_run_id(
+                device_id=config.device_id,
+                batch_created_timestamp_ns=batch_created_timestamp_ns,
+            ),
+        }
+
+    results = run_all_senders(
+        config,
+        {
+            node.sender_id: tmp_path / f"{node.sender_id}.mat"
+            for node in config.senders
+        },
+        realtime=False,
+        runner=runner,
+    )
+
+    assert len(set(observed_batch_timestamps)) == 1
+    assert len({result["run_id"] for result in results}) == 1

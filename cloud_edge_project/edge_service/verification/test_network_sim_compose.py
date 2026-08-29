@@ -146,6 +146,13 @@ def test_canonical_startup_pins_benchmark_runtime_and_records_it() -> None:
     assert '"run_config.json"' in text
 
 
+def test_canonical_startup_only_accepts_the_dual_bearing_contract() -> None:
+    text = START_PROJECT_PATH.read_text(encoding="utf-8-sig")
+    assert "[ValidateSet(2)]" in text
+    assert '$summaryExpectedBearingIds = "bearing_01,bearing_02"' in text
+    assert "bearing_03" not in text
+
+
 def test_startup_can_skip_cloud_update_llm_without_disabling_summary_llm() -> None:
     text = START_PROJECT_PATH.read_text(encoding="utf-8-sig")
     assert "[switch]$SkipCloudUpdateLLM" in text

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from core.diagnosis_identity import build_run_id
 from sender.config import SenderConfig, SenderNodeConfig
 from sender.ids import TaskIdStore
 from sender.local_logs import LocalLogSink
@@ -77,6 +78,7 @@ def _summary(
     delivery_mode: str | None = None,
     delivery_interval_ms: int | None = None,
     available_throughput_mbps: float | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     # estimated_delivery_duration_ms 由缓传间隔和包数推导；调度阶段直接失败时为 None。
     estimated_delivery_duration_ms = (
@@ -108,6 +110,8 @@ def _summary(
         "estimated_delivery_duration_ms": estimated_delivery_duration_ms,
         "error_code": error_code,
     }
+    if run_id is not None:
+        record["run_id"] = run_id
     if error_message is not None:
         record["error_message"] = error_message
     return record
@@ -147,6 +151,10 @@ def run_sender_task(
     )
     started_ns = time.time_ns()
     created_ns = batch_created_timestamp_ns or started_ns
+    run_id = build_run_id(
+        device_id=config.device_id,
+        batch_created_timestamp_ns=created_ns,
+    )
     record = load_mat_record(source_path)
     windows = record.windows(
         duration_ms=config.packet_interval_ms,
@@ -166,6 +174,7 @@ def run_sender_task(
         sequence_number=first_window.sequence_number,
         data=first_window.data,
         end_generate_timestamp_ns=started_ns,
+        run_id=run_id,
     )
     schedule_request = {
         "device_id": config.device_id,
@@ -176,6 +185,7 @@ def run_sender_task(
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
         "created_timestamp_ns": created_ns,
+        "run_id": run_id,
     }
 
     try:
@@ -195,6 +205,7 @@ def run_sender_task(
             realtime=realtime,
             error_code="SCHEDULER_REQUEST_FAILED",
             error_message=str(exc),
+            run_id=run_id,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
@@ -251,6 +262,7 @@ def run_sender_task(
                     started_ns
                     + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
                 ),
+                run_id=run_id,
             )
             source_store.save(
                 packet_id=packet["packet_id"],
@@ -287,6 +299,7 @@ def run_sender_task(
             delivery_mode=assignment.delivery_mode,
             delivery_interval_ms=assignment.delivery_interval_ms,
             available_throughput_mbps=assignment.available_throughput_mbps,
+            run_id=run_id,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
@@ -312,6 +325,7 @@ def run_sender_task(
         delivery_mode=assignment.delivery_mode,
         delivery_interval_ms=assignment.delivery_interval_ms,
         available_throughput_mbps=assignment.available_throughput_mbps,
+        run_id=run_id,
     )
     sink.write_task(summary)
     return summary
@@ -380,6 +394,10 @@ def run_all_senders(
                     "estimated_delivery_duration_ms": None,
                     "error_code": "SENDER_TASK_EXCEPTION",
                     "error_message": str(exc),
+                    "run_id": build_run_id(
+                        device_id=config.device_id,
+                        batch_created_timestamp_ns=batch_created_timestamp_ns,
+                    ),
                 }
                 sink.write_task(summary)
             summaries.append(summary)
