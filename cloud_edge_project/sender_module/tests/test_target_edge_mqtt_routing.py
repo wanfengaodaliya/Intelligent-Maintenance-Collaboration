@@ -199,11 +199,13 @@ def test_scheduler_assignment_routes_task_to_matching_proxy_port(
         "sender_id": node.sender_id,
         "task_id": "sd_%s_tk_0001" % node.sender_id[-2:],
         "bearing_id": node.bearing_id,
+        "run_id": schedule_request["run_id"],
         "packet_size_bytes": schedule_request["packet_size_bytes"],
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
         "created_timestamp_ns": schedule_request["created_timestamp_ns"],
     }
+    assert schedule_request["run_id"].startswith("run_")
     assert [packet["sequence_number"] for packet in publisher.packets] == list(
         range(1, config.expected_packet_count + 1)
     )

@@ -128,6 +128,7 @@ class BearingInputAdapter:
         sequence_number: int,
         window: InputWindow,
         end_generate_timestamp_ns: int,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         return build_sensor_packet(
             device_id=device_id,
@@ -137,6 +138,7 @@ class BearingInputAdapter:
             sequence_number=sequence_number,
             data=window.data,
             end_generate_timestamp_ns=end_generate_timestamp_ns,
+            run_id=run_id,
         )
 
     def next_window(

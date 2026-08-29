@@ -39,9 +39,39 @@ Copy-Item .env.example .env
 .\start_project.ps1 -CheckConfig
 # 正式启动：
 .\start_project.ps1
-# 如果暂时不启动可选 LLM：
+# 如果暂时不启动可选 LLM（本机无 llama-server / Qwen 时推荐）：
 .\start_project.ps1 -SkipLLM
 ```
+
+Edge 镜像策略（默认不重建、不下载）：
+
+- 启动 Edge 时默认以 `--no-build` 复用本机已有的
+  `cloud-edge/edge-service:latest`；只要镜像存在，就不会触发 pip install、
+  PyTorch/CUDA 下载或镜像重建。
+- 仅当你显式传 `-RebuildEdgeImage` 时，Edge stage 才会执行 `docker compose
+  ... up -d --build` 从当前源码重建镜像。重建前请先确认网络与编译资源可用。
+- 若镜像不存在，脚本会给出可复制的构建命令并退出，不会自动 `pull` 或下载。
+- 若镜像内的 `EDGE_BUILD_REVISION` 与当前源码 revision 不一致，脚本会打印警告
+  （可选择 `.\start_project.ps1 -RebuildEdgeImage` 有意重建），但不会静默运行
+  或自动构建。
+
+端口占用与进程归属（默认“发现占用即报错并退出”）：
+
+- 启动 Scheduler / Cloud / Summary（8003/8004/8006）以及 Edge（8001/8002）前
+  脚本会先探测端口。默认情况下，只要端口被占用就打印 PID、进程名和安全的处理
+  提示并退出，绝不杀死无法确认归属于本项目的进程。
+- 若占用进程是上一次遗留的本项目服务，可显式传 `-RestartHostServices` 让脚本
+  先校验进程确实属于本项目（按模块名匹配）再停止并重启。
+
+各开关汇总：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-CheckConfig` | 只读预检：Docker、环境变量、镜像、模型、端口占用，不起服务 |
+| `-RebuildEdgeImage` | 允许 Edge 从源码 `--build` 重建镜像（默认禁止） |
+| `-SkipLLM` | 跳过可选 LLM（Summary 建议 / Cloud 模型更新），核心链路以固定模板运行 |
+| `-SkipCloudUpdateLLM` | 仅关闭 Cloud 模型更新的 LLM 建议，核心链路与 Summary 不受影响 |
+| `-RestartHostServices` | 只允许停止并重启用占用端口的本项目遗留进程（按模块校验归属） |
 
 Sender 数量、身份和链路使用 `cloud_edge_project/sender_module/config/local.json`；
 Network 的链路监听/上游与 Reporter 周期使用

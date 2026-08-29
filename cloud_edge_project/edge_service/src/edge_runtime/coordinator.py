@@ -961,6 +961,7 @@ def _edge_bearing_result(
         created_at_ns=completion.finished_at_ns,
         diagnosis_label=completion.edge.diagnosis_label,
         class_probabilities=completion.edge.class_probabilities,
+        run_id=raw_packet.get("run_id"),
     )
 
 

@@ -907,7 +907,7 @@ function renderDeviceVerdict() {
 async function refreshModelUpdates() {
   let items = [];
   try {
-    items = (await Api.get("cloud/model-update/recent?limit=20")) || [];
+    items = (await Api.get("cloud/cloud/model-update/recent?limit=20")) || [];
   } catch (e) {
     el("muSummaryHint").textContent = "云端接口不可用：" + (e && e.message ? e.message : "等待 Cloud 启动");
   }

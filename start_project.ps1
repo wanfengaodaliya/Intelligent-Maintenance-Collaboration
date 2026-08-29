@@ -4,6 +4,13 @@
     [switch]$CheckConfig,
     [switch]$SkipLLM,
     [switch]$SkipCloudUpdateLLM,
+    # 默认使用已存在的 cloud-edge/edge-service:latest，绝不 build/pull。
+    # 仅在显式传入 -RebuildEdgeImage 时，Stage 4 才以 --build 重新构建镜像。
+    [switch]$RebuildEdgeImage,
+    # 默认在 Stage 2 前发现 Scheduler/Cloud/Summary 端口被占用就报错并退出，
+    # 不清杀任何无法确认归属的进程。显式传入此开关时，才允许清理确实属于
+    # 本项目的旧 uvicorn 进程后重启宿主机服务。
+    [switch]$RestartHostServices,
     [int]$EdgeModelInferenceWorkers = 2,
     [int]$EdgeModelQueueCapacity = 160,
     [int]$EdgeModelQueueWaitMs = 15000,
@@ -24,8 +31,9 @@
 #            （HTTP ready，Cloud 模型已加载，Summary 已连接 MQTT）。
 #   Stage 3  LLM 服务：Summary 建议 LLM（0.5B @ 8005）+ 云端模型更新 LLM
 #            （3B @ 6006）；-SkipLLM 时跳过并禁用 Summary LLM 调用。
-#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，自动构建当前源码），
-#            轮询 /health/ready（Docker HEALTHCHECK 仅代表 liveness）。
+#   Stage 4  edge_01 + edge_02 容器（compose.multi-edge.yml，默认 --no-build 复用
+#            已构建镜像；仅 -RebuildEdgeImage 时 --build），轮询 /health/ready
+#            （Docker HEALTHCHECK 仅代表 liveness）。
 #   全部通过后才允许 Sender 开始发送。
 # 任一健康门失败：打印对应容器/进程状态与最近日志并终止，不依赖 restart 策略排序。
 
@@ -201,7 +209,8 @@ if ([string]::IsNullOrWhiteSpace($env:EDGE_CONTROL_SHARED_SECRET) -or
 }
 
 Write-Host "=== Project Root: $ProjectRoot ==="
-Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d --build) ==="
+Write-Host "=== Edge mode: containers only (compose.multi-edge.yml up -d)" +
+    "$(if ($RebuildEdgeImage) { ' --build (RebuildEdgeImage)' } else { ' --no-build' }) ==="
 Write-Host "=== Sender mode: $SenderCount senders ==="
 Write-Host "=== Experiment: $ExperimentId ==="
 
@@ -260,6 +269,110 @@ function Show-EdgeDiagnostics {
     docker compose -f compose.multi-edge.yml ps
     docker compose -f compose.multi-edge.yml logs --tail 50 edge_01 edge_02
     Pop-Location
+}
+
+# 查询占用某个 TCP 监听端口的进程 PID 与进程名；无占用时返回空。
+# 注意：这里只读取归属信息，绝不主动杀死进程。
+function Get-PortOwner {
+    param([string]$HostName, [int]$Port)
+    # 必须查询该端口的所有监听地址；服务可能绑定 0.0.0.0，而健康检查访问 127.0.0.1。
+    $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port `
+        -ErrorAction SilentlyContinue
+    foreach ($conn in $listeners) {
+        $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+        if ($null -ne $proc) {
+            return [PSCustomObject]@{
+                Pid = $proc.Id
+                Name = $proc.ProcessName
+                Path = $proc.Path
+            }
+        }
+    }
+    return $null
+}
+
+# 判断一个进程是否确实属于本项目宿主机服务，避免误杀他人进程。
+# uvicorn 监听者是启动 PowerShell 的子进程，因此同时校验模块与父子关系。
+function Test-OwnedHostProcess {
+    param(
+        [int]$ProcessId,
+        [string]$Module,
+        [int]$ExpectedParentPid = 0
+    )
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" `
+            -ErrorAction SilentlyContinue
+        $cmd = $process.CommandLine
+    } catch {
+        $process = $null
+        $cmd = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
+    $uvicornTarget = '(?i)(^|\s)-m\s+uvicorn\s+' + [regex]::Escape($Module) + ':app(\s|$)'
+    if ($cmd -notmatch $uvicornTarget) { return $false }
+
+    # Windows venv 启动器可能形成 PowerShell -> venv python -> runtime python，
+    # 所以在有限层级内查找启动 PowerShell，而不是只比较直接父进程。
+    $ancestorPid = [int]$process.ParentProcessId
+    $expectedProjectLocation = "Set-Location '$CloudEdge'"
+    for ($depth = 0; $depth -lt 6 -and $ancestorPid -gt 0; $depth++) {
+        if ($ExpectedParentPid -gt 0 -and $ancestorPid -eq $ExpectedParentPid) {
+            return $true
+        }
+        try {
+            $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId=$ancestorPid" `
+                -ErrorAction SilentlyContinue
+        } catch { $ancestor = $null }
+        if ($null -eq $ancestor) { break }
+
+        $ancestorCmd = $ancestor.CommandLine
+        if ($ExpectedParentPid -le 0 `
+            -and $ancestor.Name -in @('powershell.exe', 'pwsh.exe') `
+            -and -not [string]::IsNullOrWhiteSpace($ancestorCmd) `
+            -and $ancestorCmd.IndexOf($expectedProjectLocation, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 `
+            -and $ancestorCmd -match $uvicornTarget) {
+            return $true
+        }
+        $ancestorPid = [int]$ancestor.ParentProcessId
+    }
+    return $false
+}
+
+# 一个主机端口的健康门（Problem 2）：
+#   默认（未传 -RestartHostServices）：端口一旦被任何进程占用就报错并退出，
+#   输出 PID/进程名/路径与安全提示，绝不静默信任占用者。
+#   显式 -RestartHostServices：仅在占用进程确实属于本项目时才允许停止并返回 true；
+#   无法确认归属时仍报错退出。
+function Assert-HostPortFree {
+    param([string]$ServiceName, [string]$HostName, [int]$Port, [string]$Module)
+    $owner = Get-PortOwner -HostName $HostName -Port $Port
+    if ($null -eq $owner) { return }
+    if ($CheckConfig) {
+        Write-Host "  $ServiceName port $Port is occupied by PID $($owner.Pid)" +
+            " ($($owner.Name)); read-only preflight will not stop it"
+        exit 1
+    }
+    if ($RestartHostServices) {
+        if (Test-OwnedHostProcess -ProcessId $owner.Pid -Module $Module) {
+            Write-Host "  $ServiceName port $Port occupied by our own $($owner.Name)" +
+                " PID $($owner.Pid)); stopping it (RestartHostServices) ..."
+            Stop-Process -Id $owner.Pid -Force -ErrorAction SilentlyContinue
+            return
+        }
+        Write-Host "  $ServiceName port $Port is occupied by PID $($owner.Pid)" +
+            " ($($owner.Name)) at $($owner.Path); it does not belong to this project."
+        Write-Host ("  Safe handling: close the process manually, or run: " +
+            "Stop-Process -Id $($owner.Pid) -Force")
+        exit 1
+    }
+    Write-Host "  $ServiceName port $Port is already in use."
+    Write-Host "  Occupied by PID $($owner.Pid) - $($owner.Name) ($($owner.Path))"
+    Write-Host "  This may be a leftover host process from a previous run."
+    Write-Host "  The script will NOT kill processes it cannot confirm as this project's."
+    Write-Host "  Safe options:"
+    Write-Host "    - Stop the occupying process manually (Stop-Process -Id $($owner.Pid) -Force)"
+    Write-Host "    - Re-run with -RestartHostServices to stop this project's own stale services"
+    exit 1
 }
 
 # ---------- Pre-checks ----------
@@ -344,9 +457,34 @@ Write-Host "  H5 OK (active: $activeVersion)"
 Write-Host "[Check] Edge image cloud-edge/edge-service:latest ..."
 $null = docker image inspect cloud-edge/edge-service:latest 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Image missing. Build it first:"
-    Write-Host "    cd $EdgeService ; docker compose -f compose.multi-edge.yml build"
-    exit 1
+    # 镜像不存在时：默认绝不自动构建。给出清晰、可复制的构建命令后退出。
+    Write-Host "  Image not found. It must be built once before first startup."
+    if ($RebuildEdgeImage) {
+        Write-Host "  Building it now because -RebuildEdgeImage was passed ..."
+    } else {
+        Write-Host "  Build it manually first (this also downloads PyTorch/CUDA deps):"
+        Write-Host "    cd $EdgeService ; docker compose -f compose.multi-edge.yml build"
+        Write-Host "  Then re-run start_project.ps1. Or pass -RebuildEdgeImage to build now."
+        exit 1
+    }
+} else {
+    Write-Host "  Image present; using --no-build unless -RebuildEdgeImage is passed."
+}
+
+# 镜像版本 vs 当前源码版本的一致性提示（不静默、不自动构建）。
+if ($LASTEXITCODE -eq 0 -and -not $RebuildEdgeImage) {
+    try {
+        $imageRevision = ((docker image inspect cloud-edge/edge-service:latest `
+            --format '{{ index .Config.Env }}' 2>$null) | Out-String)
+        $imageRevMatch = [regex]::Match($imageRevision, 'EDGE_BUILD_REVISION=([^\s"]*)')
+        $imageRev = if ($imageRevMatch.Success) { $imageRevMatch.Groups[1].Value } else { "unknown" }
+    } catch { $imageRev = "unknown" }
+    if ($imageRev -ne $gitRevision -and $imageRev -ne "unknown") {
+        Write-Host "  [warn] Edge image EDGE_BUILD_REVISION = $imageRev, source revision = $gitRevision."
+        Write-Host "  The image may be out of date vs current source. Rebuild deliberately with:"
+        Write-Host "    cd $EdgeService ; docker compose -f compose.multi-edge.yml build"
+        Write-Host "    or re-run: .\start_project.ps1 -RebuildEdgeImage"
+    }
 }
 Write-Host "  Image OK"
 
@@ -398,11 +536,17 @@ if (-not $SkipLLM) {
     $lm = $SummaryLlmModelPath
     $cm = $CloudLlmModelPath
     if (-not (Test-Path $lb) -or -not (Test-Path $lm)) {
-        Write-Host "  Summary suggestion LLM not deployed (need llama-server.exe + 0.5B model), use -SkipLLM to skip"
+        Write-Host "  Summary suggestion LLM not deployed (need llama-server.exe + 0.5B model)."
+        Write-Host "  This is OPTIONAL: run with -SkipLLM to start the core link in template mode"
+        Write-Host "  (summary suggestions fall back to fixed Chinese templates), e.g.:"
+        Write-Host "    .\start_project.ps1 -SkipLLM"
         exit 1
     }
     if (-not $SkipCloudUpdateLLM -and -not (Test-Path $cm)) {
-        Write-Host "  Cloud model-update LLM not deployed (need 3B model), use -SkipCloudUpdateLLM to skip only it"
+        Write-Host "  Cloud model-update LLM not deployed (need 3B model)."
+        Write-Host "  This is OPTIONAL: add -SkipCloudUpdateLLM to skip only it (the core link"
+        Write-Host "  still runs; model-update proposals fall back to templates), e.g.:"
+        Write-Host "    .\start_project.ps1 -SkipLLM -SkipCloudUpdateLLM"
         exit 1
     }
     Write-Host "[Check] Summary suggestion LLM OK (0.5B)"
@@ -478,41 +622,65 @@ if (-not $stage1) { Show-NetSimDiagnostics; exit 1 }
 
 # ---------- Stage 2: host Scheduler + Cloud + Summary ----------
 Write-Host "`n========== Stage 2/4: Scheduler ($SchedulerPort) + Cloud ($CloudPort) + Summary ($SummaryPort) =========="
+
+# 启动前先确认三个宿主机端口空闲（Problem 2）：默认发现被占用就报错退出，
+# 绝不清杀任何无法确认归属的进程；-RestartHostServices 时才清理本项目的旧进程。
+Assert-HostPortFree -ServiceName "Scheduler" -HostName $SchedulerHost -Port $SchedulerPort -Module "scheduler.api"
+Assert-HostPortFree -ServiceName "Cloud" -HostName $CloudHost -Port $CloudPort -Module "cloud_service.app"
+Assert-HostPortFree -ServiceName "Summary" -HostName $SummaryHost -Port $SummaryPort -Module "summary_service.app"
+
+# 记录本次启动的宿主机服务进程，供健康门确认新进程未提前退出。
+$script:StartedHostPids = @{}
+
 # Scheduler 使用实验独立的 SQLite：持久 scheduler.db 会跨实验残留 task_id/device_id，
 # 造成 TASK_ID_CONFLICT 且污染 stability_score（其读取历史执行记录）。每次实验指向
 # 实验 data 子目录，与 Cloud/Summary 的隔离策略一致。
 $schedulerDb = Join-Path $ExperimentData "scheduler.db"
 $schCmd = "Set-Location '$CloudEdge'; `$env:SCHEDULER_EXPECTED_PACKET_COUNT='$ExpectedPacketCount'; `$env:SCHEDULER_DB_PATH='$schedulerDb'; $PythonLaunchPrefix -m uvicorn scheduler.api:app --host $SchedulerHost --port $SchedulerPort"
-Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd
+$script:StartedHostPids["Scheduler"] = (Start-Process powershell -ArgumentList "-NoExit","-Command",$schCmd -PassThru).Id
 
 $cloudDb = Join-Path $ExperimentData "cloud_review.db"
 $cloudBackend = Get-EnvValue "CLOUD_BACKEND" "moment_light_adapt"
 $cloudMomentDevice = Get-EnvValue "CLOUD_MOMENT_DEVICE" "auto"
 $cloudCmd = "Set-Location '$CloudEdge'; `$env:CLOUD_BACKEND='$cloudBackend'; `$env:CLOUD_MOMENT_DEVICE='$cloudMomentDevice'; `$env:CLOUD_REVIEW_DB_PATH='$cloudDb'; `$env:SCHEDULER_SERVICE_BASE_URL='$CloudSchedulerUrl'; $PythonLaunchPrefix -m uvicorn cloud_service.app:app --host $CloudHost --port $CloudPort"
-Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd
+$script:StartedHostPids["Cloud"] = (Start-Process powershell -ArgumentList "-NoExit","-Command",$cloudCmd -PassThru).Id
 
 $summaryDb = Join-Path $ExperimentData "summary_service.db"
 $summaryLlmEnabled = if ($SkipLLM) { "false" } else { "true" }
 $summaryExpectedBearingIds = "bearing_01,bearing_02"
 $summaryCmd = "Set-Location '$CloudEdge'; `$env:SUMMARY_DATABASE_PATH='$summaryDb'; `$env:SUMMARY_WINDOW_TIMEOUT_SECONDS='$SummaryWindowTimeoutSeconds'; `$env:SUMMARY_EXPECTED_BEARING_IDS='$summaryExpectedBearingIds'; `$env:SUMMARY_SUGGESTION_LLM_ENABLED='$summaryLlmEnabled'; `$env:SUMMARY_SUGGESTION_LLM_BASE_URL='$SummaryLlmBaseUrl'; $PythonLaunchPrefix -m uvicorn summary_service.app:app --host $SummaryHost --port $SummaryPort"
-Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd
+$script:StartedHostPids["Summary"] = (Start-Process powershell -ArgumentList "-NoExit","-Command",$summaryCmd -PassThru).Id
+
+# 健康门必须同时满足：HTTP /health 正常 且 端口监听者确为本项目新进程
+# （命令行含对应模块）且监听者确为本次启动 PowerShell 的子进程。
+function Test-HostedServiceReady {
+    param([string]$Name, [string]$HostName, [int]$Port, [string]$Module)
+    $listener = Get-PortOwner -HostName $HostName -Port $Port
+    if ($null -eq $listener) { return $false }
+    $parentPid = $script:StartedHostPids[$Name]
+    if ($parentPid -and -not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-OwnedHostProcess -ProcessId $listener.Pid -Module $Module `
+        -ExpectedParentPid $parentPid)) { return $false }
+    $health = Get-Json "http://$HealthHost`:$Port/health"
+    if ($null -eq $health -or $health.status -ne "ok") { return $false }
+    if ($Name -eq "Summary" -and $health.mqtt_connected -ne $true) { return $false }
+    return $true
+}
 
 $stage2 = $true
 if (-not (Wait-Gate "Scheduler /health ($SchedulerPort)" {
-    $scheduler = Get-Json "http://$HealthHost`:$SchedulerPort/health"
-    $null -ne $scheduler -and $scheduler.status -eq "ok"
+    Test-HostedServiceReady -Name "Scheduler" -HostName $HealthHost -Port $SchedulerPort -Module "scheduler.api"
 })) { $stage2 = $false }
 if ($stage2 -and -not (Wait-Gate "Cloud /health ($CloudPort, backend loaded)" {
     # Cloud /health 仅在 MOMENT 模型加载完成后返回 200。
-    $cloud = Get-Json "http://$HealthHost`:$CloudPort/health"
-    $null -ne $cloud -and $cloud.status -eq "ok"
+    Test-HostedServiceReady -Name "Cloud" -HostName $HealthHost -Port $CloudPort -Module "cloud_service.app"
 })) { $stage2 = $false }
 if ($stage2 -and -not (Wait-Gate "Summary /health ($SummaryPort, MQTT connected)" {
-    $summary = Get-Json "http://$HealthHost`:$SummaryPort/health"
-    $null -ne $summary -and $summary.status -eq "ok" -and $summary.mqtt_connected -eq $true
+    Test-HostedServiceReady -Name "Summary" -HostName $HealthHost -Port $SummaryPort -Module "summary_service.app"
 })) { $stage2 = $false }
 if (-not $stage2) {
     Write-Host "  Check the Scheduler / Cloud / Summary PowerShell windows above."
+    Write-Host ("  Started host service PIDs: {0}" -f ($script:StartedHostPids | Out-String).Trim())
     exit 1
 }
 
@@ -563,7 +731,15 @@ try {
             exit 1
         }
     }
-    docker compose -f compose.multi-edge.yml up -d --build
+    # Problem 1: 默认复用已构建镜像(--no-build)；仅显式 -RebuildEdgeImage 才构建。
+    # 绝不默认 pull，绝不在镜像已存在时重复下载 PyTorch/CUDA。
+    $edgeUpArgs = @("-f", "compose.multi-edge.yml", "up", "-d")
+    if ($RebuildEdgeImage) {
+        $edgeUpArgs += "--build"
+    } else {
+        $edgeUpArgs += "--no-build"
+    }
+    docker compose @edgeUpArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  Edge compose failed to start"
         Show-EdgeDiagnostics

@@ -24,3 +24,20 @@ def test_scheduler_accepts_explicit_smoke_packet_count(monkeypatch) -> None:
 
     with pytest.raises(AssignmentError, match="must equal 15"):
         validate_assignment_request(_request(80))
+
+
+def test_scheduler_accepts_optional_run_id(monkeypatch) -> None:
+    monkeypatch.setenv("SCHEDULER_EXPECTED_PACKET_COUNT", "80")
+    request = _request(80)
+    request["run_id"] = "run_batch01"
+
+    assert validate_assignment_request(request)["run_id"] == "run_batch01"
+
+
+def test_scheduler_still_rejects_unknown_fields(monkeypatch) -> None:
+    monkeypatch.setenv("SCHEDULER_EXPECTED_PACKET_COUNT", "80")
+    request = _request(80)
+    request["unknown_field"] = "unexpected"
+
+    with pytest.raises(AssignmentError, match="unknown_field"):
+        validate_assignment_request(request)

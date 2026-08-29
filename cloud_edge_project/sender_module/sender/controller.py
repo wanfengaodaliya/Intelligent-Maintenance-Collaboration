@@ -17,6 +17,7 @@ from sender.mqtt_publisher import MqttPublisher
 from sender.scheduler_client import SchedulerClient, SchedulerError
 from bootstrap.scenarios import build_sender_scenario_registry
 from core.scenario_plugin import INPUT_ADAPTER
+from compatibility.bearing_v12.diagnosis_identity import build_run_id
 from compatibility.bearing_v12.scenario_mapper import BEARING_SCENARIO_TYPE
 
 
@@ -90,6 +91,7 @@ def _summary(
     delivery_mode: str | None = None,
     delivery_interval_ms: int | None = None,
     available_throughput_mbps: float | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     # estimated_delivery_duration_ms 由缓传间隔和包数推导；调度阶段直接失败时为 None。
     estimated_delivery_duration_ms = (
@@ -102,6 +104,7 @@ def _summary(
         "sender_id": node.sender_id,
         "bearing_id": node.bearing_id,
         "task_id": task_id,
+        "run_id": run_id,
         "target_topic": target_topic,
         "target_edge_node_id": target_edge_node_id,
         "expected_packet_count": config.expected_packet_count,
@@ -139,6 +142,7 @@ def run_sender_task(
     source_mapping_store: object | None = None,
     input_adapter: SenderInputAdapter | None = None,
     batch_created_timestamp_ns: int | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -162,6 +166,14 @@ def run_sender_task(
     )
     started_ns = time.time_ns()
     created_ns = batch_created_timestamp_ns or started_ns
+    # 一次发送批次内两个 Sender 共享同一个确定性的 run_id（由 device_id 和批次
+    # 开始时间推导）。run_id 与 task_id/device_id/experiment_id 含义不同：它标识
+    # 同一批次的跨服务一致性窗口，贯通 Sender 请求、Edge 结果、Summary 与 Cloud 仲裁。
+    if run_id is None or not run_id.strip():
+        run_id = build_run_id(
+            device_id=config.device_id,
+            batch_created_timestamp_ns=created_ns,
+        )
     prepared_input = adapter.prepare(
         source_path,
         unit_id=node.unit_id,
@@ -178,12 +190,14 @@ def run_sender_task(
         sequence_number=first_window.sequence_number,
         window=first_window,
         end_generate_timestamp_ns=started_ns,
+        run_id=run_id,
     )
     schedule_request = {
         "device_id": config.device_id,
         "sender_id": node.sender_id,
         "task_id": task_id,
         "bearing_id": node.bearing_id,
+        "run_id": run_id,
         "packet_size_bytes": len(adapter.serialize_packet(preview_packet)),
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
@@ -197,6 +211,7 @@ def run_sender_task(
             config=config,
             node=node,
             task_id=task_id,
+            run_id=run_id,
             target_topic=None,
             schedule_retry_count=exc.retry_count,
             mqtt_reconnect_count=0,
@@ -274,6 +289,7 @@ def run_sender_task(
                     started_ns
                     + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
                 ),
+                run_id=run_id,
             )
             adapter.persist_source(
                 packet=packet,
@@ -301,6 +317,7 @@ def run_sender_task(
             config=config,
             node=node,
             task_id=task_id,
+            run_id=run_id,
             target_topic=assignment.target_topic,
             schedule_retry_count=assignment.schedule_retry_count,
             mqtt_reconnect_count=mqtt_publisher.reconnect_count,
@@ -327,6 +344,7 @@ def run_sender_task(
         config=config,
         node=node,
         task_id=task_id,
+        run_id=run_id,
         target_topic=assignment.target_topic,
         schedule_retry_count=assignment.schedule_retry_count,
         mqtt_reconnect_count=mqtt_publisher.reconnect_count,
@@ -364,6 +382,11 @@ def run_all_senders(
 
     sink = LocalLogSink(config.log_dir)
     batch_created_timestamp_ns = time.time_ns()
+    # 同一发送批次内的所有 Sender 共享同一个 run_id（由批次开始时间推导）。
+    batch_run_id = build_run_id(
+        device_id=config.device_id,
+        batch_created_timestamp_ns=batch_created_timestamp_ns,
+    )
     with ThreadPoolExecutor(max_workers=len(config.senders), thread_name_prefix="sender") as executor:
         jobs = [
             (
@@ -376,6 +399,7 @@ def run_all_senders(
                     realtime=realtime,
                     log_sink=sink,
                     batch_created_timestamp_ns=batch_created_timestamp_ns,
+                    run_id=batch_run_id,
                 ),
             )
             for node in config.senders
@@ -393,6 +417,7 @@ def run_all_senders(
                     "sender_id": node.sender_id,
                     "bearing_id": node.bearing_id,
                     "task_id": None,
+                    "run_id": batch_run_id,
                     "target_topic": None,
                     "expected_packet_count": config.expected_packet_count,
                     "confirmed_packet_count": 0,

@@ -160,6 +160,8 @@ class EdgeAssignmentClient:
             },
             "dispatched_at_ns": domain_request["created_timestamp_ns"],
         }
+        if domain_request.get("run_id"):
+            payload["run_id"] = domain_request["run_id"]
         body = encode_control_json(payload)
         secret = (
             load_control_shared_secret()
@@ -193,16 +195,21 @@ class EdgeAssignmentClient:
                     f"edge node {node.config.edge_node_id} did not acknowledge: {exc}",
                     503,
                 ) from decode_error
-            validated_ack = _validate_ack(
+            # 非 2xx 响应：仅当 Edge 返回的是结构完整的 REJECTED 仲裁 ack 时，
+            # 才按拒绝处理（保留此语义）。否则（401/403/5xx 等认证或服务端异常，
+            # 响应体通常不是 ack 对象）必须保留真实 HTTP 状态与错误信息，
+            # 不能误报成 "ack task_id does not match"。
+            if not isinstance(ack, Mapping) or ack.get("ack_status") != "REJECTED":
+                raise AssignmentError(
+                    "EDGE_ACK_FAILED",
+                    f"edge node {node.config.edge_node_id} rejected the task dispatch: "
+                    f"HTTP {exc.code} {exc.reason} - "
+                    f"{json.dumps(ack, ensure_ascii=False)}",
+                    exc.code if 400 <= exc.code < 600 else 503,
+                ) from exc
+            return _validate_ack(
                 ack, domain_request["task_id"], node.config.edge_node_id
             )
-            if validated_ack["ack_status"] != "REJECTED":
-                raise AssignmentError(
-                    "INVALID_EDGE_ACK",
-                    "a non-success HTTP response cannot accept a task",
-                    502,
-                )
-            return validated_ack
         except (URLError, TimeoutError, OSError, ValueError) as exc:
             raise AssignmentError(
                 "EDGE_ACK_FAILED",
@@ -726,9 +733,10 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not generic_vocabulary:
             message = legacy_scheduler_error_message(message)
         raise AssignmentError("INVALID_REQUEST", message) from exc
-    if set(domain_payload) != ASSIGNMENT_REQUEST_FIELDS:
-        missing = sorted(ASSIGNMENT_REQUEST_FIELDS - set(domain_payload))
-        unexpected = sorted(set(domain_payload) - ASSIGNMENT_REQUEST_FIELDS)
+    request_fields = set(domain_payload)
+    missing = sorted(ASSIGNMENT_REQUEST_FIELDS - request_fields)
+    unexpected = sorted(request_fields - ASSIGNMENT_REQUEST_FIELDS - {"run_id"})
+    if missing or unexpected:
         details: list[str] = []
         if missing:
             details.append(f"missing fields: {', '.join(missing)}")
@@ -764,6 +772,14 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             "INVALID_REQUEST",
             f"expected_packet_count must equal {configured_packet_count}",
         )
+    run_id_raw = domain_payload.get("run_id")
+    run_id = None
+    if run_id_raw is not None:
+        run_id = _non_empty_text(run_id_raw, "run_id")
+        if len(run_id) > 128:
+            raise AssignmentError(
+                "INVALID_REQUEST", "run_id must not exceed 128 characters"
+            )
     return {
         "device_id": device_id,
         "sender_id": sender_id,
@@ -782,6 +798,7 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         "created_timestamp_ns": _positive_int(
             domain_payload.get("created_timestamp_ns"), "created_timestamp_ns"
         ),
+        "run_id": run_id,
     }
 
 

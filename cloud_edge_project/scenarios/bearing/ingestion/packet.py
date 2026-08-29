@@ -63,6 +63,7 @@ def build_sensor_packet(
     sequence_number: int,
     data: dict[str, Any],
     end_generate_timestamp_ns: int,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     match = TASK_ID_PATTERN.fullmatch(task_id)
     if not match:
@@ -80,6 +81,11 @@ def build_sensor_packet(
         raise PacketValidationError("sequence_number must be between 1 and 999")
     if end_generate_timestamp_ns <= 0:
         raise PacketValidationError("end_generate_timestamp_ns must be positive")
+    if run_id is not None:
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise PacketValidationError("run_id must be a non-empty string when present")
+        if len(run_id) > 128:
+            raise PacketValidationError("run_id must not exceed 128 characters")
     _validate_data(data)
 
     return {
@@ -89,6 +95,7 @@ def build_sensor_packet(
         "packet_id": f"{task_id}_{bearing_id}_pkt_{sequence_number:03d}",
         "sender_id": sender_id,
         "sequence_number": sequence_number,
+        "run_id": run_id,
         "end_generate_timestamp_ns": end_generate_timestamp_ns,
         "data": data,
     }
