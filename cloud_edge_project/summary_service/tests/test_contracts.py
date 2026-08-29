@@ -140,6 +140,16 @@ def test_normalized_result_carries_summary_window_id() -> None:
     assert group_key(result) == result["summary_window_id"]
 
 
+def test_normalized_result_excludes_legacy_action_grade_fields() -> None:
+    result = normalize_bearing_result(
+        payload(action_grade=4, scored_action_grade=3, final_action_grade=4)
+    )
+
+    assert "action_grade" not in result
+    assert "scored_action_grade" not in result
+    assert "final_action_grade" not in result
+
+
 def test_two_senders_of_one_window_share_group_key() -> None:
     left = normalize_bearing_result(payload(result_id="r1", bearing_id="bearing_01"))
     right = normalize_bearing_result(

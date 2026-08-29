@@ -9,10 +9,30 @@ from cloud_service.global_analysis.arbitration_analyzer import analyze_device_ar
 from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
 from cloud_service.global_analysis.v12_data_source import V12GlobalAnalysisDataSource
 from cloud_service.summary_windows import SummaryWindowRepository
+from cloud_service.summary_windows import normalize_summary_window
 from scenarios.bearing.cloud.device_arbitration.adapter import BearingDeviceArbitrationAdapter
 from summary_service.outbox import ArbitrationOutbox
 from summary_service.repository import SummaryRepository
+from summary_service.repository import _sync_projection
 from summary_service.service import SummaryService
+
+
+def test_summary_sync_projection_satisfies_cloud_contract(tmp_path) -> None:
+    repository = SummaryRepository(tmp_path / "summary.db")
+    service = SummaryService(repository, now_ns=lambda: 1_000)
+
+    assert service.ingest(bearing("bearing_01", "edge_01", 0)) is None
+    window = service.ingest(bearing("bearing_02", "edge_02", 1))
+
+    assert window is not None
+    projected = _sync_projection(window)
+    normalized = normalize_summary_window(projected)
+
+    assert normalized == {key: projected[key] for key in normalized}
+    assert set(projected) - set(normalized) == {
+        "max_observed_action_level",
+        "max_observed_action_score",
+    }
 
 
 LEVEL_PROBS = {

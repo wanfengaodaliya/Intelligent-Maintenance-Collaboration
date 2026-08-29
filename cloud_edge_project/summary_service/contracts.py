@@ -17,6 +17,41 @@ EXPECTED_EDGE_NODE_IDS = ("edge_01", "edge_02")
 BINARY_BEARING_STATES = {"normal", "fault"}
 RISK_LEVELS = {"low", "medium", "high"}
 
+_REQUIRED_BEARING_RESULT_FIELDS = (
+    "result_id",
+    "device_id",
+    "task_id",
+    "bearing_id",
+    "sender_id",
+    "edge_node_id",
+    "run_id",
+    "decision_round_id",
+    "window_start_sequence",
+    "window_end_sequence",
+    "bearing_state",
+    "risk_level",
+    "confidence",
+    "data_quality_score",
+    "model_version",
+    "created_at_ns",
+)
+
+_TEXT_BEARING_RESULT_FIELDS = (
+    "result_id",
+    "device_id",
+    "task_id",
+    "bearing_id",
+    "sender_id",
+    "edge_node_id",
+    "decision_round_id",
+    "risk_level",
+    "model_version",
+)
+
+
+class InvalidClassProbabilitiesError(ValueError):
+    """The model probability payload violates the Summary scoring contract."""
+
 
 def canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -60,57 +95,39 @@ def _require_class_probabilities(
 ) -> dict[str, Any]:
     value = payload.get("class_probabilities")
     if value is None:
-        raise ValueError("class_probabilities are required by action_scorer_v1")
+        raise InvalidClassProbabilitiesError(
+            "class_probabilities are required by action_scorer_v1"
+        )
     if not isinstance(value, Mapping):
-        raise ValueError("class_probabilities must be an object")
+        raise InvalidClassProbabilitiesError("class_probabilities must be an object")
     probabilities: dict[str, Any] = {}
     for label, raw_score in value.items():
         label = str(label).strip()
         if not label:
-            raise ValueError("class_probabilities labels must not be empty")
+            raise InvalidClassProbabilitiesError(
+                "class_probabilities labels must not be empty"
+            )
         probabilities[label] = raw_score
     if set(probabilities) != set(H5_CLASS_LABELS):
-        raise ValueError(
+        raise InvalidClassProbabilitiesError(
             "class_probabilities must contain exactly the three H5 labels"
         )
     return probabilities
 
 
-def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
-    required = (
-        "result_id",
-        "device_id",
-        "task_id",
-        "bearing_id",
-        "sender_id",
-        "edge_node_id",
-        "run_id",
-        "decision_round_id",
-        "window_start_sequence",
-        "window_end_sequence",
-        "bearing_state",
-        "risk_level",
-        "confidence",
-        "data_quality_score",
-        "model_version",
-        "created_at_ns",
-    )
-    missing = [field for field in required if payload.get(field) is None]
+def _copy_required_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    missing = [
+        field
+        for field in _REQUIRED_BEARING_RESULT_FIELDS
+        if payload.get(field) is None
+    ]
     if missing:
         raise ValueError(f"missing bearing-result fields: {', '.join(missing)}")
+    return {field: payload[field] for field in _REQUIRED_BEARING_RESULT_FIELDS}
 
-    result = {field: payload[field] for field in required}
-    for field in (
-        "result_id",
-        "device_id",
-        "task_id",
-        "bearing_id",
-        "sender_id",
-        "edge_node_id",
-        "decision_round_id",
-        "risk_level",
-        "model_version",
-    ):
+
+def _normalize_domain_fields(result: dict[str, Any]) -> None:
+    for field in _TEXT_BEARING_RESULT_FIELDS:
         result[field] = str(result[field]).strip()
         if not result[field]:
             raise ValueError(f"{field} must not be empty")
@@ -142,6 +159,10 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     if result["created_at_ns"] < 0:
         raise ValueError("created_at_ns must be non-negative")
 
+
+def _attach_audit_fields(
+    result: dict[str, Any], payload: Mapping[str, Any]
+) -> None:
     # Audit-only fields from the raw model output; never used for conflict checks.
     result["run_id"] = _normalize_run_id(payload)
     diagnosis_label = payload.get("diagnosis_label")
@@ -152,18 +173,32 @@ def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     if diagnosis_label is not None:
         result["diagnosis_label"] = diagnosis_label
 
+
+def _attach_action_score(
+    result: dict[str, Any], payload: Mapping[str, Any]
+) -> None:
     # Scoring runs here, inside normalize_bearing_result, so the persisted
     # bearing JSON already carries the complete action_scorer_v1 trace. The raw
     # class_probabilities are preserved verbatim; the scorer stores the
     # renormalized copy as normalized_class_probabilities.
     class_probabilities = _require_class_probabilities(payload)
     result["class_probabilities"] = class_probabilities
-    scored = score_bearing_action(
-        class_probabilities,
-        risk_level=result["risk_level"],
-        data_quality_score=result["data_quality_score"],
-    )
+    try:
+        scored = score_bearing_action(
+            class_probabilities,
+            risk_level=result["risk_level"],
+            data_quality_score=result["data_quality_score"],
+        )
+    except ValueError as exc:
+        raise InvalidClassProbabilitiesError(str(exc)) from exc
     result.update(scored)
+
+
+def normalize_bearing_result(payload: Mapping[str, Any]) -> dict[str, Any]:
+    result = _copy_required_fields(payload)
+    _normalize_domain_fields(result)
+    _attach_audit_fields(result, payload)
+    _attach_action_score(result, payload)
 
     result["summary_window_id"] = build_summary_window_id(
         result["device_id"],

@@ -10,13 +10,13 @@ from .contracts import (
     EXPECTED_EDGE_NODE_IDS,
     normalize_bearing_result,
 )
-from .repository import BearingResultConflictError, SummaryRepository
+from .ports import BearingResultConflictError, SummaryStore
 
 
 class SummaryService:
     def __init__(
         self,
-        repository: SummaryRepository,
+        repository: SummaryStore,
         *,
         now_ns: Callable[[], int] = time.time_ns,
         expected_bearing_ids: Sequence[str] = EXPECTED_BEARING_IDS,

@@ -253,3 +253,26 @@ def test_different_runs_do_not_share_windows(tmp_path):
     assert len(results) == 2
     assert {result["run_id"] for result in results} == {"run_01", "run_02"}
     assert len({result["summary_window_id"] for result in results}) == 2
+
+
+def test_metrics_support_configured_edge_node_ids(tmp_path):
+    repository = SummaryRepository(tmp_path / "summary.db")
+    service = SummaryService(
+        repository,
+        now_ns=lambda: 1_000,
+        expected_edge_node_ids=("node_a", "node_b"),
+    )
+
+    assert service.ingest(
+        bearing_result("bearing_01", "node_a", "normal", 0)
+    ) is None
+    assert service.ingest(
+        bearing_result("bearing_02", "node_b", "fault", 0)
+    ) is not None
+
+    assert repository.metrics()["state_combinations"] == {
+        "normal_normal": 0,
+        "fault_fault": 0,
+        "normal_fault": 1,
+        "fault_normal": 0,
+    }

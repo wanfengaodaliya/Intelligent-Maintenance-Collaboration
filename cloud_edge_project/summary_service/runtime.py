@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -14,10 +15,17 @@ import paho.mqtt.client as mqtt
 
 from .outbox import ArbitrationOutbox, PermanentDeliveryError
 from .repository import SummaryRepository
-from .contracts import EXPECTED_BEARING_IDS, EXPECTED_EDGE_NODE_IDS
+from .contracts import (
+    EXPECTED_BEARING_IDS,
+    EXPECTED_EDGE_NODE_IDS,
+    InvalidClassProbabilitiesError,
+)
 from .service import SummaryService
 from .suggestion_llm import SuggestionClient
 from .suggestions import build_final_suggestion
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -206,16 +214,46 @@ class SummaryRuntime:
         self._connected.clear()
 
     def _on_message(self, client, userdata, message) -> None:
+        payload: Mapping[str, Any] | None = None
         try:
             payload = json.loads(message.payload.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("bearing-result MQTT payload must be an object")
             self.service.ingest(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except UnicodeDecodeError as exc:
+            self._reject_message(
+                client,
+                message,
+                exc,
+                metric="rejected_bearing_result_invalid_encoding",
+                payload=payload,
+            )
+        except json.JSONDecodeError as exc:
+            self._reject_message(
+                client,
+                message,
+                exc,
+                metric="rejected_bearing_result_invalid_json",
+                payload=payload,
+            )
+        except InvalidClassProbabilitiesError as exc:
+            self._reject_message(
+                client,
+                message,
+                exc,
+                metric="rejected_bearing_result_invalid_probabilities",
+                payload=payload,
+            )
+        except ValueError as exc:
             # Contract-invalid messages are poison records; acknowledge and expose
             # the error instead of redelivering forever.
-            self.last_error = str(exc)
-            client.ack(message.mid, message.qos)
+            self._reject_message(
+                client,
+                message,
+                exc,
+                metric="rejected_bearing_result_contract",
+                payload=payload,
+            )
         except Exception as exc:
             # Leave transient failures unacknowledged; QoS-1 redelivers after a
             # reconnect instead of losing a result that was not committed.
@@ -223,6 +261,38 @@ class SummaryRuntime:
         else:
             self.last_error = None
             client.ack(message.mid, message.qos)
+
+    def _reject_message(
+        self,
+        client,
+        message,
+        error: Exception,
+        *,
+        metric: str,
+        payload: Mapping[str, Any] | None,
+    ) -> None:
+        try:
+            self.repository.increment_metric("rejected_bearing_result_messages")
+            self.repository.increment_metric(metric)
+        except Exception:
+            LOGGER.exception("failed to record rejected bearing-result metric")
+        self.last_error = str(error)
+        LOGGER.warning(
+            "rejected bearing-result message",
+            extra={
+                "mqtt_mid": getattr(message, "mid", None),
+                "mqtt_topic": getattr(message, "topic", None),
+                "mqtt_qos": getattr(message, "qos", None),
+                "result_id": payload.get("result_id") if payload else None,
+                "run_id": payload.get("run_id") if payload else None,
+                "summary_window_id": (
+                    payload.get("summary_window_id") if payload else None
+                ),
+                "rejection_metric": metric,
+                "error_type": type(error).__name__,
+            },
+        )
+        client.ack(message.mid, message.qos)
 
     def _publish_window_result(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._publish_mqtt(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -298,6 +299,38 @@ def test_mqtt_poison_message_is_acked_and_exposed(tmp_path):
 
     assert acknowledged == [7]
     assert runtime.last_error is not None
+    counters = runtime.repository.metrics()["counters"]
+    assert counters["rejected_bearing_result_messages"] == 1
+    assert counters["rejected_bearing_result_invalid_json"] == 1
+
+
+def test_invalid_probabilities_are_counted_and_acked(tmp_path):
+    runtime = runtime_with(tmp_path)
+    acknowledged: list[int] = []
+
+    payload = bearing_result("bearing_01", "edge_01")
+    payload["class_probabilities"] = {
+        "healthy": 0.5,
+        "outer_ring_damage": 0.5,
+    }
+    encoded_payload = json.dumps(payload).encode("utf-8")
+
+    class FakeMessage:
+        mid = 8
+        qos = 1
+        topic = "maintenance/summary/bearing-results"
+        payload = encoded_payload
+
+    class FakeClient:
+        def ack(self, mid, qos):
+            acknowledged.append(mid)
+
+    runtime._on_message(FakeClient(), None, FakeMessage())
+
+    assert acknowledged == [8]
+    counters = runtime.repository.metrics()["counters"]
+    assert counters["rejected_bearing_result_messages"] == 1
+    assert counters["rejected_bearing_result_invalid_probabilities"] == 1
 
 
 def test_service_ingest_still_uses_runtime_defaults(tmp_path):

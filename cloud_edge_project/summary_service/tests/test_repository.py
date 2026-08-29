@@ -380,6 +380,28 @@ def test_resolved_arbitration_with_non_string_action_requires_manual_review(tmp_
     assert arbitrated["final_action"] is None
 
 
+def test_resolved_legacy_urgent_action_requires_manual_review(tmp_path):
+    repository = SummaryRepository(tmp_path / "summary.db")
+    payload = conflict_window(repository)
+
+    arbitrated = repository.apply_arbitration_result(
+        payload["summary_result_id"],
+        {
+            "arbitration_id": "arbitration_legacy_urgent_action",
+            "status": "resolved",
+            "final_state": "warning",
+            "final_action": "urgent_intervention",
+        },
+        now_ns=2_000,
+    )
+
+    assert arbitrated["result_status"] == "MANUAL_REVIEW"
+    assert arbitrated["arbitration_status"] == "MANUAL_REVIEW"
+    assert arbitrated["final_state"] is None
+    assert arbitrated["final_action_level"] is None
+    assert arbitrated["recommended_action"] is None
+
+
 def test_apply_rejects_windows_that_are_not_pending(tmp_path):
     repository = SummaryRepository(tmp_path / "summary.db")
     payload = normal_window(repository)
