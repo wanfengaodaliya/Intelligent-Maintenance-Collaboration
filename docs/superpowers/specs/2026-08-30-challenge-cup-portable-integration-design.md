@@ -11,7 +11,8 @@
 
 - 功能基线：`origin/main`，集成开始时为
   `c268fc0643ed83c4e1048b466ca3c80045272eba`。
-- 可迁移化来源：`origin/challenge-cup-application`，审计时为
+- 可迁移化来源：GitHub 远程分支 `challenge-cup-application`，本地远程跟踪引用为
+  `origin/challenge-cup-application`，审计时为
   `e3a174bf25fac8113b81dc9cf8fe03bbd557c465`。
 - 集成分支：`release/challenge-cup-portable`，从上述 `origin/main` 创建。
 - 集成在独立 Git worktree 中完成，不切换或修改现有主工作区。
