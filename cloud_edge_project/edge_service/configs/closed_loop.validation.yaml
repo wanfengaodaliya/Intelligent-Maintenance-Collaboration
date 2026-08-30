@@ -34,7 +34,7 @@ fallback:
 
 model:
   # T2/T4 真实模型场景（WSL）用；--adapter mock 时忽略
-  path: /home/unic/models/Qwen2.5-1.5B-Instruct
+  path: models/Qwen2.5-1.5B-Instruct
   dtype: bfloat16
   device: auto
   max_new_tokens: 64

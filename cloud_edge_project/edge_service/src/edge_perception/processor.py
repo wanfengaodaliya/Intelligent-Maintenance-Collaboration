@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from scenarios.bearing.edge.processor import BearingEdgePerception
+from compatibility.bearing_v12.edge_perception_exports import BearingEdgePerception
 
 # 旧公共 API 兼容名：historically 通过 `from edge_perception import EdgePerception` 消费。
 EdgePerception = BearingEdgePerception

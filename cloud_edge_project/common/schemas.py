@@ -306,13 +306,13 @@ def canonical_summary_sha256(summary: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Compatibility shim: bearing-specific signal contracts were moved to
-# scenarios.bearing.cloud.context.signal_contracts. Re-export them here so
+# Compatibility shim: bearing-specific signal contracts were moved behind
+# compatibility.bearing_v12. Re-export them here so
 # existing ``from common.schemas import ...`` sites and their JSON shapes /
 # error codes / error messages remain unchanged.
 # ---------------------------------------------------------------------------
 
-from scenarios.bearing.cloud.context.signal_contracts import (  # noqa: E402, F401
+from compatibility.bearing_v12.legacy_exports import (  # noqa: E402, F401
     DATA_TYPE,
     DURATION_MS,
     EDGE_RESULTS,

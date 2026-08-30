@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+
+import pytest
 
 from core.diagnosis_contracts import (
     BearingDecisionResult,
     BearingLifecycleStatus,
+    DeviceDecisionResult,
+    DeviceDecisionStatus,
     RoundClosureReason,
 )
+from core.bearing_actions import ACTION_TO_STATE, action_for_grade
 from device_decision import (
     DeviceDecisionRevisionService,
     DeviceDecisionRoundRepository,
@@ -31,6 +37,107 @@ def _bearing(
         decision_source="EDGE", review_status="NOT_REQUIRED", degraded=state is BearingLifecycleStatus.PROVISIONAL,
         edge_result_id=f"edge_{bearing_id}", cloud_result_id=None, model_version="edge_model_v1",
         created_at_ns=1, edge_accepted_at_ns=2,
+    )
+
+
+def _legacy_aggregate(
+    bearing_results: tuple[BearingDecisionResult, ...],
+    *,
+    expected_bearing_ids: tuple[str, ...],
+    closure_reason: RoundClosureReason,
+    closed_at_ns: int,
+) -> DeviceDecisionResult:
+    """Frozen Stage-5 oracle used to prove the new policy is field-equivalent."""
+    by_bearing = {item.bearing_id: item for item in bearing_results}
+    ordered = tuple(by_bearing[item] for item in expected_bearing_ids if item in by_bearing)
+    missing = tuple(item for item in expected_bearing_ids if item not in by_bearing)
+    if closure_reason is RoundClosureReason.ROUND_TIMEOUT:
+        status = DeviceDecisionStatus.INCOMPLETE
+    elif any(item.lifecycle_state is BearingLifecycleStatus.PROVISIONAL for item in ordered):
+        status = DeviceDecisionStatus.PROVISIONAL
+    else:
+        status = DeviceDecisionStatus.FINAL
+    final_grade = max(item.action_grade for item in ordered)
+    action = action_for_grade(final_grade)
+    grades = [item.action_grade for item in ordered]
+    conflict = len(grades) > 1 and max(grades) - min(grades) >= 2
+    shared = lambda field: next(iter({getattr(item, field) for item in ordered}))
+    return DeviceDecisionResult(
+        result_id="pending",
+        revision=1,
+        replaces_result_id=None,
+        device_id=shared("device_id"),
+        task_id=shared("task_id"),
+        decision_round_id=shared("decision_round_id"),
+        expected_bearing_ids=expected_bearing_ids,
+        received_bearing_ids=tuple(item.bearing_id for item in ordered),
+        missing_bearing_ids=missing,
+        bearing_result_ids=tuple(item.result_id for item in ordered),
+        status=status,
+        closure_reason=closure_reason,
+        final_state=ACTION_TO_STATE[action],
+        final_action_grade=final_grade,
+        final_action=action,
+        confidence=min(item.confidence for item in ordered),
+        data_quality_score=min(item.data_quality_score for item in ordered),
+        has_conflict=conflict,
+        conflict_reasons=("DEVICE_ACTION_GRADE_CONFLICT",) if conflict else (),
+        decision_source="EDGE",
+        degraded=status is not DeviceDecisionStatus.FINAL,
+        affects_realtime_action=True,
+        arbitration_id=None,
+        closed_at_ns=closed_at_ns,
+        created_at_ns=closed_at_ns,
+    )
+
+
+@pytest.mark.parametrize(
+    ("bearings", "expected", "closure_reason"),
+    [
+        (
+            (
+                _bearing("bearing_a", grade=0, confidence=.95, quality=1.0),
+                _bearing("bearing_b", grade=2, confidence=.80, quality=.90),
+            ),
+            ("bearing_a", "bearing_b"),
+            RoundClosureReason.ALL_BEARINGS_FINAL,
+        ),
+        (
+            (
+                _bearing("bearing_a", grade=1, confidence=.90, quality=.90),
+                _bearing(
+                    "bearing_b",
+                    grade=1,
+                    confidence=.80,
+                    quality=.80,
+                    state=BearingLifecycleStatus.PROVISIONAL,
+                ),
+            ),
+            ("bearing_a", "bearing_b"),
+            RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL,
+        ),
+        (
+            (_bearing("bearing_a", grade=3, confidence=.75, quality=.65),),
+            ("bearing_a", "bearing_b"),
+            RoundClosureReason.ROUND_TIMEOUT,
+        ),
+    ],
+)
+def test_stage6_consistency_policy_matches_frozen_v12_oracle(
+    bearings,
+    expected,
+    closure_reason,
+) -> None:
+    assert aggregate_device_round(
+        bearings,
+        expected_bearing_ids=expected,
+        closure_reason=closure_reason,
+        closed_at_ns=10,
+    ) == _legacy_aggregate(
+        bearings,
+        expected_bearing_ids=expected,
+        closure_reason=closure_reason,
+        closed_at_ns=10,
     )
 
 
@@ -141,7 +248,7 @@ def test_closed_provisional_round_can_create_historical_correction_but_timeout_c
         expected_version=opened["version"], closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL,
         closed_at_ns=10,
     )
-    round_repository.save_revision(aggregate_device_round(
+    initial = round_repository.save_revision(aggregate_device_round(
         (first, second), expected_bearing_ids=("bearing_a", "bearing_b"),
         closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL, closed_at_ns=10,
     ))
@@ -151,9 +258,21 @@ def test_closed_provisional_round_can_create_historical_correction_but_timeout_c
     )
 
     assert correction is not None
-    assert correction.status == "CORRECTED"
-    assert correction.affects_realtime_action is False
-    assert correction.revision == 2
+    expected_correction = replace(
+        _legacy_aggregate(
+            (first, second),
+            expected_bearing_ids=("bearing_a", "bearing_b"),
+            closure_reason=RoundClosureReason.ALL_BEARINGS_WITH_PROVISIONAL,
+            closed_at_ns=20,
+        ),
+        result_id="device_round_01_r2",
+        revision=2,
+        replaces_result_id=initial.result_id,
+        status=DeviceDecisionStatus.CORRECTED,
+        decision_source="HISTORICAL_CORRECTION",
+        affects_realtime_action=False,
+    )
+    assert correction == expected_correction
 
     timeout_round = round_repository.register_round(
         device_id="machine_01", task_id="task_001", decision_round_id="round_timeout",

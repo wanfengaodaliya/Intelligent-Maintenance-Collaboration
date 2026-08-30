@@ -87,7 +87,10 @@ def _run_task(node, config, target_topic, tmp_path, monkeypatch):
         source_path=source_path,
         windows=lambda **kwargs: windows,
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     created = []
 
@@ -98,12 +101,14 @@ def _run_task(node, config, target_topic, tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
             self.status_counts = {}
+            self.packets = []
             created.append(self)
 
         def start(self):
             pass
 
         def publish(self, packet, payload, topic):
+            self.packets.append(packet)
             confirmed = self.status_counts.get("confirmed", 0)
             self.status_counts = {"confirmed": confirmed + 1}
 
@@ -115,15 +120,18 @@ def _run_task(node, config, target_topic, tmp_path, monkeypatch):
 
     monkeypatch.setattr("sender.controller.MqttPublisher", RecordingPublisher)
 
-    scheduler = SimpleNamespace(
-        assign=lambda request: SimpleNamespace(
+    schedule_requests = []
+
+    def assign(request):
+        schedule_requests.append(request)
+        return SimpleNamespace(
             target_topic=target_topic,
             schedule_retry_count=0,
             delivery_mode="realtime",
             delivery_interval_ms=50,
             available_throughput_mbps=None,
         )
-    )
+    scheduler = SimpleNamespace(assign=assign)
     task_id = "sd_%s_tk_0001" % node.sender_id[-2:]
 
     summary = run_sender_task(
@@ -139,7 +147,8 @@ def _run_task(node, config, target_topic, tmp_path, monkeypatch):
         ),
     )
     assert len(created) == 1
-    return created[0], summary
+    assert len(schedule_requests) == 1
+    return created[0], summary, schedule_requests[0]
 
 
 def test_resolve_target_edge_node_id_parses_edge_topics():
@@ -175,27 +184,65 @@ def test_scheduler_assignment_routes_task_to_matching_proxy_port(
     config = _local_config()
     node = next(n for n in config.senders if n.sender_id == sender_id)
 
-    publisher, summary = _run_task(node, config, topic, tmp_path, monkeypatch)
+    publisher, summary, schedule_request = _run_task(
+        node,
+        config,
+        topic,
+        tmp_path,
+        monkeypatch,
+    )
 
     assert publisher.kwargs["port"] == EXPECTED_PROXY_PORTS[sender_id][edge_id]
     assert publisher.kwargs["host"] == node.mqtt_host
     assert summary["target_topic"] == topic
     assert summary["target_edge_node_id"] == edge_id
     assert summary["task_status"] == "completed"
+    assert schedule_request == {
+        "device_id": config.device_id,
+        "sender_id": node.sender_id,
+        "task_id": "sd_%s_tk_0001" % node.sender_id[-2:],
+        "bearing_id": node.bearing_id,
+        "run_id": schedule_request["run_id"],
+        "packet_size_bytes": schedule_request["packet_size_bytes"],
+        "expected_packet_count": config.expected_packet_count,
+        "expected_duration_ms": config.task_duration_ms,
+        "created_timestamp_ns": schedule_request["created_timestamp_ns"],
+    }
+    assert schedule_request["run_id"].startswith("run_")
+    assert [packet["sequence_number"] for packet in publisher.packets] == list(
+        range(1, config.expected_packet_count + 1)
+    )
+    assert [packet["packet_id"] for packet in publisher.packets] == [
+        "sd_%s_tk_0001_%s_pkt_%03d"
+        % (node.sender_id[-2:], node.bearing_id, sequence_number)
+        for sequence_number in range(1, config.expected_packet_count + 1)
+    ]
 
 
 def test_one_sender_batch_uses_one_shared_run_id(tmp_path):
     config = replace(_local_config(), log_dir=tmp_path / "logs")
     observed_batch_timestamps: list[int] = []
+    observed_run_ids: list[str] = []
 
-    def runner(config, node, source_path, *, realtime, log_sink, batch_created_timestamp_ns):
+    def runner(
+        config,
+        node,
+        source_path,
+        *,
+        realtime,
+        log_sink,
+        batch_created_timestamp_ns,
+        run_id,
+    ):
         observed_batch_timestamps.append(batch_created_timestamp_ns)
+        observed_run_ids.append(run_id)
+        assert run_id == build_run_id(
+            device_id=config.device_id,
+            batch_created_timestamp_ns=batch_created_timestamp_ns,
+        )
         return {
             "sender_id": node.sender_id,
-            "run_id": build_run_id(
-                device_id=config.device_id,
-                batch_created_timestamp_ns=batch_created_timestamp_ns,
-            ),
+            "run_id": run_id,
         }
 
     results = run_all_senders(
@@ -209,4 +256,5 @@ def test_one_sender_batch_uses_one_shared_run_id(tmp_path):
     )
 
     assert len(set(observed_batch_timestamps)) == 1
+    assert len(set(observed_run_ids)) == 1
     assert len({result["run_id"] for result in results}) == 1

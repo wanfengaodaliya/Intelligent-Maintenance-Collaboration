@@ -11,7 +11,7 @@
 #      已指向 host.docker.internal）。
 #
 # 使用（在 cloud_edge_project/edge_service 目录下，镜像需已构建）：
-#   docker compose -f compose.multi-edge.yml up -d --no-build
+#   docker compose --env-file ../../.env -f compose.multi-edge.yml up -d --no-build
 #
 # 节点命名 edge_01 / edge_02 与网络模拟器 config/links.yaml 中的链路 ID
 # （edge_01__to__scheduler__http 等）完全对齐，不修改网络模拟器配置。
@@ -24,12 +24,8 @@
 #   Scheduler → edge    : 宿主机 127.0.0.1:18042/18052 → 本文件端口 8001/8002
 #   Sender → Edge (MQTT): 宿主机 18831/18832/18931/18932/19031/19032 → mqtt-broker
 #
-# 正式拓扑地址（MQTT / Scheduler / Cloud）在本文件中固定取值，
-# 不接受 .env 或环境变量覆盖；其他部署拓扑只能通过独立的 Compose override
-# 文件实现。仍允许 .env 注入的非拓扑配置：EDGE_CONTROL_SHARED_SECRET、
-# EDGE_CONTROL_KEY_ID、EDGE_MODEL_SIGNING_KEY_ID、EDGE_DIAGNOSTIC_BACKEND、
-# EDGE_MODEL_VERSION、EDGE_MODEL_UPDATE_POLLER_ENABLED、
-# NETWORK_SIM_NETWORK、EDGE_STATUS_RESOURCE_MODE。
+# 所有部署相关节点标识、地址、端口和主题均可由根目录 .env 覆盖；下面仅保留
+# 本机演示拓扑的兼容默认值。
 #
 # 自动模型更新（Poller）默认关闭；开启前必须叠加 compose.model-update.yml
 # 挂载 Ed25519 签名公钥。
@@ -54,29 +50,36 @@ services:
       # official 对照模型服务（8012）运行在宿主机，容器经 host-gateway 访问。
       - "host.docker.internal:host-gateway"
     environment:
-      EDGE_NODE_ID: edge_01
+      EDGE_NODE_ID: ${EDGE_01_NODE_ID:-edge_01}
       EDGE_BUILD_REVISION: ${EDGE_BUILD_REVISION:-unknown}
-      EDGE_MQTT_HOST: mqtt-broker
-      EDGE_MQTT_PORT: "1883"
-      EDGE_MQTT_CLIENT_ID: edge_01-runtime
-      EDGE_MQTT_INPUT_TOPIC: edge/edge_01/input
-      EDGE_MQTT_BEARING_RESULT_TOPIC: summary/bearing-results
-      EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
-      EDGE_EXPERIMENT_DATABASE_PATH: /app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db
-      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: "300"
+      EDGE_SERVICE_HOST: ${EDGE_SERVICE_HOST:-0.0.0.0}
+      EDGE_SERVICE_PORT: ${EDGE_SERVICE_PORT:-8001}
+      EDGE_MQTT_HOST: ${EDGE_01_MQTT_HOST:-mqtt-broker}
+      EDGE_MQTT_PORT: ${EDGE_01_MQTT_PORT:-1883}
+      EDGE_MQTT_CLIENT_ID: ${EDGE_01_MQTT_CLIENT_ID:-edge_01-runtime}
+      EDGE_MQTT_INPUT_TOPIC: ${EDGE_01_MQTT_INPUT_TOPIC:-edge/edge_01/input}
+      EDGE_MQTT_BEARING_RESULT_TOPIC: ${EDGE_MQTT_BEARING_RESULT_TOPIC:-summary/bearing-results}
+      EDGE_MQTT_DEVICE_RESULT_TOPIC: ${EDGE_MQTT_DEVICE_RESULT_TOPIC:-summary/device-results}
+      EDGE_EXPERIMENT_DATABASE_PATH: ${EDGE_01_EXPERIMENT_DATABASE_PATH:-/app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db}
+      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: ${EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS:-300}
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
       # 出站 HTTP 全部经过 Toxiproxy 链路，指向 links.yaml 中对应代理端口。
-      SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18011
-      CLOUD_SERVICE_BASE_URL: http://toxiproxy:18021
+      SCHEDULER_SERVICE_BASE_URL: ${EDGE_01_SCHEDULER_SERVICE_BASE_URL:-http://toxiproxy:18011}
+      CLOUD_SERVICE_BASE_URL: ${EDGE_01_CLOUD_SERVICE_BASE_URL:-http://toxiproxy:18021}
       # 正式诊断路线：蒸馏模型 H5 三通道并行（容器内本地推理，镜像自带 torch）。
       # 切回模型服务 HTTP 路线（故障演练矩阵）：EDGE_DIAGNOSTIC_BACKEND=official
       # 并保留 EDGE_MODEL_BASE_URL。
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
-      EDGE_MODEL_ROOT: /app/data/models
+      EDGE_MODEL_ROOT: ${EDGE_MODEL_ROOT:-/app/data/models}
+      EDGE_V12_DATABASE_PATH: ${EDGE_V12_DATABASE_PATH:-/app/data/edge_v12.db}
+      EDGE_CLOUD_REVIEW_CACHE_DIR: ${EDGE_CLOUD_REVIEW_CACHE_DIR:-/app/data/edge_cloud_review}
+      EDGE_RAW_SAMPLE_DIRECTORY: ${EDGE_RAW_SAMPLE_DIRECTORY:-/app/data/raw_analysis_samples}
+      EDGE_PACKET_ROUTE_ERROR_LOG: ${EDGE_PACKET_ROUTE_ERROR_LOG:-/app/data/edge_packet_route_errors.jsonl}
+      EDGE_MODEL_RUN_LOG: ${EDGE_MODEL_RUN_LOG:-/app/data/edge_model_runs.jsonl}
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
       EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
-      EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
+      EDGE_MODEL_BASE_URL: ${EDGE_MODEL_BASE_URL:-http://host.docker.internal:8012}
       EDGE_MODEL_QUEUE_WAIT_MS: ${EDGE_MODEL_QUEUE_WAIT_MS:-250}
       EDGE_MODEL_TOTAL_TIMEOUT_MS: ${EDGE_MODEL_TOTAL_TIMEOUT_MS:-2000}
       EDGE_MODEL_INFERENCE_WORKERS: ${EDGE_MODEL_INFERENCE_WORKERS:-1}
@@ -88,15 +91,18 @@ services:
       # 调度方停止派发新任务。与 Poller 同时开启会触发配置冲突（退出码 78）。
       EDGE_MODEL_VERSION: ${EDGE_MODEL_VERSION:-}
       # 状态上报 URL 从统一基址推导，同样经过 edge→scheduler / edge→cloud 链路。
-      EDGE_NETWORK_LINK_ID: edge_01__to__scheduler__http
-      EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_01__to__scheduler__http
+      EDGE_NETWORK_LINK_ID: ${EDGE_01_NETWORK_LINK_ID:-edge_01__to__scheduler__http}
+      EDGE_NETWORK_STATUS_URL: ${EDGE_01_NETWORK_STATUS_URL:-http://network-controller:8090/api/v1/network/links/edge_01__to__scheduler__http}
+      EDGE_STATUS_SCHEDULER_URL: ${EDGE_01_STATUS_SCHEDULER_URL:-http://toxiproxy:18011/scheduler/edge-nodes/status}
+      EDGE_STATUS_CLOUD_URL: ${EDGE_01_STATUS_CLOUD_URL:-http://toxiproxy:18021/cloud/edge-status}
+      EDGE_STATUS_INTERVAL_SECONDS: ${EDGE_STATUS_INTERVAL_SECONDS:-1.0}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角，
       # 读取容器自身 quota/limit 而非宿主机 16 核 / 剩余内存。
       # 若节点运行在独立 VM 而非容器，可显式改为 system。
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       # 供 Scheduler→Edge 链路（Toxiproxy 18042 上游）回调，不映射控制端口 8011。
-      - "8001:8001"
+      - "${EDGE_01_HOST_PORT:-8001}:${EDGE_SERVICE_PORT:-8001}"
     volumes:
       - edge_01_data:/app/data
     read_only: true
@@ -117,25 +123,32 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      EDGE_NODE_ID: edge_02
+      EDGE_NODE_ID: ${EDGE_02_NODE_ID:-edge_02}
       EDGE_BUILD_REVISION: ${EDGE_BUILD_REVISION:-unknown}
-      EDGE_MQTT_HOST: mqtt-broker
-      EDGE_MQTT_PORT: "1883"
-      EDGE_MQTT_CLIENT_ID: edge_02-runtime
-      EDGE_MQTT_INPUT_TOPIC: edge/edge_02/input
-      EDGE_MQTT_BEARING_RESULT_TOPIC: summary/bearing-results
-      EDGE_MQTT_DEVICE_RESULT_TOPIC: summary/device-results
-      EDGE_EXPERIMENT_DATABASE_PATH: /app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db
-      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: "300"
+      EDGE_SERVICE_HOST: ${EDGE_SERVICE_HOST:-0.0.0.0}
+      EDGE_SERVICE_PORT: ${EDGE_SERVICE_PORT:-8001}
+      EDGE_MQTT_HOST: ${EDGE_02_MQTT_HOST:-mqtt-broker}
+      EDGE_MQTT_PORT: ${EDGE_02_MQTT_PORT:-1883}
+      EDGE_MQTT_CLIENT_ID: ${EDGE_02_MQTT_CLIENT_ID:-edge_02-runtime}
+      EDGE_MQTT_INPUT_TOPIC: ${EDGE_02_MQTT_INPUT_TOPIC:-edge/edge_02/input}
+      EDGE_MQTT_BEARING_RESULT_TOPIC: ${EDGE_MQTT_BEARING_RESULT_TOPIC:-summary/bearing-results}
+      EDGE_MQTT_DEVICE_RESULT_TOPIC: ${EDGE_MQTT_DEVICE_RESULT_TOPIC:-summary/device-results}
+      EDGE_EXPERIMENT_DATABASE_PATH: ${EDGE_02_EXPERIMENT_DATABASE_PATH:-/app/data/experiments/${EXPERIMENT_ID:-default}/edge_v12.db}
+      EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS: ${EDGE_DEVICE_RESULT_PUBLISH_MAX_ATTEMPTS:-300}
       EDGE_CONTROL_SHARED_SECRET: ${EDGE_CONTROL_SHARED_SECRET:?EDGE_CONTROL_SHARED_SECRET is required}
       EDGE_CONTROL_KEY_ID: ${EDGE_CONTROL_KEY_ID:-scheduler-v1}
-      SCHEDULER_SERVICE_BASE_URL: http://toxiproxy:18051
-      CLOUD_SERVICE_BASE_URL: http://toxiproxy:18053
+      SCHEDULER_SERVICE_BASE_URL: ${EDGE_02_SCHEDULER_SERVICE_BASE_URL:-http://toxiproxy:18051}
+      CLOUD_SERVICE_BASE_URL: ${EDGE_02_CLOUD_SERVICE_BASE_URL:-http://toxiproxy:18053}
       EDGE_DIAGNOSTIC_BACKEND: ${EDGE_DIAGNOSTIC_BACKEND:-local_h5}
-      EDGE_MODEL_ROOT: /app/data/models
+      EDGE_MODEL_ROOT: ${EDGE_MODEL_ROOT:-/app/data/models}
+      EDGE_V12_DATABASE_PATH: ${EDGE_V12_DATABASE_PATH:-/app/data/edge_v12.db}
+      EDGE_CLOUD_REVIEW_CACHE_DIR: ${EDGE_CLOUD_REVIEW_CACHE_DIR:-/app/data/edge_cloud_review}
+      EDGE_RAW_SAMPLE_DIRECTORY: ${EDGE_RAW_SAMPLE_DIRECTORY:-/app/data/raw_analysis_samples}
+      EDGE_PACKET_ROUTE_ERROR_LOG: ${EDGE_PACKET_ROUTE_ERROR_LOG:-/app/data/edge_packet_route_errors.jsonl}
+      EDGE_MODEL_RUN_LOG: ${EDGE_MODEL_RUN_LOG:-/app/data/edge_model_runs.jsonl}
       EDGE_MODEL_UPDATE_POLLER_ENABLED: ${EDGE_MODEL_UPDATE_POLLER_ENABLED:-false}
       EDGE_MODEL_SIGNING_KEY_ID: ${EDGE_MODEL_SIGNING_KEY_ID:-release-v1}
-      EDGE_MODEL_BASE_URL: http://host.docker.internal:8012
+      EDGE_MODEL_BASE_URL: ${EDGE_MODEL_BASE_URL:-http://host.docker.internal:8012}
       EDGE_MODEL_QUEUE_WAIT_MS: ${EDGE_MODEL_QUEUE_WAIT_MS:-250}
       EDGE_MODEL_TOTAL_TIMEOUT_MS: ${EDGE_MODEL_TOTAL_TIMEOUT_MS:-2000}
       EDGE_MODEL_INFERENCE_WORKERS: ${EDGE_MODEL_INFERENCE_WORKERS:-1}
@@ -144,13 +157,16 @@ services:
       EDGE_TORCH_INTRAOP_THREADS: ${EDGE_TORCH_INTRAOP_THREADS:-1}
       EDGE_TORCH_INTEROP_THREADS: ${EDGE_TORCH_INTEROP_THREADS:-1}
       EDGE_MODEL_VERSION: ${EDGE_MODEL_VERSION:-}
-      EDGE_NETWORK_LINK_ID: edge_02__to__scheduler__http
-      EDGE_NETWORK_STATUS_URL: http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http
+      EDGE_NETWORK_LINK_ID: ${EDGE_02_NETWORK_LINK_ID:-edge_02__to__scheduler__http}
+      EDGE_NETWORK_STATUS_URL: ${EDGE_02_NETWORK_STATUS_URL:-http://network-controller:8090/api/v1/network/links/edge_02__to__scheduler__http}
+      EDGE_STATUS_SCHEDULER_URL: ${EDGE_02_STATUS_SCHEDULER_URL:-http://toxiproxy:18051/scheduler/edge-nodes/status}
+      EDGE_STATUS_CLOUD_URL: ${EDGE_02_STATUS_CLOUD_URL:-http://toxiproxy:18053/cloud/edge-status}
+      EDGE_STATUS_INTERVAL_SECONDS: ${EDGE_STATUS_INTERVAL_SECONDS:-1.0}
       # ENV-3: 容器化 multi-edge 下资源采集使用 cgroup/container 视角。
       EDGE_STATUS_RESOURCE_MODE: ${EDGE_STATUS_RESOURCE_MODE:-cgroup}
     ports:
       # 供 Scheduler→Edge 链路（Toxiproxy 18052 上游）回调。
-      - "8002:8001"
+      - "${EDGE_02_HOST_PORT:-8002}:${EDGE_SERVICE_PORT:-8001}"
     volumes:
       - edge_02_data:/app/data
     read_only: true

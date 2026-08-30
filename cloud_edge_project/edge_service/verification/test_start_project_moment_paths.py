@@ -8,11 +8,43 @@ START_SCRIPT = PROJECT_ROOT / "start_project.ps1"
 def test_start_script_checks_every_required_moment_asset():
     script = START_SCRIPT.read_text(encoding="utf-8")
 
-    required_paths = (
+    required_defaults = (
         "model_assets\\moment\\releases\\moment-scl05-final\\best_model.pt",
         "model_assets\\moment\\releases\\moment-scl05-final\\condition_norm.json",
-        "model_assets\\moment\\releases\\moment-scl05-final\\moment_model.py",
-        "model_assets\\moment\\pretrained\\MOMENT-1-small\\config.json",
-        "model_assets\\moment\\pretrained\\MOMENT-1-small\\model.safetensors",
+        "model_assets\\moment\\releases\\moment-scl05-final",
+        "model_assets\\moment\\pretrained\\MOMENT-1-small",
     )
-    assert all(path in script for path in required_paths)
+    required_derived_files = (
+        '(Join-Path $momentDeployment "moment_model.py")',
+        '(Join-Path $momentPretrained "config.json")',
+        '(Join-Path $momentPretrained "model.safetensors")',
+    )
+
+    assert all(path in script for path in required_defaults)
+    assert all(expression in script for expression in required_derived_files)
+    assert "$missingMomentFiles" in script
+
+
+def test_check_config_is_a_read_only_full_preflight():
+    script = START_SCRIPT.read_text(encoding="utf-8")
+    completion = script.index("Read-only deployment preflight passed")
+    stage_one = script.index("# ---------- Stage 1: network simulator ----------")
+
+    assert completion < stage_one
+    assert "no secret was created during preflight" in script
+    assert "read-only preflight will not stop containers" in script
+    assert '$NetworkSimNetwork = Get-EnvValue "NETWORK_SIM_NETWORK"' in script
+    assert "docker network inspect $NetworkSimNetwork" in script
+    assert "conda run -n $CondaEnvName python --version" in script
+    assert "docker compose -f compose.multi-edge.yml config --quiet" in script
+
+
+def test_start_script_accepts_an_explicit_python_without_removing_conda_default():
+    script = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert '$PythonExecutable = Get-EnvValue "PROJECT_PYTHON_EXECUTABLE" ""' in script
+    assert "Test-Path -LiteralPath $PythonExecutable -PathType Leaf" in script
+    assert "$pythonVersion = & $PythonExecutable --version" in script
+    assert "$PythonLaunchPrefix -m uvicorn scheduler.api:app" in script
+    assert "$PythonLaunchPrefix -m uvicorn cloud_service.app:app" in script
+    assert "conda run -n $CondaEnvName python --version" in script

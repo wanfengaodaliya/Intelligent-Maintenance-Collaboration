@@ -10,6 +10,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from compatibility.bearing_v12.scheduler_mapper import (
+    device_request_to_domain,
+    legacy_scheduler_error_message,
+    uses_generic_scheduler_fields,
+)
+
 try:
     from .cloud_registry import (
         CloudNodeRegistry,
@@ -189,7 +195,7 @@ class DeviceArbitrationRouter:
             "defer_reason": defer_reason,
             "source": {
                 "holder_id": request["summary_module_id"],
-                "bearing_results_ref": request["source_refs"]["bearing_results_ref"],
+                "unit_results_ref": request["source_refs"]["unit_results_ref"],
                 "provisional_result_ref": request["source_refs"]["provisional_result_ref"],
             },
             "input_snapshot": {
@@ -228,8 +234,8 @@ class DeviceArbitrationRouter:
                     "conflict_id": _conflict_id(request),
                     "decision_round_id": identity["decision_round_id"],
                     "device_result_revision": identity["device_result_revision"],
-                    "bearing_result_ids": list(identity["bearing_result_ids"]),
-                    "bearing_results": request["bearing_results"],
+                    "unit_result_ids": list(identity["unit_result_ids"]),
+                    "unit_results": request["unit_results"],
                     "comparison": request["comparison"],
                     "local_arbitration_supported": request[
                         "local_arbitration_supported"
@@ -248,8 +254,11 @@ def _validate_device_request(
     payload: Mapping[str, Any],
     default_summary_module_id: str,
 ) -> dict[str, Any]:
+    legacy_vocabulary = not uses_generic_scheduler_fields(payload)
     try:
-        item = _mapping(payload, "device arbitration request")
+        item = device_request_to_domain(
+            _mapping(payload, "device arbitration request")
+        )
         comparison = _mapping(item.get("comparison"), "comparison")
         aggregate_confidence = _bounded_float(
             comparison.get("aggregate_confidence"),
@@ -263,21 +272,21 @@ def _validate_device_request(
                 "TASK_COMPLEXITY_MISMATCH",
                 "task_complexity must equal 1 - aggregate_confidence",
             )
-        expected = _positive_int(item.get("expected_bearing_count"), "expected_bearing_count")
-        received = _non_negative_int(item.get("received_bearing_count"), "received_bearing_count")
-        results = item.get("bearing_results")
+        expected = _positive_int(item.get("expected_unit_count"), "expected_unit_count")
+        received = _non_negative_int(item.get("received_unit_count"), "received_unit_count")
+        results = item.get("unit_results")
         if not isinstance(results, list):
-            raise ValueError("bearing_results must be an array")
-        bearings = [_validate_bearing_result(value) for value in results]
-        bearing_ids = [value["bearing_id"] for value in bearings]
-        if len(set(bearing_ids)) != len(bearing_ids):
-            raise ValueError("bearing_id values must be unique")
-        v12_identity = _validate_v12_identity(item, bearings)
+            raise ValueError("unit_results must be an array")
+        units = [_validate_unit_result(value) for value in results]
+        unit_ids = [value["unit_id"] for value in units]
+        if len(set(unit_ids)) != len(unit_ids):
+            raise ValueError("unit_id values must be unique")
+        v12_identity = _validate_v12_identity(item, units)
         source_refs = item.get("source_refs")
         if source_refs is None:
             task_id = _text(item.get("task_id"), "task_id")
             source_refs = {
-                "bearing_results_ref": f"summary-store://{task_id}/bearings",
+                "unit_results_ref": f"summary-store://{task_id}/bearings",
                 "provisional_result_ref": f"summary-store://{task_id}/device-result-v1",
             }
         else:
@@ -290,9 +299,9 @@ def _validate_device_request(
                 "summary_module_id",
             ),
             "edge_node_id": _optional_text(item.get("edge_node_id"), "edge_node_id"),
-            "expected_bearing_count": expected,
-            "received_bearing_count": received,
-            "bearing_results": bearings,
+            "expected_unit_count": expected,
+            "received_unit_count": received,
+            "unit_results": units,
             "comparison": {
                 "conflict": _bool(comparison.get("conflict"), "conflict"),
                 "conflict_type": (
@@ -313,13 +322,13 @@ def _validate_device_request(
                     "action_level_span",
                 ),
                 "aggregate_confidence": aggregate_confidence,
-                "low_confidence_bearing_count": _non_negative_int(
-                    comparison.get("low_confidence_bearing_count"),
-                    "low_confidence_bearing_count",
+                "low_confidence_unit_count": _non_negative_int(
+                    comparison.get("low_confidence_unit_count"),
+                    "low_confidence_unit_count",
                 ),
-                "provisional_bearing_count": _non_negative_int(
-                    comparison.get("provisional_bearing_count"),
-                    "provisional_bearing_count",
+                "provisional_unit_count": _non_negative_int(
+                    comparison.get("provisional_unit_count"),
+                    "provisional_unit_count",
                 ),
                 "data_complete": _bool(comparison.get("data_complete"), "data_complete"),
             },
@@ -329,9 +338,9 @@ def _validate_device_request(
                 "local_arbitration_supported",
             ),
             "source_refs": {
-                "bearing_results_ref": _text(
-                    source_refs.get("bearing_results_ref"),
-                    "bearing_results_ref",
+                "unit_results_ref": _text(
+                    source_refs.get("unit_results_ref"),
+                    "unit_results_ref",
                 ),
                 "provisional_result_ref": _text(
                     source_refs.get("provisional_result_ref"),
@@ -343,14 +352,20 @@ def _validate_device_request(
     except DeviceArbitrationRouteError:
         raise
     except (KeyError, TypeError, ValueError) as error:
-        raise DeviceArbitrationRouteError("INVALID_DEVICE_ARBITRATION_REQUEST", str(error)) from error
+        message = str(error)
+        if legacy_vocabulary:
+            message = legacy_scheduler_error_message(message)
+        raise DeviceArbitrationRouteError(
+            "INVALID_DEVICE_ARBITRATION_REQUEST",
+            message,
+        ) from error
 
 
-def _validate_bearing_result(value: Any) -> dict[str, Any]:
-    item = _mapping(value, "bearing result")
+def _validate_unit_result(value: Any) -> dict[str, Any]:
+    item = _mapping(value, "unit result")
     return {
-        "bearing_id": _text(item.get("bearing_id"), "bearing_id"),
-        "bearing_result_id": _text(item.get("bearing_result_id"), "bearing_result_id"),
+        "unit_id": _text(item.get("unit_id"), "unit_id"),
+        "unit_result_id": _text(item.get("unit_result_id"), "unit_result_id"),
         "result": _text(item.get("result"), "result"),
         "confidence": _bounded_float(item.get("confidence"), "confidence", 0.0, 1.0),
         "risk_level": _text(item.get("risk_level"), "risk_level"),
@@ -377,13 +392,13 @@ def _business_reasons(
         reasons.append("HIGH_COMPLEXITY")
     if (
         not comparison["data_complete"]
-        or request["received_bearing_count"] != request["expected_bearing_count"]
+        or request["received_unit_count"] != request["expected_unit_count"]
     ):
-        reasons.append("INCOMPLETE_BEARING_RESULTS")
+        reasons.append("INCOMPLETE_UNIT_RESULTS")
     if not request["local_arbitration_supported"]:
         reasons.append("LOCAL_ARBITRATION_UNSUPPORTED")
-    if comparison["provisional_bearing_count"] > 0:
-        reasons.append("HAS_PROVISIONAL_BEARING_RESULT")
+    if comparison["provisional_unit_count"] > 0:
+        reasons.append("HAS_PROVISIONAL_UNIT_RESULT")
     return reasons
 
 
@@ -420,25 +435,25 @@ def _conflict_id(request: Mapping[str, Any]) -> str:
 
 def _validate_v12_identity(
     item: Mapping[str, Any],
-    bearings: list[Mapping[str, Any]],
+    units: list[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    fields = ("decision_round_id", "device_result_revision", "bearing_result_ids")
+    fields = ("decision_round_id", "device_result_revision", "unit_result_ids")
     present = [field in item for field in fields]
     if not any(present):
         return None
     if not all(present):
         raise ValueError("V1.2 device arbitration identity fields must be provided together")
-    result_ids = _string_list(item.get("bearing_result_ids"), "bearing_result_ids")
+    result_ids = _string_list(item.get("unit_result_ids"), "unit_result_ids")
     if len(set(result_ids)) != len(result_ids):
-        raise ValueError("bearing_result_ids must be unique")
-    if result_ids != [bearing["bearing_result_id"] for bearing in bearings]:
-        raise ValueError("bearing_result_ids must match bearing_results in order")
+        raise ValueError("unit_result_ids must be unique")
+    if result_ids != [unit["unit_result_id"] for unit in units]:
+        raise ValueError("unit_result_ids must match unit_results in order")
     return {
         "decision_round_id": _text(item.get("decision_round_id"), "decision_round_id"),
         "device_result_revision": _positive_int(
             item.get("device_result_revision"), "device_result_revision"
         ),
-        "bearing_result_ids": result_ids,
+        "unit_result_ids": result_ids,
     }
 
 

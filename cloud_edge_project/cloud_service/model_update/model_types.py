@@ -1,10 +1,4 @@
-"""Dual-model registry and active-version pointer for model updates.
-
-The bearing scenario updates two model families: the edge distilled H5 model
-(`distilled_h5`) and the cloud MOMENT light-adapt review model
-(`moment_light_adapt`). This module is the single source of truth for the
-supported model types, their runtime families and seed versions.
-"""
+"""Legacy model-type view and active-version pointer for model updates."""
 
 from __future__ import annotations
 
@@ -14,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from cloud_service.storage.database import connect, initialize_database
+from compatibility.bearing_v12.legacy_exports import BEARING_MODEL_CATALOG
+from core.model_lifecycle import ModelCatalog
 
 
 @dataclass(frozen=True)
@@ -24,25 +20,23 @@ class ModelTypeSpec:
 
 
 MODEL_TYPE_SPECS: dict[str, ModelTypeSpec] = {
-    "distilled_h5": ModelTypeSpec(
-        family="edge",
-        default_version="distilled_h5_kd_fold3_a9f20442",
-        description="edge distilled H5 three-branch realtime model",
-    ),
-    "moment_light_adapt": ModelTypeSpec(
-        family="cloud",
-        default_version="moment-scl05-final",
-        description="cloud MOMENT light-adapt review model",
-    ),
+    model_id: ModelTypeSpec(
+        family=descriptor.family,
+        default_version=descriptor.default_version,
+        description=descriptor.description,
+    )
+    for model_id, descriptor in BEARING_MODEL_CATALOG.models.items()
 }
 
 VALID_MODEL_TYPES = tuple(MODEL_TYPE_SPECS)
 
 
-def validate_model_type(model_type: Any) -> str:
-    if model_type not in VALID_MODEL_TYPES:
-        raise ValueError(f"UNSUPPORTED_MODEL_TYPE={model_type}")
-    return model_type
+def validate_model_type(
+    model_type: Any,
+    model_catalog: ModelCatalog | None = None,
+) -> str:
+    catalog = model_catalog or BEARING_MODEL_CATALOG
+    return catalog.require(model_type).model_id
 
 
 class ActiveModelVersionStore:

@@ -63,14 +63,27 @@ def test_pipeline_queue_snapshot_exposes_capacity_and_full_metrics() -> None:
         cfg, SimpleNamespace(infer=lambda *a, **k: None), None,
         on_run_record=lambda r: None, on_packet_result=lambda r: None)
     snapshot = pipeline.queue_snapshot()
-    assert snapshot["waiting"] == 0
-    assert snapshot["capacity"] == 2
-    assert snapshot["full_policy"] == FULL_POLICY_REJECT
-    assert snapshot["max_observed_queued"] == 0
-    assert snapshot["queue_full_total"] == 0
+    expected_queue_metrics = {
+        "waiting": 0,
+        "capacity": 2,
+        "full_policy": FULL_POLICY_REJECT,
+        "max_observed_queued": 0,
+        "queue_full_total": 0,
+    }
+    assert {
+        name: snapshot[name] for name in expected_queue_metrics
+    } == expected_queue_metrics
     assert snapshot["consumer_count"] == 1
-    assert snapshot["consumers"] == [{"id": 0, "alive": False, "processed": 0}]
-    assert snapshot["inference_latency_ms"]["count"] == 0
+    assert snapshot["consumers"] == [
+        {"id": 0, "alive": False, "processed": 0}
+    ]
+    assert snapshot["inference_latency_ms"] == {
+        "count": 0,
+        "mean": None,
+        "p50": None,
+        "p95": None,
+        "max": None,
+    }
     pipeline.queue.submit(_task(1))
     pipeline.queue.submit(_task(2))
     pipeline.queue.submit(_task(3))  # 满载拒绝

@@ -8,7 +8,9 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
+
+from core.scenario_plugin import StorageProvider
 
 from core.diagnosis_identity import build_summary_window_id
 
@@ -33,15 +35,35 @@ def connect(database_path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def initialize_database(database_path: Path) -> None:
+class _SQLiteStorageRegistrar:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def execute_schema(self, script: str) -> None:
+        self._connection.executescript(script)
+
+
+def initialize_database(
+    database_path: Path,
+    *,
+    storage_providers: Iterable[StorageProvider] | None = None,
+) -> None:
     """Create or directly migrate the summary storage to the documented schema."""
+    providers = None if storage_providers is None else tuple(storage_providers)
+    if providers == ():
+        raise ValueError("storage_providers must not be empty when provided")
     with connect(database_path) as connection:
         _migrate_v1_to_sender_schema(connection)
         _migrate_v2_summary_to_document_schema(connection)
         legacy_summary_table = _migrate_v3_summary_to_ingestion_schema(connection)
         _migrate_v10_to_v11_identity_fields(connection)
         _migrate_v15_model_update_table(connection)
-        connection.executescript(DDL)
+        if providers is None:
+            connection.executescript(DDL)
+        else:
+            registrar = _SQLiteStorageRegistrar(connection)
+            for provider in providers:
+                provider.initialize(registrar)
         _migrate_v21_to_v22_device_arbitration_identity(connection)
         _migrate_v23_to_v24_summary_window_binary(connection)
         _migrate_v24_to_v25_summary_window_identity(connection)

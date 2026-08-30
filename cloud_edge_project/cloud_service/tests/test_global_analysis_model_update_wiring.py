@@ -64,13 +64,20 @@ def test_manual_global_analysis_creates_only_suggested_model_update(monkeypatch)
 
 def test_periodic_global_analysis_passes_auto_create_callback(monkeypatch):
     captured = {}
+    runtime = object()
+    provider = SimpleNamespace(
+        scenario_id="bearing",
+        build_runtime=lambda database_path: (runtime, database_path),
+    )
 
     def fake_run_all(*_args, **kwargs):
         captured.update(kwargs)
         return ["machine_01"]
 
     monkeypatch.setattr(app_module, "run_periodic_global_analysis", fake_run_all)
-    monkeypatch.setattr(app_module, "_build_bearing_global_analyzers", lambda: {})
+    monkeypatch.setattr(app_module, "_scenario_provider", lambda *_args: provider)
 
     assert app_module._run_periodic_global_analysis_once("cloud.db") == ["machine_01"]
+    assert captured["scenario_type"] == "bearing"
+    assert captured["runtime_factory"]("runtime.db") == (runtime, "runtime.db")
     assert captured.get("on_result") is not None

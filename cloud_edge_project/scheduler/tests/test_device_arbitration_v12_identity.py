@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from scheduler.deferred_device_dispatcher import DeferredDeviceArbitrationDispatcher
 from scheduler.deferred_device_repository import DeferredDeviceArbitrationRepository
-from scheduler.device_router import DeviceArbitrationRouter
+from scheduler.device_router import DeviceArbitrationRouteError, DeviceArbitrationRouter
 from scheduler.device_service import DeviceArbitrationService
 
 
@@ -110,10 +112,16 @@ def test_v12_device_route_and_deferred_task_preserve_round_identity(tmp_path) ->
     assert decision["device_result_revision"] == 2
     assert decision["bearing_result_ids"] == ["bearing_a_r2", "bearing_b_r2"]
     assert decision["conflict_id"]
+    assert decision["source"]["bearing_results_ref"] == (
+        f"summary-store://{request['task_id']}/bearings"
+    )
     assert task is not None
     assert task["decision_round_id"] == request["decision_round_id"]
     assert task["device_result_revision"] == 2
     assert task["bearing_result_ids"] == ["bearing_a_r2", "bearing_b_r2"]
+    assert task["bearing_results_ref"] == (
+        f"summary-store://{request['task_id']}/bearings"
+    )
 
 
 def test_deferred_device_dispatcher_delivers_v12_cloud_arbitration_contract(tmp_path) -> None:
@@ -221,3 +229,73 @@ def test_deferred_device_arbitration_recovers_after_scheduler_restart(tmp_path) 
     assert recovered["state"] == "PENDING"
     assert recovered["last_reason_code"] == "SCHEDULER_RESTART"
     assert recovered["decision_round_id"] == "round_machine_01_task_001_0001"
+
+
+def test_device_service_returns_same_legacy_decision_for_generic_input(tmp_path) -> None:
+    legacy_request = _request()
+    generic_request = dict(legacy_request)
+    generic_request["expected_unit_count"] = generic_request.pop(
+        "expected_bearing_count"
+    )
+    generic_request["received_unit_count"] = generic_request.pop(
+        "received_bearing_count"
+    )
+    generic_request["unit_result_ids"] = generic_request.pop("bearing_result_ids")
+    generic_request["unit_results"] = []
+    for result in generic_request.pop("bearing_results"):
+        generic_result = dict(result)
+        generic_result["unit_id"] = generic_result.pop("bearing_id")
+        generic_result["unit_result_id"] = generic_result.pop("bearing_result_id")
+        generic_request["unit_results"].append(generic_result)
+    generic_request["comparison"] = dict(generic_request["comparison"])
+    generic_request["comparison"]["low_confidence_unit_count"] = generic_request[
+        "comparison"
+    ].pop("low_confidence_bearing_count")
+    generic_request["comparison"]["provisional_unit_count"] = generic_request[
+        "comparison"
+    ].pop("provisional_bearing_count")
+
+    legacy_path = tmp_path / "legacy"
+    generic_path = tmp_path / "generic"
+    legacy_path.mkdir()
+    generic_path.mkdir()
+
+    assert _service(legacy_path).route(legacy_request) == _service(
+        generic_path
+    ).route(generic_request)
+
+
+def test_device_service_translates_alias_conflict_to_route_error(tmp_path) -> None:
+    request = _request() | {"expected_unit_count": 3}
+    service = _service(tmp_path)
+
+    with pytest.raises(DeviceArbitrationRouteError) as captured:
+        service.route(request)
+
+    assert captured.value.code == "INVALID_DEVICE_ARBITRATION_REQUEST"
+    assert captured.value.status_code == 400
+
+
+def test_device_legacy_invalid_count_keeps_legacy_error_message() -> None:
+    request = _request() | {"expected_bearing_count": 0}
+
+    with pytest.raises(
+        DeviceArbitrationRouteError,
+        match="expected_bearing_count must be",
+    ):
+        DeviceArbitrationRouter(
+            cloud_registry=_ReadyRegistry(),
+            clock_ns=lambda: 3,
+        ).decide(request)
+
+
+def test_device_legacy_invalid_result_keeps_legacy_object_name() -> None:
+    request = _request()
+    request["bearing_results"] = ["invalid"]
+    request["bearing_result_ids"] = ["invalid"]
+
+    with pytest.raises(DeviceArbitrationRouteError, match="bearing result must be"):
+        DeviceArbitrationRouter(
+            cloud_registry=_ReadyRegistry(),
+            clock_ns=lambda: 3,
+        ).decide(request)

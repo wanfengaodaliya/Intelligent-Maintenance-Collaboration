@@ -1,7 +1,54 @@
-"""Compatibility shim — re-exports from the bearing scenario implementation.
+"""Compatibility shim for the historical core workflow import path.
 
-The real implementation lives in scenarios/bearing/_compat/bearing_workflow_contracts.py.
-This file keeps old import paths (from core.bearing_workflow_contracts import ...) working.
+The compatibility package owns the dependency on the bearing plugin.
 """
 
-from scenarios.bearing._compat.bearing_workflow_contracts import *  # noqa: F401, F403
+from compatibility.bearing_v12.bearing_workflow_exports import (
+    FINAL_CLOUD,
+    FINAL_EDGE,
+    JOB_FAILED,
+    JOB_PENDING,
+    JOB_RUNNING,
+    JOB_STATUSES,
+    JOB_SUCCEEDED,
+    JOB_WAITING_RAW,
+    PACKETS_PER_BEARING,
+    PACKETS_PER_WINDOW,
+    REVIEW_BEARING_WINDOW,
+    REVIEW_DEVICE,
+    REVIEW_NOT_REQUIRED,
+    REVIEW_PACKET,
+    REVIEW_PENDING,
+    REVIEW_QUEUED,
+    REVIEW_SUCCEEDED,
+    WINDOWS_PER_BEARING,
+    BearingTaskResult,
+    BearingWindowResult,
+    DeviceTaskResult,
+    FinalPacketResult,
+)
+
+__all__ = [
+    "FINAL_CLOUD",
+    "FINAL_EDGE",
+    "JOB_FAILED",
+    "JOB_PENDING",
+    "JOB_RUNNING",
+    "JOB_STATUSES",
+    "JOB_SUCCEEDED",
+    "JOB_WAITING_RAW",
+    "PACKETS_PER_BEARING",
+    "PACKETS_PER_WINDOW",
+    "REVIEW_BEARING_WINDOW",
+    "REVIEW_DEVICE",
+    "REVIEW_NOT_REQUIRED",
+    "REVIEW_PACKET",
+    "REVIEW_PENDING",
+    "REVIEW_QUEUED",
+    "REVIEW_SUCCEEDED",
+    "WINDOWS_PER_BEARING",
+    "BearingTaskResult",
+    "BearingWindowResult",
+    "DeviceTaskResult",
+    "FinalPacketResult",
+]
