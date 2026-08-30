@@ -5,6 +5,7 @@ from pathlib import Path
 
 EDGE_SERVICE_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = EDGE_SERVICE_ROOT / "compose.multi-edge.yml"
+ENV_EXAMPLE_PATH = Path(__file__).resolve().parents[3] / ".env.example"
 DELETED_NETWORK_SIM_COMPOSE = EDGE_SERVICE_ROOT / "compose.network-sim.yml"
 MODEL_SERVICE_APP_PATH = EDGE_SERVICE_ROOT / "src" / "model_service" / "app.py"
 EDGE_APP_PATH = EDGE_SERVICE_ROOT / "app.py"
@@ -24,8 +25,8 @@ EXPECTED_EDGE_ROUTES = {
     },
 }
 
-# 正式拓扑地址在 Compose 中固定取值，不允许 ${...} 插值（.env 覆盖）。
-FIXED_TOPOLOGY_ENV_VARS = (
+# 正式拓扑地址必须提供本机默认值，同时允许 ${...} 插值（.env 覆盖）。
+CONFIGURABLE_TOPOLOGY_ENV_VARS = (
     "EDGE_MQTT_HOST",
     "EDGE_MQTT_PORT",
     "SCHEDULER_SERVICE_BASE_URL",
@@ -56,10 +57,15 @@ def _environment(block: str) -> dict[str, str]:
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
             continue
-        match = re.match(r"      ([A-Z_]+): (.+)$", line)
+        match = re.match(r"      ([A-Z0-9_]+): (.+)$", line)
         assert match is not None, f"unexpected environment line: {line}"
         env[match.group(1)] = match.group(2).strip()
     return env
+
+
+def _compose_default(value: str) -> str:
+    match = re.fullmatch(r"\$\{[A-Z0-9_]+:-(.*)\}", value)
+    return match.group(1) if match else value
 
 
 def test_old_network_sim_compose_is_removed() -> None:
@@ -78,9 +84,9 @@ def test_node_identities_topics_and_clients_are_unique() -> None:
         _environment(block)
         for block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).values()
     ]
-    node_ids = [env["EDGE_NODE_ID"] for env in environments]
-    topics = [env["EDGE_MQTT_INPUT_TOPIC"] for env in environments]
-    clients = [env["EDGE_MQTT_CLIENT_ID"] for env in environments]
+    node_ids = [_compose_default(env["EDGE_NODE_ID"]) for env in environments]
+    topics = [_compose_default(env["EDGE_MQTT_INPUT_TOPIC"]) for env in environments]
+    clients = [_compose_default(env["EDGE_MQTT_CLIENT_ID"]) for env in environments]
     assert len(set(node_ids)) == 2
     assert len(set(topics)) == 2
     assert len(set(clients)) == 2
@@ -92,12 +98,23 @@ def test_outbound_http_goes_through_matching_toxiproxy_links() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
         env = _environment(block)
-        expected = EXPECTED_EDGE_ROUTES[env["EDGE_NODE_ID"]]
-        assert env["SCHEDULER_SERVICE_BASE_URL"] == expected["scheduler"], name
-        assert env["CLOUD_SERVICE_BASE_URL"] == expected["cloud"], name
-        assert env["EDGE_NETWORK_LINK_ID"] == expected["link_id"], name
-        assert expected["link_id"] in env["EDGE_NETWORK_STATUS_URL"], name
-        assert env["EDGE_MQTT_HOST"] == "mqtt-broker", name
+        node_id = _compose_default(env["EDGE_NODE_ID"])
+        expected = EXPECTED_EDGE_ROUTES[node_id]
+        assert _compose_default(env["SCHEDULER_SERVICE_BASE_URL"]) == expected["scheduler"], name
+        assert _compose_default(env["CLOUD_SERVICE_BASE_URL"]) == expected["cloud"], name
+        assert _compose_default(env["EDGE_NETWORK_LINK_ID"]) == expected["link_id"], name
+        assert expected["link_id"] in _compose_default(env["EDGE_NETWORK_STATUS_URL"]), name
+        assert _compose_default(env["EDGE_MQTT_HOST"]) == "mqtt-broker", name
+
+
+def test_status_reporters_target_the_real_scheduler_and_cloud_routes() -> None:
+    text = COMPOSE_PATH.read_text(encoding="utf-8")
+    for name, block in _service_blocks(text).items():
+        env = _environment(block)
+        scheduler_url = _compose_default(env["EDGE_STATUS_SCHEDULER_URL"])
+        cloud_url = _compose_default(env["EDGE_STATUS_CLOUD_URL"])
+        assert scheduler_url.endswith("/scheduler/edge-nodes/status"), name
+        assert cloud_url.endswith("/cloud/edge-status"), name
 
 
 def test_edge_nodes_do_not_receive_suggestion_llm_configuration() -> None:
@@ -176,15 +193,36 @@ def test_both_edges_limit_local_h5_torch_threads_by_default() -> None:
         assert env["EDGE_TORCH_INTEROP_THREADS"] == "${EDGE_TORCH_INTEROP_THREADS:-1}", name
 
 
-def test_topology_addresses_are_fixed_and_not_env_overridable() -> None:
+def test_both_edges_accept_model_run_log_override() -> None:
+    for name, block in _service_blocks(COMPOSE_PATH.read_text(encoding="utf-8")).items():
+        env = _environment(block)
+        assert env["EDGE_MODEL_RUN_LOG"] == (
+            "${EDGE_MODEL_RUN_LOG:-/app/data/edge_model_runs.jsonl}"
+        ), name
+
+
+def test_new_edge_runtime_overrides_are_documented() -> None:
+    env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    for assignment in (
+        "EDGE_MODEL_RUN_LOG=/app/data/edge_model_runs.jsonl",
+        "EDGE_MODEL_QUEUE_WAIT_MS=250",
+        "EDGE_MODEL_TOTAL_TIMEOUT_MS=2000",
+        "EDGE_MODEL_INFERENCE_WORKERS=1",
+        "EDGE_TORCH_INTRAOP_THREADS=1",
+        "EDGE_TORCH_INTEROP_THREADS=1",
+    ):
+        assert assignment in env_example.splitlines()
+
+
+def test_topology_addresses_have_defaults_and_are_env_overridable() -> None:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
     for name, block in _service_blocks(text).items():
         env = _environment(block)
-        for variable in FIXED_TOPOLOGY_ENV_VARS:
+        for variable in CONFIGURABLE_TOPOLOGY_ENV_VARS:
             value = env.get(variable)
             assert value, f"{name}: {variable} is required"
-            assert "${" not in value and "}" not in value, (
-                f"{name}: {variable} 必须固定取值，不允许 .env 插值覆盖"
+            assert re.fullmatch(r"\$\{[A-Z0-9_]+:-.+\}", value), (
+                f"{name}: {variable} 必须允许 .env 插值覆盖并保留默认值"
             )
 
 
@@ -205,7 +243,7 @@ def test_data_volumes_and_host_ports_do_not_collide() -> None:
     assert len(set(volumes)) == 2
     host_ports: list[str] = []
     for block in _service_blocks(text).values():
-        host_ports.extend(re.findall(r"- \"(\d+):\d+\"", block))
+        host_ports.extend(re.findall(r'- "\$\{[A-Z0-9_]+:-(\d+)\}:', block))
     assert len(set(host_ports)) == len(host_ports)
     assert set(host_ports) <= {"8001", "8002", "8011", "8013"}
 
@@ -214,16 +252,15 @@ def _compose_host_ports(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
     ports: set[str] = set()
     for block in _service_blocks(text).values():
-        ports.update(re.findall(r"- \"(\d+):\d+\"", block))
+        ports.update(re.findall(r'- "\$\{[A-Z0-9_]+:-(\d+)\}:', block))
     return ports
 
 
 def test_model_service_port_is_reserved_and_never_mapped_by_compose() -> None:
     """正式模型服务统一使用 8012；任何 Compose 宿主机端口映射都不得占用它。"""
     model_app = MODEL_SERVICE_APP_PATH.read_text(encoding="utf-8")
-    match = re.search(r'add_argument\("--port", type=int, default=(\d+)\)', model_app)
-    assert match is not None, "model_service/app.py must define a --port default"
-    model_port = match.group(1)
+    assert 'os.getenv("EDGE_MODEL_SERVICE_PORT", "8012")' in model_app
+    model_port = "8012"
 
     edge_app = EDGE_APP_PATH.read_text(encoding="utf-8")
     client_match = re.search(

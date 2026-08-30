@@ -28,7 +28,7 @@ def test_edge_runtime_environment_keeps_existing_defaults() -> None:
     assert config.mqtt.port == 1883
     assert config.mqtt.input_topic == "edge/edge_01/input"
     assert config.mqtt.client_id == "edge_01-runtime"
-    assert config.scheduler.base_url == "http://127.0.0.1:8003"
+    assert config.scheduler.base_url == "http://127.0.0.1:18011"
     assert config.control.port == 8011
     assert config.validate() == []
 

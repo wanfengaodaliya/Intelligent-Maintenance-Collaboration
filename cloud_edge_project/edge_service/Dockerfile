@@ -11,10 +11,18 @@ WORKDIR /app
 
 COPY requirements-moment.txt ./requirements-moment.txt
 # momentfm 以 git+https 形式安装，镜像内需要 git。
+# APT_MIRROR 可在构建时设为镜像站根地址；留空时保持 Debian 官方源。
+ARG APT_MIRROR=""
 # PIP_INDEX_URL / PIP_EXTRA_INDEX_URL 可在构建时覆盖为镜像源（如国内网络环境）。
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=""
-RUN apt-get -o Acquire::Retries=10 update \
+RUN if [ -n "${APT_MIRROR}" ]; then \
+        sed -i \
+            -e "s|http://deb.debian.org/debian-security|${APT_MIRROR}/debian-security|g" \
+            -e "s|http://deb.debian.org/debian|${APT_MIRROR}/debian|g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get -o Acquire::Retries=10 update \
     && apt-get -o Acquire::Retries=10 install -y --no-install-recommends git curl \
     && git config --system http.version HTTP/1.1 \
     && rm -rf /var/lib/apt/lists/*
@@ -35,8 +43,10 @@ RUN sed -n '/^momentfm[[:space:]]*@/p' requirements-moment.txt > /tmp/requiremen
 
 COPY common ./common
 COPY core ./core
+COPY bootstrap ./bootstrap
 COPY configs ./configs
 COPY scenarios ./scenarios
+COPY compatibility ./compatibility
 COPY contracts ./contracts
 COPY edge_service ./edge_service
 
@@ -68,6 +78,6 @@ USER 10001:10001
 # 阶段 5：容器健康探针使用 liveness（关键线程存活），
 # readiness（/health/ready）用于调度与流量控制，短暂断连不应标记容器 unhealthy。
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=6 \
-    CMD ["python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8001/health/live', timeout=3)); assert data.get('alive', False)"]
+    CMD ["python", "-c", "import json, os, urllib.request; port=os.environ.get('EDGE_SERVICE_PORT', '8001'); data=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/health/live', timeout=3)); assert data.get('alive', False)"]
 
-CMD ["python", "edge_service/run_edge_service.py", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "edge_service/run_edge_service.py"]

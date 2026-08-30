@@ -2,6 +2,17 @@
 __pycache__/
 *.pyc
 tests/
+!tests/
+tests/*
+!tests/architecture/
+!tests/architecture/**
+!tests/contracts/
+!tests/contracts/**
+!tests/scenarios/
+tests/scenarios/*
+!tests/scenarios/bearing/
+!tests/scenarios/bearing/**
+tests/**/__pycache__/
 !cloud_service/tests/
 !cloud_service/tests/**
 !summary_service/tests/

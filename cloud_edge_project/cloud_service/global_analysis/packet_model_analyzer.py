@@ -6,11 +6,11 @@ from collections import defaultdict
 from typing import Any
 
 from cloud_service.global_analysis.common import analysis_status, review_metrics
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
+from cloud_service.global_analysis.runtime_contracts import GlobalAnalysisRuntimeConfig
 
 
 def analyze_packet_model(
-    rows: list[dict[str, Any]], config: GlobalAnalysisConfig, *, available: bool = True
+    rows: list[dict[str, Any]], config: GlobalAnalysisRuntimeConfig, *, available: bool = True
 ) -> dict[str, Any]:
     metrics = review_metrics(rows, edge_field="edge_label", cloud_field="cloud_label")
     count = metrics["count"]
@@ -48,7 +48,7 @@ def _by_model_version(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
-def _condition_weakness(rows: list[dict[str, Any]], config: GlobalAnalysisConfig) -> dict[str, Any]:
+def _condition_weakness(rows: list[dict[str, Any]], config: GlobalAnalysisRuntimeConfig) -> dict[str, Any]:
     candidates: list[dict[str, Any]] = []
     for condition, thresholds in config.condition_thresholds.items():
         buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)

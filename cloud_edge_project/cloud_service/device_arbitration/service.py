@@ -10,6 +10,7 @@ from cloud_service.device_arbitration.errors import ArbitrationPayloadConflictEr
 from cloud_service.device_arbitration.repository import DeviceArbitrationRepository
 from cloud_service.storage.database import initialize_database
 from core.arbitration_contracts import ScenarioArbitrationAdapter
+from core.arbitration_engine import ArbitrationEngine
 
 
 class DeviceArbitrationService:
@@ -37,29 +38,7 @@ class DeviceArbitrationService:
                 return existing
 
         context = self.adapter.build_context(request)
-        rule = self.adapter.evaluate_rules(context)
-        if rule.triggered:
-            decision = {
-                "status": "resolved",
-                "final_action": rule.final_action,
-                "confidence": rule.confidence,
-                "dominant_unit_id": rule.dominant_unit_id,
-                "action_scores": {rule.final_action: 1.0},
-                "resolution_method": "scenario_rule",
-                "reason": rule.reason or "scenario safety rule triggered",
-                "triggered_rule_id": rule.rule_id,
-            }
-        else:
-            min_top_score, min_margin = self.adapter.decision_thresholds()
-            decision = calculate_fusion(
-                context.decision_units,
-                action_severity=self.adapter.action_severity(),
-                min_top_score=min_top_score,
-                min_margin=min_margin,
-            ) | {
-                "resolution_method": "weighted_fusion",
-                "triggered_rule_id": None,
-            }
+        decision = ArbitrationEngine(self.adapter, calculate_fusion).decide(context)
 
         final_action = decision["final_action"]
         final_state = (

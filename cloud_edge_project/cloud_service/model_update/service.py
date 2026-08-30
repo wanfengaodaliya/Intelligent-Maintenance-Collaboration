@@ -34,9 +34,10 @@ from cloud_service.model_update.label_confirmation import (
 )
 from cloud_service.model_update.model_types import (
     ActiveModelVersionStore,
-    MODEL_TYPE_SPECS,
     validate_model_type,
 )
+from compatibility.bearing_v12.legacy_exports import BEARING_MODEL_CATALOG
+from core.model_lifecycle import ModelCatalog
 from cloud_service.model_update.post_validator import (
     select_post_validation_metrics,
     validate_post_deployment,
@@ -69,9 +70,11 @@ class ModelUpdateService:
         label_provider: LabelConfirmationProvider | None = None,
         trainer: OfflineTrainingRunner | None = None,
         settings: CloudSettings | None = None,
+        model_catalog: ModelCatalog | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.settings = settings or load_cloud_settings()
+        self.model_catalog = model_catalog or BEARING_MODEL_CATALOG
         self.data_root = (
             data_root
             or Path(__file__).resolve().parents[1] / "data" / "model_updates"
@@ -92,6 +95,12 @@ class ModelUpdateService:
     def _active_versions(self) -> ActiveModelVersionStore:
         return ActiveModelVersionStore(self.database_path)
 
+    def _model_family(self, model_type: str) -> str:
+        family = self.model_catalog.require(model_type).family
+        if family not in {"edge", "cloud"}:
+            raise ModelUpdateError("INVALID_APPROVED_MODEL")
+        return family
+
     def create(
         self,
         request: dict[str, Any],
@@ -103,16 +112,17 @@ class ModelUpdateService:
             raise ModelUpdateError("INVALID_UPDATE_REQUEST")
         analysis_id = _required_string(request, "analysis_id")
         problem_id = _required_string(request, "problem_id")
-        model_type = request.get("model_type") or "distilled_h5"
+        model_type = request.get("model_type") or self.model_catalog.default_model_id
         try:
-            model_type = validate_model_type(model_type)
+            model_type = validate_model_type(model_type, self.model_catalog)
         except ValueError as error:
             raise ModelUpdateError(str(error)) from error
         baseline_version = request.get("baseline_version")
         if not isinstance(baseline_version, str) or not baseline_version.strip():
-            baseline_version = self._active_versions().get(model_type) or MODEL_TYPE_SPECS[
-                model_type
-            ].default_version
+            baseline_version = (
+                self._active_versions().get(model_type)
+                or self.model_catalog.require(model_type).default_version
+            )
         analysis = self.repository.get_analysis(analysis_id)
         if analysis is None:
             raise ModelUpdateError("GLOBAL_ANALYSIS_NOT_FOUND")
@@ -287,8 +297,8 @@ class ModelUpdateService:
             )
         rollbacks: list[dict[str, Any]] = []
         for task in self.repository.list_pending_rollback():
-            spec = MODEL_TYPE_SPECS.get(task["model_type"])
-            if spec is None or spec.family != "edge":
+            descriptor = self.model_catalog.models.get(task["model_type"])
+            if descriptor is None or descriptor.family != "edge":
                 continue
             rollbacks.append(
                 {
@@ -541,6 +551,7 @@ class ModelUpdateService:
             request = build_distribution_request(
                 task["confirmation_result"],
                 subject_id=task.get("subject_id"),
+                model_catalog=self.model_catalog,
             )
         except ValueError as error:
             raise ModelUpdateError(str(error)) from error
@@ -581,7 +592,7 @@ class ModelUpdateService:
             task, {"handoff_to_distribution", "distribution_in_progress"}
         )
         if (
-            MODEL_TYPE_SPECS[task["model_type"]].family == "cloud"
+            self._model_family(task["model_type"]) == "cloud"
             and not local_cloud_activation_result
         ):
             raise ModelUpdateError("CLOUD_DISTRIBUTION_REQUIRES_LOCAL_ACTIVATION")
@@ -698,7 +709,7 @@ class ModelUpdateService:
         if not isinstance(executed_by, str) or not executed_by.strip():
             raise ModelUpdateError("ROLLBACK_EXECUTOR_REQUIRED")
         model_type = task["model_type"]
-        if MODEL_TYPE_SPECS[model_type].family == "cloud":
+        if self._model_family(model_type) == "cloud":
             if local_cloud_activator is None:
                 raise ModelUpdateError("CLOUD_ROLLBACK_REQUIRES_LOCAL_ACTIVATION")
             try:

@@ -10,7 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from edge_runtime.body_limit import RequestBodyLimitMiddleware
-from edge_runtime.http import EdgeControlApplication, make_control_server
+from edge_runtime.http import (
+    CONTROL_MAX_BODY_BYTES,
+    EdgeControlApplication,
+    make_control_server,
+)
 
 
 async def _asgi_request(
@@ -185,6 +189,25 @@ def test_legacy_control_server_rejects_oversize_and_times_out_partial_reads() ->
             )
             response = client.recv(4096)
         assert b" 408 " in response
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_legacy_control_server_returns_413_for_large_oversize_bodies() -> None:
+    server = make_control_server(
+        "127.0.0.1",
+        0,
+        EdgeControlApplication(_Ingress()),
+    )
+    thread = _serve(server)
+    port = server.server_address[1]
+    try:
+        for size in (CONTROL_MAX_BODY_BYTES + 1, CONTROL_MAX_BODY_BYTES * 2):
+            status, body = _post(port, b"x" * size)
+            assert status == 413
+            assert json.loads(body)["error"]["code"] == "CONTROL_BODY_TOO_LARGE"
     finally:
         server.shutdown()
         server.server_close()

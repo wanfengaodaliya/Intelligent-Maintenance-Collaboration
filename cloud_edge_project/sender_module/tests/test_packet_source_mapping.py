@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from sender.config import SenderConfig, SenderNodeConfig
 from sender.controller import run_sender_task
+from sender.input_adapter import PreparedScenarioInput
 from sender.mat_reader import SignalWindow
 
 from sender.source_mapping import (
@@ -77,7 +78,10 @@ def test_sender_task_saves_source_proof_when_it_creates_packet(
             ]
         ),
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     class Publisher:
         reconnect_count = 0
@@ -136,6 +140,103 @@ def test_sender_task_saves_source_proof_when_it_creates_packet(
     assert (mapping["start_index"], mapping["end_index"]) == (0, 3200)
 
 
+def test_sender_task_persists_each_directory_packet_source(tmp_path: Path):
+    source_dir = tmp_path / "K004"
+    source_dir.mkdir()
+    source_paths = {
+        1: source_dir / "N09_M07_F10_K004_1.mat",
+        2: source_dir / "N09_M07_F10_K004_2.mat",
+    }
+    windows = tuple(
+        SimpleNamespace(
+            sequence_number=sequence,
+            start_index=0,
+            end_index=3200,
+            window_index=sequence - 1,
+            data={},
+        )
+        for sequence in (1, 2)
+    )
+
+    class Adapter:
+        def __init__(self):
+            self.persisted_paths: list[Path] = []
+
+        def prepare(self, source_path, **kwargs):
+            return PreparedScenarioInput(
+                source_path=Path(source_path),
+                first_window=windows[0],
+                windows=iter(windows),
+                window_source_paths=source_paths,
+            )
+
+        def next_window(self, prepared_input, **kwargs):
+            return next(prepared_input.windows)
+
+        def build_packet(self, **kwargs):
+            sequence = kwargs["sequence_number"]
+            return {"packet_id": f"packet_{sequence:03d}"}
+
+        def serialize_packet(self, packet):
+            return b"packet"
+
+        def persist_source(self, **kwargs):
+            self.persisted_paths.append(kwargs["source_path"])
+
+    class Publisher:
+        reconnect_count = 0
+        publish_retry_total = 0
+
+        def __init__(self):
+            self.status_counts = {}
+
+        def start(self):
+            pass
+
+        def publish(self, packet, payload, topic):
+            self.status_counts = {
+                "confirmed": self.status_counts.get("confirmed", 0) + 1
+            }
+
+        def wait_until_settled(self, timeout):
+            pass
+
+        def stop(self):
+            pass
+
+    class Sink:
+        def write_task(self, summary):
+            pass
+
+    node = SenderNodeConfig(
+        "sender_01", "bearing_01", "http://scheduler", "mqtt", 1883
+    )
+    config = SenderConfig(
+        "machine_01", (node,), 1.0, 0, 30, 1, False, 10, 20, 0, 10,
+        100, 50, 2, tmp_path / "logs", tmp_path / "state",
+    )
+    adapter = Adapter()
+
+    summary = run_sender_task(
+        config,
+        node,
+        source_dir,
+        realtime=False,
+        scheduler=SimpleNamespace(
+            assign=lambda request: SimpleNamespace(
+                target_topic="edge/packets", schedule_retry_count=0
+            )
+        ),
+        publisher=Publisher(),
+        log_sink=Sink(),
+        task_ids=SimpleNamespace(next_task_id=lambda: "sd_01_tk_0001"),
+        input_adapter=adapter,
+    )
+
+    assert summary["task_status"] == "completed"
+    assert adapter.persisted_paths == [source_paths[1], source_paths[2]]
+
+
 def test_sender_packet_timestamps_follow_the_sampling_interval(
     tmp_path: Path, monkeypatch
 ):
@@ -172,7 +273,10 @@ def test_sender_packet_timestamps_follow_the_sampling_interval(
             ]
         ),
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     class Publisher:
         reconnect_count = 0

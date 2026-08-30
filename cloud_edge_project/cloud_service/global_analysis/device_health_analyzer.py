@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from cloud_service.global_analysis.common import analysis_status, normalized_state, rate, severity_of
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
+from cloud_service.global_analysis.runtime_contracts import GlobalAnalysisRuntimeConfig
 
 
-def analyze_device_health(rows: list[dict[str, Any]], config: GlobalAnalysisConfig) -> dict[str, Any]:
+def analyze_device_health(rows: list[dict[str, Any]], config: GlobalAnalysisRuntimeConfig) -> dict[str, Any]:
     valid = [row for row in rows if normalized_state(row.get("final_state"))]
     valid.sort(key=lambda row: row.get("completed_at_ns", 0))
     count = len(valid)

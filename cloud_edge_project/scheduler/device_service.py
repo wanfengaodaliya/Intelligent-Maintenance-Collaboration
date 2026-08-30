@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from compatibility.bearing_v12.scheduler_mapper import (
+    device_payload_to_legacy,
+)
+
 try:
     from .deferred_device_repository import (
         DAY_NS,
@@ -40,7 +44,7 @@ class DeviceArbitrationService:
                 "defer_reason": decision["defer_reason"],
                 "cloud_status_message_id": decision["input_snapshot"]["cloud_status_message_id"],
                 "network_snapshot_id": decision["input_snapshot"]["network_snapshot_id"],
-                "bearing_results_ref": decision["source"]["bearing_results_ref"],
+                "unit_results_ref": decision["source"]["unit_results_ref"],
                 "provisional_result_ref": decision["source"]["provisional_result_ref"],
                 "cloud_node_id": decision["target"]["cloud_node_id"],
                 "endpoint": decision["target"]["endpoint"],
@@ -53,16 +57,16 @@ class DeviceArbitrationService:
                         "conflict_id": decision["conflict_id"],
                         "decision_round_id": decision["decision_round_id"],
                         "device_result_revision": decision["device_result_revision"],
-                        "bearing_result_ids": decision["bearing_result_ids"],
-                        "bearing_results": decision["bearing_results"],
+                        "unit_result_ids": decision["unit_result_ids"],
+                        "unit_results": decision["unit_results"],
                         "comparison": decision["comparison"],
                         "local_arbitration_supported": decision[
                             "local_arbitration_supported"
                         ],
                     }
                 )
-            self.repository.create(task)
-        return decision
+            self.repository.create(device_payload_to_legacy(task))
+        return device_payload_to_legacy(decision)
 
     def save_arbitration_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.repository.save_arbitration_result(request)

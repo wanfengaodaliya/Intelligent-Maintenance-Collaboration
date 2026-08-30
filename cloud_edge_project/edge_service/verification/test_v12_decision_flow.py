@@ -216,6 +216,27 @@ def test_coordinator_converts_completed_packet_to_v12_edge_bearing_result() -> N
     assert result.recommended_action == "shutdown"
 
 
+def test_coordinator_carries_run_id_from_packet_into_edge_result() -> None:
+    """SensorPacket 携带的 run_id 必须原样进入 EdgeBearingResult，供 Summary/Cloud。
+
+    一个发送批次内两个 Sender 的包共享同一 run_id；Edge 据此把两个 Edge 结果
+    归入同一次一致性仲裁（Cloud 仲裁合同要求 bearing_results 的 run_id 一致）。
+    """
+    completion = PacketExecutionCompleted(
+        request_id="request_02", device_id="machine_01", task_id="task_002",
+        bearing_id="bearing_a", sender_id="sender_a", packet_id="packet_002",
+        sequence_number=1, status="SUCCEEDED", error_code=None, started_at_ns=1,
+        finished_at_ns=2, edge=EdgeResult("fault", .9, "high", "edge_model_v1"),
+        data_quality_score=.8,
+    )
+
+    result = _edge_bearing_result(
+        completion, {"end_generate_timestamp_ns": 50_000_000, "run_id": "run_batch01"}
+    )
+
+    assert result.run_id == "run_batch01"
+
+
 def test_coordinator_builds_bearing_result_from_the_complete_diagnosis_window() -> None:
     packets = [
         {

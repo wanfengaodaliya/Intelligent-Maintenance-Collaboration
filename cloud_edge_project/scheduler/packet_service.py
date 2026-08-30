@@ -5,6 +5,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from compatibility.bearing_v12.scheduler_mapper import (
+    packet_decision_to_domain,
+    packet_decision_to_legacy,
+    packet_result_to_domain,
+    packet_result_to_legacy,
+)
+
 try:
     from .deferred_cloud_repository import DAY_NS, DeferredCloudRepository
     from .packet_router import (
@@ -23,20 +30,24 @@ class PacketRoutingService:
 
     def route(self, request: Mapping[str, Any]) -> dict[str, Any]:
         decision = self.router.decide(request)
+        domain_request = packet_result_to_domain(request)
+        legacy_request = packet_result_to_legacy(domain_request)
         if decision["needs_cloud_review"]:
             persisted = self.repository.routing_decision(
                 decision["decision_id"],
-                request,
+                legacy_request,
             )
             if persisted is not None:
-                return persisted
-            edge_node_id = str(request["edge_node_id"])
+                return packet_decision_to_legacy(
+                    packet_decision_to_domain(persisted)
+                )
+            edge_node_id = str(domain_request["edge_node_id"])
             task = {
                 "decision_id": decision["decision_id"],
                 "cloud_task_id": cloud_task_id(decision["decision_id"]),
                 "device_id": decision["device_id"],
                 "task_id": decision["task_id"],
-                "bearing_id": decision["bearing_id"],
+                "unit_id": decision["unit_id"],
                 "decision_round_id": decision["decision_round_id"],
                 "diagnosis_window_id": decision["diagnosis_window_id"],
                 "window_start_sequence": decision["window_start_sequence"],
@@ -51,11 +62,11 @@ class PacketRoutingService:
                 "network_snapshot_id": decision["input_snapshot"]["network_snapshot_id"],
                 "raw_data_ref": (
                     f"edge-cache://{edge_node_id}/{decision['task_id']}/"
-                    f"{decision['bearing_id']}/{decision['packet_id']}"
+                    f"{decision['unit_id']}/{decision['packet_id']}"
                 ),
                 "context_ref": (
                     f"edge-cache://{edge_node_id}/{decision['task_id']}/"
-                    f"{decision['bearing_id']}/context/{decision['packet_id']}"
+                    f"{decision['unit_id']}/context/{decision['packet_id']}"
                 ),
                 "cloud_node_id": decision["target"]["cloud_node_id"],
                 "endpoint": decision["target"]["endpoint"],
@@ -63,17 +74,19 @@ class PacketRoutingService:
                 "expires_at_ns": decision["created_at_ns"] + DAY_NS,
             }
             self.repository.create(
-                task,
-                packet_request=request,
-                routing_decision=decision,
+                packet_decision_to_legacy(task),
+                packet_request=legacy_request,
+                routing_decision=packet_decision_to_legacy(decision),
             )
             persisted = self.repository.routing_decision(
                 decision["decision_id"],
-                request,
+                legacy_request,
             )
             if persisted is not None:
-                return persisted
-        return decision
+                return packet_decision_to_legacy(
+                    packet_decision_to_domain(persisted)
+                )
+        return packet_decision_to_legacy(decision)
 
     def save_upload_result(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self.repository.save_upload_result(request)

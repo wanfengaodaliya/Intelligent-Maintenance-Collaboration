@@ -1,21 +1,34 @@
 from __future__ import annotations
 
-import itertools
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from core.diagnosis_identity import build_run_id
 from sender.config import SenderConfig, SenderNodeConfig
+from sender.input_adapter import (
+    SenderInputAdapter,
+    SenderInputAdapterProvider,
+)
 from sender.ids import TaskIdStore
 from sender.local_logs import LocalLogSink
-from sender.mat_reader import load_mat_record
 from sender.mqtt_publisher import MqttPublisher
-from sender.packet import build_sensor_packet, serialize_packet
 from sender.scheduler_client import SchedulerClient, SchedulerError
-from sender.source_mapping import PacketSourceMappingStore
+from bootstrap.scenarios import build_sender_scenario_registry
+from core.scenario_plugin import INPUT_ADAPTER
+from compatibility.bearing_v12.diagnosis_identity import build_run_id
+from compatibility.bearing_v12.scenario_mapper import BEARING_SCENARIO_TYPE
+
+
+scenario_registry = build_sender_scenario_registry()
+input_adapter_provider = cast(
+    SenderInputAdapterProvider,
+    scenario_registry.require_provider(
+        BEARING_SCENARIO_TYPE,
+        INPUT_ADAPTER,
+    ),
+)
 
 
 class SenderTaskError(RuntimeError):
@@ -91,6 +104,7 @@ def _summary(
         "sender_id": node.sender_id,
         "bearing_id": node.bearing_id,
         "task_id": task_id,
+        "run_id": run_id,
         "target_topic": target_topic,
         "target_edge_node_id": target_edge_node_id,
         "expected_packet_count": config.expected_packet_count,
@@ -127,8 +141,10 @@ def run_sender_task(
     publisher: Any | None = None,
     log_sink: LocalLogSink | None = None,
     task_ids: TaskIdStore | None = None,
-    source_mapping_store: PacketSourceMappingStore | None = None,
+    source_mapping_store: object | None = None,
+    input_adapter: SenderInputAdapter | None = None,
     batch_created_timestamp_ns: int | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     sink = log_sink or LocalLogSink(config.log_dir)
     id_store = task_ids or TaskIdStore(
@@ -146,33 +162,35 @@ def run_sender_task(
     )
 
     task_id = id_store.next_task_id()
-    source_store = source_mapping_store or PacketSourceMappingStore(
-        config.state_dir / "packet_source_mapping.db"
+    adapter = input_adapter or input_adapter_provider.build_adapter(
+        config.state_dir,
+        source_mapping_store,
     )
     started_ns = time.time_ns()
     created_ns = batch_created_timestamp_ns or started_ns
-    run_id = build_run_id(
-        device_id=config.device_id,
-        batch_created_timestamp_ns=created_ns,
-    )
-    record = load_mat_record(source_path)
-    windows = record.windows(
+    # 一次发送批次内两个 Sender 共享同一个确定性的 run_id（由 device_id 和批次
+    # 开始时间推导）。run_id 与 task_id/device_id/experiment_id 含义不同：它标识
+    # 同一批次的跨服务一致性窗口，贯通 Sender 请求、Edge 结果、Summary 与 Cloud 仲裁。
+    if run_id is None or not run_id.strip():
+        run_id = build_run_id(
+            device_id=config.device_id,
+            batch_created_timestamp_ns=created_ns,
+        )
+    prepared_input = adapter.prepare(
+        source_path,
+        unit_id=node.unit_id,
         duration_ms=config.packet_interval_ms,
         count=config.expected_packet_count,
     )
-    try:
-        first_window = next(windows)
-    except StopIteration as exc:
-        raise RuntimeError(f"MAT record produced no data windows: {node.bearing_id}") from exc
-    windows = itertools.chain([first_window], windows)
+    first_window = prepared_input.first_window
 
-    preview_packet = build_sensor_packet(
+    preview_packet = adapter.build_packet(
         device_id=config.device_id,
         task_id=task_id,
-        bearing_id=node.bearing_id,
+        unit_id=node.unit_id,
         sender_id=node.sender_id,
         sequence_number=first_window.sequence_number,
-        data=first_window.data,
+        window=first_window,
         end_generate_timestamp_ns=started_ns,
         run_id=run_id,
     )
@@ -181,7 +199,7 @@ def run_sender_task(
         "sender_id": node.sender_id,
         "task_id": task_id,
         "bearing_id": node.bearing_id,
-        "packet_size_bytes": len(serialize_packet(preview_packet)),
+        "packet_size_bytes": len(adapter.serialize_packet(preview_packet)),
         "expected_packet_count": config.expected_packet_count,
         "expected_duration_ms": config.task_duration_ms,
         "created_timestamp_ns": created_ns,
@@ -195,6 +213,7 @@ def run_sender_task(
             config=config,
             node=node,
             task_id=task_id,
+            run_id=run_id,
             target_topic=None,
             schedule_retry_count=exc.retry_count,
             mqtt_reconnect_count=0,
@@ -205,10 +224,23 @@ def run_sender_task(
             realtime=realtime,
             error_code="SCHEDULER_REQUEST_FAILED",
             error_message=str(exc),
-            run_id=run_id,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
+
+    # Preserve compatibility with injected or older scheduler clients that
+    # predate the weak-network delivery fields.
+    delivery_mode = getattr(assignment, "delivery_mode", "realtime")
+    delivery_interval_ms = getattr(
+        assignment,
+        "delivery_interval_ms",
+        config.packet_interval_ms,
+    )
+    available_throughput_mbps = getattr(
+        assignment,
+        "available_throughput_mbps",
+        None,
+    )
 
     # 阶段 4：按 Scheduler 分配的目标 Edge 选择对应网络模拟代理端口，
     # 使 Sender→Edge 流量经过 per-link 的 Toxiproxy 链路。
@@ -236,44 +268,46 @@ def run_sender_task(
         replay_started = time.monotonic()
         # 缓传：墙钟发送节奏由 Scheduler 返回的 delivery_interval_ms 控制；
         # 传感器时间戳仍按 config.packet_interval_ms 递增，不受此影响。
-        interval_seconds = assignment.delivery_interval_ms / 1000.0
+        interval_seconds = delivery_interval_ms / 1000.0
         for sequence_number in range(1, config.expected_packet_count + 1):
             if realtime:
                 due = replay_started + (sequence_number - 1) * interval_seconds
                 remaining = due - time.monotonic()
                 if remaining > 0:
                     time.sleep(remaining)
-            try:
-                window = next(windows)
-            except StopIteration as exc:
-                raise RuntimeError(
-                    f"MAT record ended before packet {sequence_number}: {node.bearing_id}"
-                ) from exc
-            if window.sequence_number != sequence_number:
-                raise RuntimeError(f"bearing window sequence mismatch: {node.bearing_id}")
-            packet = build_sensor_packet(
+            window = adapter.next_window(
+                prepared_input,
+                unit_id=node.unit_id,
+                expected_sequence=sequence_number,
+            )
+            packet = adapter.build_packet(
                 device_id=config.device_id,
                 task_id=task_id,
-                bearing_id=node.bearing_id,
+                unit_id=node.unit_id,
                 sender_id=node.sender_id,
                 sequence_number=sequence_number,
-                data=window.data,
+                window=window,
                 end_generate_timestamp_ns=(
                     started_ns
                     + (sequence_number - 1) * config.packet_interval_ms * 1_000_000
                 ),
                 run_id=run_id,
             )
-            source_store.save(
-                packet_id=packet["packet_id"],
+            adapter.persist_source(
+                packet=packet,
                 task_id=task_id,
-                bearing_id=node.bearing_id,
-                source_path=record.source_path,
-                start_index=window.start_index,
-                end_index=window.end_index,
-                window_index=window.window_index,
+                unit_id=node.unit_id,
+                source_path=prepared_input.window_source_paths.get(
+                    sequence_number,
+                    prepared_input.source_path,
+                ),
+                window=window,
             )
-            mqtt_publisher.publish(packet, serialize_packet(packet), assignment.target_topic)
+            mqtt_publisher.publish(
+                packet,
+                adapter.serialize_packet(packet),
+                assignment.target_topic,
+            )
 
         mqtt_publisher.wait_until_settled(config.recovery_window_seconds)
     except Exception as exc:
@@ -285,6 +319,7 @@ def run_sender_task(
             config=config,
             node=node,
             task_id=task_id,
+            run_id=run_id,
             target_topic=assignment.target_topic,
             schedule_retry_count=assignment.schedule_retry_count,
             mqtt_reconnect_count=mqtt_publisher.reconnect_count,
@@ -296,10 +331,9 @@ def run_sender_task(
             error_code="MQTT_TASK_ERROR",
             error_message=str(exc),
             target_edge_node_id=target_edge_node_id,
-            delivery_mode=assignment.delivery_mode,
-            delivery_interval_ms=assignment.delivery_interval_ms,
-            available_throughput_mbps=assignment.available_throughput_mbps,
-            run_id=run_id,
+            delivery_mode=delivery_mode,
+            delivery_interval_ms=delivery_interval_ms,
+            available_throughput_mbps=available_throughput_mbps,
         )
         sink.write_task(summary)
         raise SenderTaskError(summary, exc) from exc
@@ -312,6 +346,7 @@ def run_sender_task(
         config=config,
         node=node,
         task_id=task_id,
+        run_id=run_id,
         target_topic=assignment.target_topic,
         schedule_retry_count=assignment.schedule_retry_count,
         mqtt_reconnect_count=mqtt_publisher.reconnect_count,
@@ -322,10 +357,9 @@ def run_sender_task(
         realtime=realtime,
         error_code=_delivery_error_code(status),
         target_edge_node_id=target_edge_node_id,
-        delivery_mode=assignment.delivery_mode,
-        delivery_interval_ms=assignment.delivery_interval_ms,
-        available_throughput_mbps=assignment.available_throughput_mbps,
-        run_id=run_id,
+        delivery_mode=delivery_mode,
+        delivery_interval_ms=delivery_interval_ms,
+        available_throughput_mbps=available_throughput_mbps,
     )
     sink.write_task(summary)
     return summary
@@ -343,10 +377,18 @@ def run_all_senders(
 ) -> list[dict[str, Any]]:
     expected_sender_ids = {node.sender_id for node in config.senders}
     if set(source_files) != expected_sender_ids:
-        raise ValueError("source files must provide exactly one MAT path for every configured sender")
+        raise ValueError(
+            "source paths must provide exactly one MAT file or directory "
+            "for every configured sender"
+        )
 
     sink = LocalLogSink(config.log_dir)
     batch_created_timestamp_ns = time.time_ns()
+    # 同一发送批次内的所有 Sender 共享同一个 run_id（由批次开始时间推导）。
+    batch_run_id = build_run_id(
+        device_id=config.device_id,
+        batch_created_timestamp_ns=batch_created_timestamp_ns,
+    )
     with ThreadPoolExecutor(max_workers=len(config.senders), thread_name_prefix="sender") as executor:
         jobs = [
             (
@@ -359,6 +401,7 @@ def run_all_senders(
                     realtime=realtime,
                     log_sink=sink,
                     batch_created_timestamp_ns=batch_created_timestamp_ns,
+                    run_id=batch_run_id,
                 ),
             )
             for node in config.senders
@@ -376,6 +419,7 @@ def run_all_senders(
                     "sender_id": node.sender_id,
                     "bearing_id": node.bearing_id,
                     "task_id": None,
+                    "run_id": batch_run_id,
                     "target_topic": None,
                     "expected_packet_count": config.expected_packet_count,
                     "confirmed_packet_count": 0,

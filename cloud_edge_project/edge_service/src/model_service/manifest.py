@@ -6,7 +6,7 @@ edge-bench venv 下运行，代码/提示词/模型服务稳定后再生成，�
 哈希失效。
 
 用法（WSL）：
-    EDGE_MODEL_PATH=/home/unic/models/Qwen2.5-1.5B-Instruct \
+    EDGE_MODEL_PATH=models/Qwen2.5-1.5B-Instruct \
     python src/model_service/manifest.py --out var/model_manifest.json
 """
 from __future__ import annotations

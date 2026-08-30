@@ -22,6 +22,15 @@ from common.control_auth import (
     sign_control_request,
 )
 from core.diagnosis_identity import build_run_id
+from compatibility.bearing_v12.scheduler_mapper import (
+    EDGE_INFERENCE,
+    assignment_row_to_domain,
+    assignment_to_domain,
+    assignment_to_legacy,
+    capability_to_legacy,
+    legacy_scheduler_error_message,
+    uses_generic_scheduler_fields,
+)
 
 try:
     from .node_registry import EdgeNodeState, LinkSnapshot, NodeRegistry
@@ -43,7 +52,7 @@ ASSIGNMENT_REQUEST_FIELDS = frozenset(
         "device_id",
         "sender_id",
         "task_id",
-        "bearing_id",
+        "unit_id",
         "packet_size_bytes",
         "expected_packet_count",
         "expected_duration_ms",
@@ -80,7 +89,7 @@ class AssignmentDecision:
     device_id: str
     sender_id: str
     task_id: str
-    bearing_id: str
+    unit_id: str
     target_topic: str
     delivery_mode: str
     delivery_interval_ms: int
@@ -91,7 +100,7 @@ class AssignmentDecision:
             "device_id": self.device_id,
             "sender_id": self.sender_id,
             "task_id": self.task_id,
-            "bearing_id": self.bearing_id,
+            "bearing_id": self.unit_id,
             "target_topic": self.target_topic,
             "delivery_mode": self.delivery_mode,
             "delivery_interval_ms": self.delivery_interval_ms,
@@ -134,25 +143,28 @@ class EdgeAssignmentClient:
         *,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        domain_request = assignment_to_domain(request)
         payload = {
-            "task_id": request["task_id"],
+            "task_id": domain_request["task_id"],
             "target_edge_node_id": node.config.edge_node_id,
-            "task_type": "BEARING_EDGE_INFERENCE",
+            "task_type": capability_to_legacy(EDGE_INFERENCE),
             "input_ref": {
-                "device_id": request["device_id"],
-                "expected_bearing_ids": [request["bearing_id"]],
+                "device_id": domain_request["device_id"],
+                "expected_bearing_ids": [domain_request["unit_id"]],
                 "assigned_bearings": [
                     {
-                        "bearing_id": request["bearing_id"],
-                        "sender_id": request["sender_id"],
-                        "expected_packet_count": request["expected_packet_count"],
+                        "bearing_id": domain_request["unit_id"],
+                        "sender_id": domain_request["sender_id"],
+                        "expected_packet_count": domain_request[
+                            "expected_packet_count"
+                        ],
                     }
                 ],
             },
-            "dispatched_at_ns": request["created_timestamp_ns"],
+            "dispatched_at_ns": domain_request["created_timestamp_ns"],
         }
-        if request.get("run_id") is not None:
-            payload["input_ref"]["run_id"] = request["run_id"]
+        if domain_request.get("run_id"):
+            payload["input_ref"]["run_id"] = domain_request["run_id"]
         body = encode_control_json(payload)
         secret = (
             load_control_shared_secret()
@@ -186,23 +198,28 @@ class EdgeAssignmentClient:
                     f"edge node {node.config.edge_node_id} did not acknowledge: {exc}",
                     503,
                 ) from decode_error
-            validated_ack = _validate_ack(
-                ack, request["task_id"], node.config.edge_node_id
-            )
-            if validated_ack["ack_status"] != "REJECTED":
+            # 非 2xx 响应：仅当 Edge 返回的是结构完整的 REJECTED 仲裁 ack 时，
+            # 才按拒绝处理（保留此语义）。否则（401/403/5xx 等认证或服务端异常，
+            # 响应体通常不是 ack 对象）必须保留真实 HTTP 状态与错误信息，
+            # 不能误报成 "ack task_id does not match"。
+            if not isinstance(ack, Mapping) or ack.get("ack_status") != "REJECTED":
                 raise AssignmentError(
-                    "INVALID_EDGE_ACK",
-                    "a non-success HTTP response cannot accept a task",
-                    502,
-                )
-            return validated_ack
+                    "EDGE_ACK_FAILED",
+                    f"edge node {node.config.edge_node_id} rejected the task dispatch: "
+                    f"HTTP {exc.code} {exc.reason} - "
+                    f"{json.dumps(ack, ensure_ascii=False)}",
+                    exc.code if 400 <= exc.code < 600 else 503,
+                ) from exc
+            return _validate_ack(
+                ack, domain_request["task_id"], node.config.edge_node_id
+            )
         except (URLError, TimeoutError, OSError, ValueError) as exc:
             raise AssignmentError(
                 "EDGE_ACK_FAILED",
                 f"edge node {node.config.edge_node_id} did not acknowledge: {exc}",
                 503,
             ) from exc
-        return _validate_ack(ack, request["task_id"], node.config.edge_node_id)
+        return _validate_ack(ack, domain_request["task_id"], node.config.edge_node_id)
 
 
 class AssignmentScheduler:
@@ -255,7 +272,7 @@ class AssignmentScheduler:
                 device_id=existing["device_id"],
                 sender_id=existing["sender_id"],
                 task_id=existing["task_id"],
-                bearing_id=existing["bearing_id"],
+                unit_id=existing["unit_id"],
                 target_topic=existing["target_topic"],
                 delivery_mode=retry_mode,
                 delivery_interval_ms=retry_interval,
@@ -316,7 +333,7 @@ class AssignmentScheduler:
                 validated["task_id"],
                 node.config.edge_node_id,
                 claim_id,
-                bearing_id=validated["bearing_id"],
+                bearing_id=validated["unit_id"],
             )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -433,7 +450,7 @@ class AssignmentScheduler:
                 device_id=validated["device_id"],
                 sender_id=validated["sender_id"],
                 task_id=validated["task_id"],
-                bearing_id=validated["bearing_id"],
+                unit_id=validated["unit_id"],
                 target_topic=node.config.target_topic,
                 delivery_mode=success_mode,
                 delivery_interval_ms=success_interval,
@@ -523,11 +540,12 @@ class AssignmentScheduler:
     ) -> dict[str, Any]:
         while True:
             try:
-                return self.repository.claim(
-                    request,
+                row = self.repository.claim(
+                    assignment_to_legacy(request),
                     claim_id,
                     lease_seconds=self.scheduling_timeout_seconds + 0.1,
                 )
+                return assignment_row_to_domain(row)
             except TaskRepositoryError as exc:
                 if exc.code != "TASK_SCHEDULING":
                     raise AssignmentError(exc.code, exc.message, exc.status_code) from exc
@@ -725,12 +743,18 @@ def _append_rejection(
 def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise AssignmentError("INVALID_REQUEST", "request must be an object")
-    allowed_fields = ASSIGNMENT_REQUEST_FIELDS | OPTIONAL_ASSIGNMENT_REQUEST_FIELDS
-    if not ASSIGNMENT_REQUEST_FIELDS.issubset(payload) or not set(payload).issubset(
-        allowed_fields
-    ):
-        missing = sorted(ASSIGNMENT_REQUEST_FIELDS - set(payload))
-        unexpected = sorted(set(payload) - allowed_fields)
+    generic_vocabulary = uses_generic_scheduler_fields(payload)
+    try:
+        domain_payload = assignment_to_domain(payload)
+    except ValueError as exc:
+        message = str(exc)
+        if not generic_vocabulary:
+            message = legacy_scheduler_error_message(message)
+        raise AssignmentError("INVALID_REQUEST", message) from exc
+    request_fields = set(domain_payload)
+    missing = sorted(ASSIGNMENT_REQUEST_FIELDS - request_fields)
+    unexpected = sorted(request_fields - ASSIGNMENT_REQUEST_FIELDS - {"run_id"})
+    if missing or unexpected:
         details: list[str] = []
         if missing:
             details.append(f"missing fields: {', '.join(missing)}")
@@ -738,14 +762,14 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             details.append(f"unexpected fields: {', '.join(unexpected)}")
         raise AssignmentError("INVALID_REQUEST", "; ".join(details))
 
-    device_id = _non_empty_text(payload.get("device_id"), "device_id")
-    sender_id = _non_empty_text(payload.get("sender_id"), "sender_id")
+    device_id = _non_empty_text(domain_payload.get("device_id"), "device_id")
+    sender_id = _non_empty_text(domain_payload.get("sender_id"), "sender_id")
     sender_match = SENDER_ID_PATTERN.fullmatch(sender_id)
     if sender_match is None:
         raise AssignmentError(
             "INVALID_REQUEST", "sender_id must match sender_<sender number>"
         )
-    task_id = _non_empty_text(payload.get("task_id"), "task_id")
+    task_id = _non_empty_text(domain_payload.get("task_id"), "task_id")
     task_match = TASK_ID_PATTERN.fullmatch(task_id)
     if task_match is None or not 1 <= int(task_match.group(2)) <= 9999:
         raise AssignmentError(
@@ -758,7 +782,7 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             "task_id sender number must match sender_id",
         )
     expected_packet_count = _positive_int(
-        payload.get("expected_packet_count"), "expected_packet_count"
+        domain_payload.get("expected_packet_count"), "expected_packet_count"
     )
     configured_packet_count = _configured_expected_packet_count()
     if expected_packet_count != configured_packet_count:
@@ -767,13 +791,13 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             f"expected_packet_count must equal {configured_packet_count}",
         )
     created_timestamp_ns = _positive_int(
-        payload.get("created_timestamp_ns"), "created_timestamp_ns"
+        domain_payload.get("created_timestamp_ns"), "created_timestamp_ns"
     )
     expected_run_id = build_run_id(
         device_id=device_id,
         batch_created_timestamp_ns=created_timestamp_ns,
     )
-    run_id = payload.get("run_id", expected_run_id)
+    run_id = domain_payload.get("run_id", expected_run_id)
     if not isinstance(run_id, str) or run_id.strip() != expected_run_id:
         raise AssignmentError(
             "INVALID_REQUEST",
@@ -783,13 +807,16 @@ def validate_assignment_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         "device_id": device_id,
         "sender_id": sender_id,
         "task_id": task_id,
-        "bearing_id": _non_empty_text(payload.get("bearing_id"), "bearing_id"),
+        "unit_id": _non_empty_text(
+            domain_payload.get("unit_id"),
+            "unit_id" if generic_vocabulary else "bearing_id",
+        ),
         "packet_size_bytes": _positive_int(
-            payload.get("packet_size_bytes"), "packet_size_bytes"
+            domain_payload.get("packet_size_bytes"), "packet_size_bytes"
         ),
         "expected_packet_count": expected_packet_count,
         "expected_duration_ms": _positive_int(
-            payload.get("expected_duration_ms"), "expected_duration_ms"
+            domain_payload.get("expected_duration_ms"), "expected_duration_ms"
         ),
         "created_timestamp_ns": created_timestamp_ns,
         "run_id": expected_run_id,

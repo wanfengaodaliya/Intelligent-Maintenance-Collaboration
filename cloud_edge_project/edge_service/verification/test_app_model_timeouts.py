@@ -2,6 +2,8 @@
 import json
 import sys
 
+import pytest
+
 from edge_model.config import EdgeModelConfig
 from edge_model.contracts import RunRecord
 from edge_runtime import PacketRouteErrorRecorder
@@ -44,13 +46,25 @@ def test_local_h5_torch_threads_are_configurable(monkeypatch) -> None:
             calls.append(("interop", value))
 
     monkeypatch.setitem(sys.modules, "torch", FakeTorch)
-    from edge_service import app as application
+    from scenarios.bearing.edge_inference import provider
 
-    assert application._configure_local_h5_torch_threads() == {
+    monkeypatch.setattr(provider, "_APPLIED_TORCH_THREAD_CONFIG", None)
+
+    assert provider.configure_local_h5_torch_threads() == {
         "intraop": 2,
         "interop": 1,
     }
     assert calls == [("intraop", 2), ("interop", 1)]
+
+    assert provider.configure_local_h5_torch_threads() == {
+        "intraop": 2,
+        "interop": 1,
+    }
+    assert calls == [("intraop", 2), ("interop", 1)]
+
+    monkeypatch.setenv("EDGE_TORCH_INTRAOP_THREADS", "1")
+    with pytest.raises(ValueError, match="already fixed for this process"):
+        provider.configure_local_h5_torch_threads()
 
 
 def test_failed_model_run_is_persisted_without_raw_packet(tmp_path, monkeypatch) -> None:

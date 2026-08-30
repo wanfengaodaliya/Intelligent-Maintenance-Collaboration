@@ -6,11 +6,13 @@ from collections import Counter
 from typing import Any
 
 from cloud_service.global_analysis.common import rate
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
+from cloud_service.global_analysis.runtime_contracts import GlobalAnalysisRuntimeConfig
 
 
 def analyze_device_arbitration(
-    summary_rows: list[dict[str, Any]], arbitration_rows: list[dict[str, Any]], config: GlobalAnalysisConfig
+    summary_rows: list[dict[str, Any]],
+    arbitration_rows: list[dict[str, Any]],
+    config: GlobalAnalysisRuntimeConfig,
 ) -> dict[str, Any]:
     eligible_rows = [
         row for row in summary_rows if not row.get("excluded_from_formal_metrics", False)

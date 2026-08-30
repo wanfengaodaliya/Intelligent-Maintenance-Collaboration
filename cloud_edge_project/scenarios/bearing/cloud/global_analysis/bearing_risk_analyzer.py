@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from cloud_service.global_analysis.contracts import GlobalAnalysisConfig
 from cloud_service.global_analysis.device_health_analyzer import analyze_device_health
+from scenarios.bearing.cloud.global_analysis.config import GlobalAnalysisConfig
 
 
 def analyze_bearing_risk(rows: list[dict[str, Any]], config: GlobalAnalysisConfig) -> dict[str, Any]:

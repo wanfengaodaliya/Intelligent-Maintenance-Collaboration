@@ -148,7 +148,10 @@ def _build_pacing_env(tmp_path, monkeypatch, packet_count=3, delivery_interval_m
         source_path=source_path,
         windows=lambda **kwargs: windows,
     )
-    monkeypatch.setattr("sender.controller.load_mat_record", lambda path: record)
+    monkeypatch.setattr(
+        "scenarios.bearing.ingestion.provider.load_mat_record",
+        lambda path: record,
+    )
 
     sleep_calls = []
     # 固定 monotonic=0，使 sleep 参数即各包相对 replay_started 的目标时刻。

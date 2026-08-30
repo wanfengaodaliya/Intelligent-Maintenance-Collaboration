@@ -1,7 +1,20 @@
-"""Compatibility shim — re-exports from the bearing scenario implementation.
+"""Compatibility shim for the historical core import path.
 
-The real implementation lives in scenarios/bearing/_compat/bearing_actions.py.
-This file keeps old import paths (from core.bearing_actions import ...) working.
+The compatibility package owns the dependency on the bearing plugin.
 """
 
-from scenarios.bearing._compat.bearing_actions import *  # noqa: F401, F403
+from compatibility.bearing_v12.bearing_actions_exports import (
+    ACTION_TO_GRADE,
+    ACTION_TO_STATE,
+    GRADE_TO_ACTION,
+    action_for_grade,
+    grade_for_action,
+)
+
+__all__ = [
+    "ACTION_TO_GRADE",
+    "ACTION_TO_STATE",
+    "GRADE_TO_ACTION",
+    "action_for_grade",
+    "grade_for_action",
+]

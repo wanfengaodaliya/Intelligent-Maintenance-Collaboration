@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from cloud_service.model_update.model_types import MODEL_TYPE_SPECS
+from compatibility.bearing_v12.legacy_exports import BEARING_MODEL_CATALOG
+from core.model_lifecycle import ModelCatalog
 
 
 def resolve_distribution_target(
-    model_type: str, *, subject_id: str | None = None
+    model_type: str,
+    *,
+    subject_id: str | None = None,
+    model_catalog: ModelCatalog | None = None,
 ) -> dict[str, Any]:
     """Describe where a candidate model must be deployed once approved.
 
@@ -18,10 +22,14 @@ def resolve_distribution_target(
     left to the downstream distribution module to resolve from the subject.
     """
 
-    spec = MODEL_TYPE_SPECS.get(model_type)
-    if spec is None:
+    catalog = model_catalog or BEARING_MODEL_CATALOG
+    try:
+        descriptor = catalog.require(model_type)
+    except ValueError:
         raise ValueError("INVALID_APPROVED_MODEL")
-    if spec.family == "edge":
+    if descriptor.family not in {"edge", "cloud"}:
+        raise ValueError("INVALID_APPROVED_MODEL")
+    if descriptor.family == "edge":
         return {
             "family": "edge",
             "deploy_to": "edge_node",
@@ -36,7 +44,10 @@ def resolve_distribution_target(
 
 
 def build_distribution_request(
-    approved_model: dict[str, Any], *, subject_id: str | None = None
+    approved_model: dict[str, Any],
+    *,
+    subject_id: str | None = None,
+    model_catalog: ModelCatalog | None = None,
 ) -> dict[str, Any]:
     required = (
         "update_id",
@@ -50,12 +61,19 @@ def build_distribution_request(
     if any(key not in approved_model for key in required):
         raise ValueError("INVALID_APPROVED_MODEL")
     model_type = approved_model["model_type"]
-    if model_type not in MODEL_TYPE_SPECS:
+    catalog = model_catalog or BEARING_MODEL_CATALOG
+    try:
+        descriptor = catalog.require(model_type)
+    except ValueError:
+        raise ValueError("INVALID_APPROVED_MODEL")
+    if descriptor.family not in {"edge", "cloud"}:
         raise ValueError("INVALID_APPROVED_MODEL")
     result = {key: approved_model[key] for key in required}
     result["model_type"] = model_type
-    result["model_family"] = MODEL_TYPE_SPECS[model_type].family
+    result["model_family"] = descriptor.family
     result["target"] = resolve_distribution_target(
-        model_type, subject_id=subject_id
+        model_type,
+        subject_id=subject_id,
+        model_catalog=catalog,
     )
     return result
