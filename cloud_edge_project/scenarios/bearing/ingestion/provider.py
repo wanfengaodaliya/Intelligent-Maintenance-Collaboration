@@ -130,16 +130,18 @@ class BearingInputAdapter:
         end_generate_timestamp_ns: int,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        return build_sensor_packet(
-            device_id=device_id,
-            task_id=task_id,
-            bearing_id=unit_id,
-            sender_id=sender_id,
-            sequence_number=sequence_number,
-            data=window.data,
-            end_generate_timestamp_ns=end_generate_timestamp_ns,
-            run_id=run_id,
-        )
+        packet_arguments: dict[str, Any] = {
+            "device_id": device_id,
+            "task_id": task_id,
+            "bearing_id": unit_id,
+            "sender_id": sender_id,
+            "sequence_number": sequence_number,
+            "data": window.data,
+            "end_generate_timestamp_ns": end_generate_timestamp_ns,
+        }
+        if run_id is not None:
+            packet_arguments["run_id"] = run_id
+        return build_sensor_packet(**packet_arguments)
 
     def next_window(
         self,
