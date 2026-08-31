@@ -60,3 +60,23 @@ cloud_edge_project/experiments/dual_phase_benchmark/tools/*
 
 # Microsoft Office temporary lock files.
 ~$*.docx
+
+# 本地一次性报表/训练/基准/SSH 残留（清理项，不入库）。
+/artifacts/
+local_word/
+word_render_*/
+model_report_materials/
+model_report_materials.zip
+report_assets/
+top10-risks-explained/
+localcnn-temporal-ablation/
+autodl_ssh/
+/_verify_*
+/_child_conda.ps1
+/format_report_v02.py
+/generate_charts.py
+/generate_word_report.py
+/optimize_report_v03.py
+/refine_report_v04.py
+/verify_report.py
+/render_with_word.ps1
